@@ -120,6 +120,38 @@ describe("controls across a resubscribe", () => {
     client.stop();
   });
 
+  test("a held redundancy toggle shows its value again after the snapshot that revived the socket", async () => {
+    const clusters: boolean[] = [];
+    const client = new ObserverClient(
+      "https://session.example",
+      {
+        onState: () => {},
+        onCluster: (s) => clusters.push(s.machine?.redundancy ?? false),
+        onSession: () => {},
+      },
+      () => 0,
+    );
+    void client.start();
+    await tick();
+    await tick();
+    const socket = FakeSocket.instances[0] as FakeSocket;
+    socket.open();
+    socket.deliver(snapshot(1));
+    socket.deliver({ t: "controlApplied", ...env, seq: 3, at: 2, op: "resumeAll", nodeIds: [] });
+    await new Promise((r) => setTimeout(r, 5));
+    await tick();
+    await tick();
+    expect(client.send({ t: "setRedundancy", on: true })).toBe(true);
+    expect(clusters.at(-1)).toBe(true);
+    const next = FakeSocket.instances[1] as FakeSocket;
+    next.open();
+    next.deliver(snapshot(4)); // still says off: the control has not reached the machine yet
+    await new Promise((r) => setTimeout(r, CONTROL_SPACING_MS + 10));
+    expect(next.frames().map((f) => f.t)).toEqual(["subscribe", "setRedundancy"]);
+    expect(clusters.at(-1)).toBe(true);
+    client.stop();
+  });
+
   test("a held control older than the hold window is dropped, not fired late", async () => {
     const { client, socket } = await live();
     socket.deliver({ t: "controlApplied", ...env, seq: 3, at: 2, op: "resumeAll", nodeIds: [] });

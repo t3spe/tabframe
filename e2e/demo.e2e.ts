@@ -36,6 +36,12 @@ const generation = (page: Page): Promise<number> =>
 const beat = (name: string) =>
   console.log(`[demo] ${new Date().toISOString().slice(11, 19)} ${name}`);
 
+/** The burst of joins floods the observer into a resubscribe; let the socket come back first. */
+async function settle(page: Page): Promise<void> {
+  await page.waitForTimeout(3_000);
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+}
+
 async function openTab(context: BrowserContext): Promise<Page> {
   const page = await context.newPage();
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -72,36 +78,38 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat(`rendering with ${JSON.stringify(await counts(page))}`);
   await expect.poll(() => counter(page, "done"), { timeout: 120_000 }).toBeGreaterThan(10);
 
-  // ---- 2. two more real tabs ---------------------------------------------------------------------
-  beat("two more tabs");
+  // ---- 2. another real tab -------------------------------------------------------------------------
+  // The script says two more; with the endpoint's sixteen connections (WP4.5) one more is what
+  // leaves room for the reconnects the beats below cause — see the spawn note.
+  beat("another tab");
   const before = await counts(page);
   const tab2 = await openTab(context);
-  const tab3 = await openTab(context);
   await expect
     .poll(() => counts(page).then((c) => c.hosts), { timeout: 60_000 })
-    .toBeGreaterThanOrEqual(before.hosts + 2);
+    .toBeGreaterThanOrEqual(before.hosts + 1);
 
   // ---- 3. spawn more, bounded by what this browser reports — and by the endpoint -------------------
-  // The script says ten; the MicroVM endpoint allows 16 connections in all (WP4.5): three
-  // dashboards and two cores are five, so six more nodes here is what the machine can seat with a
-  // little room for the reconnects the beats below cause. Two runs that spawned ten saw the
-  // dashboard's own socket refused and a control lost.
-  beat("spawn six");
+  // The script says ten; the MicroVM endpoint allows 16 connections in all (WP4.5): two
+  // dashboards, their two nodes, and two cores are six, so four more nodes here keeps the machine
+  // at ten with room for the reconnects the beats below cause. Runs that spawned ten, then six,
+  // saw the dashboard's own socket refused and a control lost or held past its window.
+  beat("spawn four");
   const hint = page.locator("#spawnHint");
   await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
   await expect(hint).toContainText(/This browser reports \d+ cores?/);
   const nodesBefore = (await counts(page)).nodes;
-  for (let i = 0; i < 6; i++) await page.click("#spawn1");
+  for (let i = 0; i < 4; i++) await page.click("#spawn1");
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
     .toBeGreaterThanOrEqual(nodesBefore + 3);
+  await settle(page);
   beat(`cluster ${JSON.stringify(await counts(page))}`);
 
   // ---- 4. kill half: work is taken back or its twins carry on -------------------------------------
   beat("kill half");
   const alive = (await counts(page)).nodes;
   await page.click("#killHalf");
-  await expect(page.locator("#activity")).toContainText(/killHalf: \S+/, { timeout: 20_000 });
+  await expect(page.locator("#activity")).toContainText(/killHalf: \S+/, { timeout: 30_000 });
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 30_000 })
     .toBeLessThan(alive);
@@ -129,6 +137,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
     .toBeGreaterThanOrEqual(4);
+  await settle(page);
   await page.click("#throttleHalf");
   await expect(page.locator("#activity")).toContainText(/throttleHalf: \S+/, { timeout: 20_000 });
   // Twins appear when a throttled attempt runs past its deadline; usual, not guaranteed within a
@@ -146,8 +155,9 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 7. redundancy on: every tile computed twice, the bytes agree ----------------------------------
   beat("redundancy on");
+  await settle(page);
   await page.click("#redundancy");
-  await expect(page.locator("#redundancy")).toBeChecked();
+  await expect(page.locator("#redundancy")).toBeChecked({ timeout: 20_000 });
   await expect(page.locator("#activity")).toContainText("setRedundancy", { timeout: 20_000 });
   // Agreement is set when a task is created, so the verified count climbs with the next frame;
   // the machine's state is logged along the way in case it does not.
@@ -246,6 +256,5 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#files")).toContainText("/program.wasm", { timeout: 60_000 });
 
   await tab2.close();
-  await tab3.close();
   beat("done");
 });
