@@ -13,10 +13,11 @@ class FakeSocket {
   onopen: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
   onclose: ((ev: { code: number; reason: string }) => void) | null = null;
-  constructor(
-    public url: string,
-    public protocols?: string[],
-  ) {
+  readonly url: string;
+  readonly protocols: string[] | undefined;
+  constructor(url: string, protocols?: string[]) {
+    this.url = url;
+    this.protocols = protocols;
     FakeSocket.instances.push(this);
   }
   open(): void {
