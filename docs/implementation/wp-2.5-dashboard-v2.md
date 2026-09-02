@@ -1,6 +1,6 @@
 # WP2.5 — Dashboard v2
 
-**Milestone:** M2 · **Branch:** `wp/2.5-dashboard-v2` · **Merged:** pending · **Packages:**
+**Milestone:** M2 · **Branch:** `wp/2.5-dashboard-v2` · **Merged:** 2026-09-02 · **Packages:**
 `packages/web`, `packages/protocol` (one optional field), `e2e`
 
 ## What
