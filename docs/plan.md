@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0–M3 tagged and verified on AWS (`docs/m1-verification.md`, `docs/m2-verification.md`, `docs/m3-verification.md`). The endpoint ceiling is explained (WP4.5): 16 concurrent connections per MicroVM, a non-adjustable quota — scaling the client edge is an open decision (WP4.6). In flight: the churn simulation learning to be a fleet (worktree), a one-cent alarm test waiting on billing data (WP4.7). M4 dashboard polish, operations runbook, pacing, and the unattended demo remain; M5 packaging after.
+**Where we are (2026-09-02, late):** M0–M3 tagged and verified on AWS (`docs/m1-verification.md`, `docs/m2-verification.md`, `docs/m3-verification.md`). **CI on `main` is green** (WP4.8) and is now a gate. The endpoint ceiling is explained and documented (WP4.5: 16 connections per MicroVM, a non-adjustable quota); WP4.6 is decided — document now, evaluate an EC2 host for the control plane after M5. The churn simulation runs the fleet and found the process was not noticing dead cores; fixed. Pending outside the code: the alarm test email (WP4.7), the first real Cost Explorer number, the developer-time column, and the public flip. Next: Mircea decides whether M4 starts.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
