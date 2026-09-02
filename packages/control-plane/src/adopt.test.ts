@@ -19,6 +19,7 @@ const imageConfig: Config = {
   webDir: null,
   blobBucket: null,
   localOff: false,
+  localNeutral: false,
   tickMs: 50,
   programsDir: null,
   defaultProgram: "mandelbrot",

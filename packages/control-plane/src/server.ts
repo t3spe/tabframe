@@ -204,7 +204,9 @@ export async function createControlPlane(
     });
   }
 
-  if (config.mode === "local") becomeControlPlane(config.generation, storeBase, null);
+  if (config.mode === "local" && !config.localNeutral) {
+    becomeControlPlane(config.generation, storeBase, null);
+  }
 
   const timer = setInterval(() => {
     if (ledger) dispatch({ kind: "tick" });

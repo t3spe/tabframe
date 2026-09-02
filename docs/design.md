@@ -765,4 +765,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
   the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
   but has no fleet (§6.8, §12).
+- **2026-09-02 (WP3.4).** Local mode can boot neutral (`TABFRAME_LOCAL_NEUTRAL`) so `dev:rotate`
+  drives the real run hook and the real rotate handler with control-plane processes standing in for
+  MicroVMs (§12). A run payload with an empty `storeBase` leaves a control plane serving blobs from
+  its own port; locally each generation has its own in-memory store, so a rotation loses earlier
+  blobs and the local test rotates within one stage. On AWS the store is shared and this does not
+  arise (§7.1).
 
