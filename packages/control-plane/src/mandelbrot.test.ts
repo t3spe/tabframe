@@ -166,7 +166,7 @@ describe("Mandelbrot end to end", () => {
 
     // Snapshots were written while the ledger changed; health knows the counts.
     const health = (await (await fetch(`${priv}/health`)).json()) as {
-      programs: number;
+      programs: string[];
       nodes: number;
       snapshots: { writes: number; lastKey: string | null };
     };

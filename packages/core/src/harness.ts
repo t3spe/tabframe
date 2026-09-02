@@ -122,7 +122,7 @@ export function harness(
       h.event({ kind: "launch", bundle: BUNDLE, params, human, inherit: null }),
     planSpec(effects, spec) {
       const f = effects.find((e) => e.kind === "fetchBlob");
-      if (!f || f.kind !== "fetchBlob") throw new Error("no fetchBlob effect");
+      if (f?.kind !== "fetchBlob") throw new Error("no fetchBlob effect");
       return h.event({
         kind: "blobFetched",
         hash: f.hash,
@@ -132,7 +132,7 @@ export function harness(
     },
     manifestStored(effects, hash = H("f")) {
       const p = effects.find((e) => e.kind === "putBlob");
-      if (!p || p.kind !== "putBlob") throw new Error("no putBlob effect");
+      if (p?.kind !== "putBlob") throw new Error("no putBlob effect");
       return h.event({ kind: "blobStored", hash, size: p.bytes.length, purpose: p.purpose });
     },
     result: (connId, taskId, attempt, output, extra = {}) =>

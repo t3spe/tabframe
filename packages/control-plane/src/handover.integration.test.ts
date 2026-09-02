@@ -272,7 +272,7 @@ describe("a handover between two processes", () => {
       await fetch(
         `http://127.0.0.1:${microvms.vms.get(newId)?.info.endpoint?.split(":")[1]}/health`,
       )
-    ).json()) as { generation: number; programs: number };
+    ).json()) as { generation: number; programs: string[] };
     expect(health.generation).toBe(2);
     expect(health.programs).toEqual(["mandelbrot"]); // adopted, not reseeded
 

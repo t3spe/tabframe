@@ -7,7 +7,7 @@ import type { Ledger } from "./ledger.ts";
 
 const putBlobOf = (effects: Effect[]) => {
   const e = effects.find((x) => x.kind === "putBlob");
-  if (!e || e.kind !== "putBlob") return null;
+  if (e?.kind !== "putBlob") return null;
   return { bytes: e.bytes, purpose: e.purpose };
 };
 const manifestOf = (effects: Effect[]) => {
@@ -46,8 +46,7 @@ describe("an execution starts from its bundle", () => {
     expect(exec.root).toBe(BUNDLE);
     expect(putBlobOf(effects)).toBeNull();
     const assign = effects.find((e) => e.kind === "send" && e.msg.t === "assign");
-    if (!assign || assign.kind !== "send" || assign.msg.t !== "assign")
-      throw new Error("no assign");
+    if (assign?.kind !== "send" || assign.msg.t !== "assign") throw new Error("no assign");
     expect(assign.msg.fsRoot).toBe(BUNDLE);
   });
 
@@ -255,7 +254,7 @@ describe("inheritance", () => {
       purpose: { type: "inheritRoot", executionId: second.executionId },
     });
     const warning = effects.find((e) => e.kind === "send" && e.msg.t === "executionWarning");
-    if (!warning || warning.kind !== "send" || warning.msg.t !== "executionWarning")
+    if (warning?.kind !== "send" || warning.msg.t !== "executionWarning")
       throw new Error("no warning");
     expect(warning.msg.code).toBe("expired-root");
     expect(warning.msg.message).toContain("starting from the bundle");

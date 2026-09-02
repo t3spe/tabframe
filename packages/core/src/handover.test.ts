@@ -61,7 +61,7 @@ describe("drain", () => {
     h.hello("b", "h2");
     const effects = drain(h.ledger, 7, h.rng);
     const rotating = effects.find((e) => e.kind === "send" && e.msg.t === "controlPlaneRotating");
-    if (!rotating || rotating.kind !== "send" || rotating.msg.t !== "controlPlaneRotating")
+    if (rotating?.kind !== "send" || rotating.msg.t !== "controlPlaneRotating")
       throw new Error("no rotating event");
     expect(rotating.msg.next).toBe(7);
 

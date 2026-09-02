@@ -8,7 +8,7 @@ describe("programs in the snapshot", () => {
     h.addProgram("bars");
     const effects = h.subscribe("obs");
     const snap = effects.find((e) => e.kind === "send" && e.msg.t === "snapshot");
-    if (!snap || snap.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
     expect(snap.msg.programs).toEqual([
       {
         bundle: BUNDLE,
