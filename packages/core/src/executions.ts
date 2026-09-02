@@ -75,6 +75,7 @@ export function enqueue(
     // relaunched bundle's inputs and module always win over stale copies (design §5.4).
     root: inherited ? null : program.bundle,
     files: { ...(inherited?.files ?? {}), ...program.files },
+    sealedStage: -1,
     computeSamples: [],
     computeMsUsed: 0,
     computeMsCap: ledger.config.computeMsCap,
@@ -372,6 +373,7 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
     );
   }
   const manifest: FsManifest = { version: 1, files };
+  exec.sealedStage = exec.stage;
   return [
     {
       kind: "putBlob",
@@ -397,7 +399,7 @@ export function onManifestStored(
     exec.root = hash;
     return [...createPlanTask(ledger, exec, 0, now), ...fill(ledger, now)];
   }
-  if (exec.stage !== stage) return [];
+  if (exec.stage !== stage || exec.planTaskId) return [];
   const files: FsManifest["files"] = { ...exec.files };
   for (const id of exec.stageTaskIds) {
     const task = ledger.tasks.get(id);
@@ -427,16 +429,21 @@ function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
 }
 
 function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
+  const effects: Effect[] = [];
+  // Nothing should be open by now; whatever is gets cancelled so no node holds finished work.
+  for (const task of currentTasks(ledger, exec)) effects.push(...cancelOthers(ledger, task, null));
   exec.status = "done";
   exec.endedAt = now;
   ledger.running = null;
   if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
-  const effects = broadcast(ledger, {
-    t: "executionDone",
-    executionId: exec.executionId,
-    root: exec.root,
-    followUp: exec.followUp,
-  });
+  effects.push(
+    ...broadcast(ledger, {
+      t: "executionDone",
+      executionId: exec.executionId,
+      root: exec.root,
+      followUp: exec.followUp,
+    }),
+  );
   // Only the machine's default loop continues on its own (D19).
   if (
     !exec.human &&

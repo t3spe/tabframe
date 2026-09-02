@@ -139,6 +139,8 @@ export interface ExecutionRecord {
   /** The filesystem as of the current stage: root hash and its manifest. */
   root: string | null;
   files: FsManifest["files"];
+  /** Highest stage whose results were folded into a manifest; late mismatches there retract nothing. */
+  sealedStage: number;
   /** Rolling compute samples of this execution's run tasks, for deadlines. */
   computeSamples: number[];
   computeMsUsed: number;

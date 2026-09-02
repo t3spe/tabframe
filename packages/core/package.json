@@ -11,6 +11,7 @@
     "@tabframe/protocol": "workspace:*"
   },
   "devDependencies": {
+    "@tabframe/sandbox": "workspace:*",
     "fast-check": "4.9.0"
   }
 }

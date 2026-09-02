@@ -37,10 +37,14 @@ export function onResult(
 ): { effects: Effect[]; settlement: Settlement } {
   const effects: Effect[] = [];
   const task = ledger.tasks.get(msg.taskId);
-  const attempt = task?.attempts.find((a) => a.nodeId === node.nodeId && a.outcome === "running");
+  // The result names its attempt. Only that attempt closes: a stale report for an attempt that was
+  // cancelled must not close a newer attempt of the same task on the same node, or the node ends
+  // up holding work the control plane thinks is finished. It still counts as evidence below.
+  const attempt = task?.attempts.find(
+    (a) => a.attempt === msg.attempt && a.nodeId === node.nodeId && a.outcome === "running",
+  );
   if (task) msg = checkTileSize(ledger, task, msg);
-  // Bookkeeping on the node regardless of what the task says.
-  node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
+  if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   if (msg.error === RELEASED) {
     // The node gave up at its own deadline: the attempt is released, the task is not judged.
     if (attempt) attempt.outcome = "released";
@@ -86,6 +90,14 @@ export function onResult(
           round: task.contestedRounds,
         };
 
+  // One report per node per round: a repeat of what the node already said adds no evidence
+  // (agreement means two nodes, D7); a node that contradicts itself goes through the mismatch path.
+  const earlier = task.results.find(
+    (r) => r.round === task.contestedRounds && r.nodeId === node.nodeId,
+  );
+  if (earlier && earlier.identity === record.identity)
+    return { effects, settlement: { kind: "none" } };
+
   // A result for a settled task is a duplicate: verify or contest it.
   if (task.status === "done" && task.accepted) {
     if (record.identity === task.accepted.identity) {
@@ -96,10 +108,18 @@ export function onResult(
       return { effects, settlement: { kind: "none" } };
     }
     task.results.push(record);
-    return {
-      effects: [...effects, ...contest(ledger, exec, task, node.nodeId)],
-      settlement: settleContested(ledger, exec, task, now, effects),
-    };
+    if (sealed(exec, task)) {
+      // The stage is folded (or the plan consumed): the result is committed. The disagreement is
+      // announced and counted, but nothing is withdrawn.
+      exec.counters.mismatched += 1;
+      effects.push(
+        ...broadcast(ledger, { t: "taskMismatch", taskId: task.taskId, nodeId: node.nodeId }),
+      );
+      return { effects, settlement: { kind: "none" } };
+    }
+    effects.push(...contest(ledger, exec, task, node.nodeId));
+    const settlement = settleContested(ledger, exec, task, now, effects);
+    return { effects, settlement };
   }
   if (task.status === "failed") return { effects, settlement: { kind: "none" } };
 
@@ -149,6 +169,15 @@ function releaseIfOrphaned(ledger: Ledger, task: TaskRecord, fromNode: string): 
     exec.counters.reassigned += 1;
   }
   return broadcast(ledger, { t: "taskReassigned", taskId: task.taskId, fromNode });
+}
+
+/**
+ * A done task whose result the execution has already built on: a plan task once its spec was
+ * fetched, a run task once its stage was folded. Retracting it would unwind a manifest that
+ * later stages may read, so a late mismatch there is recorded, not acted on.
+ */
+function sealed(exec: ExecutionRecord, task: TaskRecord): boolean {
+  return task.kind === "plan" || task.stage <= (exec.sealedStage ?? -1);
 }
 
 function settlementFor(task: TaskRecord, result: ResultRecord): Settlement {
@@ -221,7 +250,15 @@ function contest(
   return effects;
 }
 
-/** After the second contested round, the majority identity across every result wins (D7). */
+/** Rounds after which a tied vote is broken by report order rather than by another round. */
+const MAX_CONTESTED_ROUNDS = 4;
+
+/**
+ * After the second contested round, the identity reported by the most nodes wins (D7). Votes are
+ * nodes, not reports: a node that keeps reporting the same bytes round after round counts once.
+ * A tie is not a majority: the task goes round once more (to nodes that have not reported, when
+ * any is free) until a majority exists or the round cap is reached.
+ */
 function settleContested(
   ledger: Ledger,
   exec: ExecutionRecord,
@@ -230,21 +267,26 @@ function settleContested(
   effects: Effect[],
 ): Settlement {
   if (task.contestedRounds < 2) return { kind: "contested", task };
-  const votes = new Map<string, { count: number; first: ResultRecord }>();
+  const votes = new Map<string, { nodes: Set<string>; first: ResultRecord }>();
   for (const r of task.results) {
     const v = votes.get(r.identity);
-    if (v) v.count += 1;
-    else votes.set(r.identity, { count: 1, first: r });
+    if (v) v.nodes.add(r.nodeId);
+    else votes.set(r.identity, { nodes: new Set([r.nodeId]), first: r });
   }
   let winner: ResultRecord | null = null;
   let best = -1;
-  for (const { count, first } of votes.values()) {
-    if (count > best) {
-      best = count;
+  let tied = false;
+  for (const { nodes, first } of votes.values()) {
+    if (nodes.size > best) {
+      best = nodes.size;
       winner = first;
+      tied = false;
+    } else if (nodes.size === best) {
+      tied = true;
     }
   }
   if (!winner) return { kind: "contested", task };
+  if (tied && task.contestedRounds < MAX_CONTESTED_ROUNDS) return { kind: "contested", task };
   task.resolvedByVote = true;
   exec.counters.pending = Math.max(0, exec.counters.pending - 1);
   task.status = "assigned"; // accept() expects an open task

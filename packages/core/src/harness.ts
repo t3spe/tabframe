@@ -61,14 +61,24 @@ export interface Harness {
   rng: () => number;
 }
 
-export function harness(config: Partial<LedgerConfig> = {}, gen = 3): Harness {
+/**
+ * A ledger at virtual time 1 000 000 with a fixed-seed random source; the simulation passes its
+ * own seeded `random` so victim selection replays with the rest of the run.
+ */
+export function harness(
+  config: Partial<LedgerConfig> = {},
+  gen = 3,
+  random?: () => number,
+): Harness {
   const ledger = createLedger(gen, { storeBase: "https://cdn.test/blob", ...config }, 1_000_000);
   let now = 1_000_000;
   let seed = 12345;
-  const rng = () => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x80000000;
-  };
+  const rng =
+    random ??
+    (() => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    });
   const env = { v: PROTOCOL_VERSION, gen };
   const h: Harness = {
     ledger,

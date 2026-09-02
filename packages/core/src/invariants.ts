@@ -21,6 +21,8 @@ export function checkInvariants(ledger: Ledger): string[] {
       if (!t) v.push(`node ${n.nodeId} in-flight unknown task ${taskId}`);
       else if (!t.attempts.some((a) => a.nodeId === n.nodeId && a.outcome === "running"))
         v.push(`node ${n.nodeId} in-flight ${taskId} without a running attempt`);
+      else if (t.executionId !== ledger.running)
+        v.push(`node ${n.nodeId} holds ${taskId} of ${t.executionId}, which is not running`);
     }
   }
   for (const t of ledger.tasks.values()) {
@@ -66,6 +68,13 @@ export function checkInvariants(ledger: Ledger): string[] {
     const e = ledger.executions.get(id);
     if (!e) v.push(`queued unknown execution ${id}`);
     else if (e.status !== "queued") v.push(`queued execution ${id} has status ${e.status}`);
+  }
+  // An ended execution leaves nothing open behind (design §6.10).
+  for (const t of ledger.tasks.values()) {
+    if (t.status !== "pending" && t.status !== "assigned") continue;
+    const e = ledger.executions.get(t.executionId);
+    if (e && e.status !== "running" && e.status !== "queued")
+      v.push(`execution ${e.executionId} is ${e.status} while ${t.taskId} is ${t.status}`);
   }
   for (const e of ledger.executions.values()) {
     if (e.status !== "running") continue;

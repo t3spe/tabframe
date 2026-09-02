@@ -1,7 +1,9 @@
 import {
+  byteLength,
   CLOSE,
   type Control,
   type ControlPlaneToObserver,
+  canonicalStringify,
   decode,
   type Heartbeat,
   type Hello,
@@ -12,6 +14,7 @@ import {
   PROTOCOL_VERSION,
   type ProgramView,
   type Snapshot,
+  type TaskView,
 } from "@tabframe/protocol";
 import type { Effect, Event } from "./events.ts";
 import {
@@ -31,6 +34,7 @@ import {
 } from "./executions.ts";
 import {
   type ConnRole,
+  type ConnState,
   executionView,
   type Ledger,
   type NodeRecord,
@@ -157,18 +161,16 @@ function onMessage(
   const conn = ledger.conns.get(connId);
   if (!conn) return [];
 
-  const rate =
-    conn.role === "node" ? LIMITS.nodeMessagesPerSecond : LIMITS.observerMessagesPerSecond;
-  const b = conn.bucket;
-  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
-  b.refilledAt = now;
-  if (b.tokens < 1) return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
-  b.tokens -= 1;
-
   const opts = { expectGen: ledger.meta.generation };
   if (conn.role === "node") {
     const d = decode(nodeToControlPlane, raw, opts);
     if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+    // Results and presigns answer assignments, which maxInFlight already paces (a fast node on
+    // small tiles legitimately sends dozens a second); the bucket covers what a node sends on
+    // its own initiative.
+    const solicited = d.msg.t === "result" || d.msg.t === "presign";
+    if (!solicited && !takeToken(conn, LIMITS.nodeMessagesPerSecond, now))
+      return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
     switch (d.msg.t) {
       case "hello":
         return onHello(ledger, connId, d.msg, now);
@@ -194,6 +196,8 @@ function onMessage(
   }
   const d = decode(observerToControlPlane, raw, opts);
   if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+  if (!takeToken(conn, LIMITS.observerMessagesPerSecond, now))
+    return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
   switch (d.msg.t) {
     case "subscribe":
       return onSubscribe(ledger, connId, now);
@@ -209,6 +213,16 @@ function onMessage(
       ledger.meta.lastInteractionAt = now;
       return onControl(ledger, connId, d.msg, now, rng);
   }
+}
+
+/** The per-connection token bucket: refill at the rate, spend one; false when it is empty. */
+function takeToken(conn: ConnState, rate: number, now: number): boolean {
+  const b = conn.bucket;
+  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
+  b.refilledAt = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
 }
 
 function onControl(
@@ -414,7 +428,6 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   return effects;
 }
 
-/** Page 0 carries the cluster; every page carries task rows (design §8.3). */
 export function programView(p: ProgramRecord): ProgramView {
   return {
     bundle: p.bundle,
@@ -425,12 +438,16 @@ export function programView(p: ProgramRecord): ProgramView {
     addedAt: p.addedAt,
   };
 }
+/** Room left for task rows once the envelope and page fields are accounted for. */
+const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
 
-export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
+/**
+ * Page 0 carries the cluster; every page carries task rows (design §8.3). Pages are packed by
+ * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
+ * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
+ */ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
-  const pageSize = LIMITS.snapshotPageTasks;
-  const pages = Math.max(1, Math.ceil(tasks.length / pageSize));
   const machine: MachineView = {
     awake: true,
     reason: null,
@@ -438,37 +455,46 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
   };
+  const cluster = {
+    nodes: [...ledger.nodes.values()].map(nodeView),
+    programs: [...ledger.programs.values()].map(programView),
+    execution: exec ? executionView(exec) : null,
+    queue: ledger.queue
+      .map((id) => ledger.executions.get(id))
+      .filter((e) => e !== undefined)
+      .map(queueEntry),
+    machine,
+  };
+  const pages: TaskView[][] = [];
+  let current: TaskView[] = [];
+  let used = byteLength(canonicalStringify(cluster));
+  for (const view of tasks) {
+    const size = byteLength(canonicalStringify(view)) + 1;
+    if (
+      current.length > 0 &&
+      (current.length >= LIMITS.snapshotPageTasks || used + size > SNAPSHOT_PAGE_BUDGET)
+    ) {
+      pages.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(view);
+    used += size;
+  }
+  pages.push(current);
   const effects: Effect[] = [];
-  for (let page = 0; page < pages; page++) {
-    const slice = tasks.slice(page * pageSize, (page + 1) * pageSize);
+  for (let page = 0; page < pages.length; page++) {
     const base: Snapshot = {
       t: "snapshot",
       v: PROTOCOL_VERSION,
       gen: ledger.meta.generation,
       seq: ledger.meta.seq,
       page,
-      pages,
-      tasks: slice,
+      pages: pages.length,
+      tasks: pages[page] ?? [],
       at: now,
     };
-    effects.push({
-      kind: "send",
-      connId,
-      msg:
-        page === 0
-          ? {
-              ...base,
-              nodes: [...ledger.nodes.values()].map(nodeView),
-              programs: [...ledger.programs.values()].map(programView),
-              execution: exec ? executionView(exec) : null,
-              queue: ledger.queue
-                .map((id) => ledger.executions.get(id))
-                .filter((e) => e !== undefined)
-                .map(queueEntry),
-              machine,
-            }
-          : base,
-    });
+    effects.push({ kind: "send", connId, msg: page === 0 ? { ...base, ...cluster } : base });
   }
   return effects;
 }

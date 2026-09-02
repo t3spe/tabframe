@@ -225,6 +225,42 @@ describe("refusals", () => {
       expect(closes(g.heartbeat("c1"))).toEqual([]);
     }
   });
+
+  test("results and presigns are paced by assignment, not by the bucket", () => {
+    // A fast node on small tiles reports dozens of results a second, each after a presign.
+    const h = harness();
+    const hash = "a".repeat(64);
+    h.hello("c1");
+    for (let i = 0; i < 4 * LIMITS.nodeMessagesPerSecond; i++) {
+      expect(closes(h.send("c1", { t: "presign", items: [{ hash, size: 1 }] }))).toEqual([]);
+      const result = {
+        t: "result",
+        taskId: `t${i}`,
+        attempt: 1,
+        output: hash,
+        outputSize: 1,
+        writes: [],
+        log: null,
+        computeMs: 1,
+      };
+      expect(closes(h.send("c1", result))).toEqual([]);
+    }
+    expect(h.ledger.nodes.size).toBe(1);
+    // Unsolicited traffic is still limited after that burst.
+    let closed: Effect | undefined;
+    for (let i = 0; i < LIMITS.nodeMessagesPerSecond + 5 && !closed; i++) {
+      closed = closes(h.heartbeat("c1"))[0];
+    }
+    expect(closed).toMatchObject({ code: CLOSE.rateLimited });
+    // Observers keep their own budget.
+    const g = harness();
+    g.subscribe("o1");
+    let closedObserver: Effect | undefined;
+    for (let i = 0; i < LIMITS.observerMessagesPerSecond + 5 && !closedObserver; i++) {
+      closedObserver = closes(g.send("o1", { t: "ping" }))[0];
+    }
+    expect(closedObserver).toMatchObject({ code: CLOSE.rateLimited });
+  });
 });
 
 describe("invariants under random activity", () => {

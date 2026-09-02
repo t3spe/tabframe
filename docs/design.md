@@ -743,3 +743,19 @@ Dated deviations discovered while building, recorded before the code landed (pla
   manifest is compact JSON, so the same program uploaded from the page and shipped in the image
   are two bundles and two program records (§5.6, §7.3). `@tabframe/sandbox` exports a
   `./validate` subpath for the page.
+- **2026-09-03 (WP1.9).** Found by the churn simulation. Results and presigns do not count
+  against the per-node message bucket at all: they answer assignments, which `maxInFlight` already
+  paces (§8.4; WP1.7 had raised the bucket to 1000 a second for the same reason). Agreement means
+  two nodes (§6.5, D7): a repeat report from the same node in a round adds no evidence, the second
+  attempt of a round never goes to a node that already reported, and the vote after two contested
+  rounds counts distinct nodes; with the toggle on, a task on a cluster of one waits for a second
+  node. Once a stage is folded, or a plan task's spec consumed, its results are sealed: a later
+  mismatch is announced and counted but withdraws nothing, since the manifest that holds the
+  output has already advanced the stage (§6.5, §6.6). Two more invariants (§6.10): a node holds
+  only work of the running execution, and an ended execution leaves nothing pending or assigned.
+  Snapshot pages are packed by bytes as well as by row count, since 256 rows of done tiles exceed
+  the message cap (§8.3). A result closes the attempt it names; a report for another attempt of
+  the same task is evidence only, so a stale report never closes a newer attempt (§6.5). D7's
+  "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
+  free slot; a tie after two contested rounds is not a majority and starts another round, up to
+  four, after which report order breaks it.
