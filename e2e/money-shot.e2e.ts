@@ -53,9 +53,48 @@ function installWatcher(): void {
   })();
 }
 
+/**
+ * Finished tiles by task id with their output hashes, from the dashboard's own state — which
+ * resubscribes for a snapshot whenever it misses an event — merged with what the watcher saw.
+ * A slow runner floods a raw observer socket into a gap; the dashboard recovers, the watcher
+ * alone does not (a CI run stalled at 259 of 640 that way).
+ */
+function tileOutputs(): Record<string, string> {
+  const w = (window as unknown as { __watch?: Watch }).__watch;
+  const out: Record<string, string> = { ...(w?.done ?? {}) };
+  const tf = (
+    window as unknown as {
+      tabframe?: {
+        state: { tasks: Map<string, { kind: string; status: string; output: string | null }> };
+      };
+    }
+  ).tabframe;
+  if (tf) {
+    for (const [id, t] of tf.state.tasks) {
+      if (t.kind === "run" && t.status === "done" && t.output) out[id] = t.output;
+    }
+  }
+  return out;
+}
+
+/** The same count, self-contained: `page.evaluate` ships only the function it is given. */
 function tilesDone(): number {
   const w = (window as unknown as { __watch?: Watch }).__watch;
-  return w ? Object.keys(w.done).length : -1;
+  if (!w) return -1;
+  const seen = new Set(Object.keys(w.done));
+  const tf = (
+    window as unknown as {
+      tabframe?: {
+        state: { tasks: Map<string, { kind: string; status: string; output: string | null }> };
+      };
+    }
+  ).tabframe;
+  if (tf) {
+    for (const [id, t] of tf.state.tasks) {
+      if (t.kind === "run" && t.status === "done" && t.output) seen.add(id);
+    }
+  }
+  return seen.size;
 }
 
 const wasmPath = path.resolve(import.meta.dirname, "../programs/mandelbrot/dist/program.wasm");
@@ -134,9 +173,7 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
     .toBeGreaterThanOrEqual(goldens.taskCount);
   expect(beforeKill).toBeLessThan(goldens.taskCount);
 
-  const outputs = await page.evaluate(() =>
-    Object.values((window as unknown as { __watch: Watch }).__watch.done),
-  );
+  const outputs = Object.values(await page.evaluate(tileOutputs));
   const failures = await page.evaluate(
     () => (window as unknown as { __watch: Watch }).__watch.failed,
   );

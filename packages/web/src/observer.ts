@@ -37,6 +37,14 @@ export const PRESIGN_TIMEOUT_MS = 30_000;
 
 /** Spacing between outgoing controls: with a ping every two seconds this stays under the observer rate. */
 export const CONTROL_SPACING_MS = Math.ceil(1000 / (LIMITS.observerMessagesPerSecond - 1));
+
+/**
+ * A control issued while the socket is between subscribes — a silent resubscribe after a
+ * sequence gap or a refresh, or the seconds of a rotation — is held for the next live socket this
+ * long, then dropped: the machine a person clicked at a moment ago is the one they meant, a
+ * machine that has been gone for longer is not (WP4.4: a demo run lost "kill half" this way).
+ */
+export const CONTROL_HOLD_MS = 10_000;
 /** A quiet refresh spreads the reconnects of many observers over this many milliseconds. */
 export const REFRESH_JITTER_MS = 4_000;
 
@@ -53,9 +61,12 @@ export class ObserverClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private sendTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private off = false;
   private resubscribing = false;
   private lastSentAt = 0;
   private outbox: Outgoing[] = [];
+  /** Controls issued between subscribes, with the moment each was asked for. */
+  private held: Array<{ control: ControlRequest; at: number }> = [];
   private pendingPresign: {
     hashes: Set<string>;
     resolve: (urls: PresignedUpload[]) => void;
@@ -91,25 +102,40 @@ export class ObserverClient {
     this.stopped = true;
     this.clearTimers();
     this.outbox = [];
+    this.held = [];
     this.socket?.close(1000, "stop");
     this.socket = null;
   }
 
   /**
-   * Queue a control for the control plane. Returns false when there is no live socket, in which
-   * case nothing is queued: a control issued against a dead machine should not fire later.
+   * Queue a control for the control plane. Between subscribes it is held for the next live socket
+   * (`CONTROL_HOLD_MS`); returns false only when the client is stopped or the machine is off, in
+   * which case nothing is queued: a control issued against a dead machine should not fire later.
    */
   send(control: ControlRequest): boolean {
-    if (!this.connected) return false;
+    if (this.stopped || this.off) return false;
     if (control.t === "setRedundancy") {
       // This page knows the value it asked for; the echo needs no refresh.
       this.expectRedundancyEcho += 1;
       this.state = withRedundancy(this.state, control.on);
       this.handlers.onCluster(this.state);
     }
+    if (!this.connected) {
+      this.held.push({ control, at: Date.now() });
+      return true;
+    }
     this.outbox.push(control);
     this.drain();
     return true;
+  }
+
+  /** Controls held across a reconnect go out once the new socket is live, if still fresh. */
+  private releaseHeld(): void {
+    const now = Date.now();
+    const fresh = this.held.filter((h) => now - h.at <= CONTROL_HOLD_MS);
+    this.held = [];
+    for (const h of fresh) this.outbox.push(h.control);
+    if (fresh.length > 0) this.drain();
   }
 
   /**
@@ -154,6 +180,12 @@ export class ObserverClient {
     const control = this.outbox.shift() as Outgoing;
     const session = this.session;
     if (!this.connected || !session) {
+      // The socket went between the click and the send: controls wait for the next subscribe,
+      // a presign does not (its upload would have to start over anyway).
+      const now = Date.now();
+      for (const o of [control, ...this.outbox]) {
+        if (o.t !== "presign") this.held.push({ control: o, at: now });
+      }
       this.outbox = [];
       this.settlePresign(null, "not connected");
       return;
@@ -178,7 +210,12 @@ export class ObserverClient {
       return this.later(this.backoff.next());
     }
     if (this.stopped) return;
-    if (session.kind === "off") return this.handlers.onState("off");
+    if (session.kind === "off") {
+      this.off = true;
+      this.held = [];
+      return this.handlers.onState("off");
+    }
+    this.off = false;
     if (session.kind === "starting") {
       this.handlers.onState("starting");
       return this.later(session.retryAfterMs);
@@ -242,6 +279,7 @@ export class ObserverClient {
     if (msg.t === "snapshot" && this.state.pagesPending === 0) {
       this.resubscribing = false;
       this.handlers.onState("live");
+      this.releaseHeld();
     }
     this.handlers.onCluster(this.state);
   }
