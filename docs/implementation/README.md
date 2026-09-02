@@ -37,3 +37,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP2.5 | [wp-2.5-dashboard-v2.md](wp-2.5-dashboard-v2.md) | 2026-09-02 | Dashboard v2: programs panel with launch forms, queue with drop, stage strip, bars and text views, files panel by root with previews, task detail with attempts and log, failure and warning surfacing |
 | WP3.4 | [wp-3.4-handover-tests.md](wp-3.4-handover-tests.md) | 2026-09-02 | A real rotation on a laptop: the local driver behind `dev:rotate`, and a two-process handover taken mid-render as a test |
 | WP3.5 | [wp-3.5-deploy-m3.md](wp-3.5-deploy-m3.md) | 2026-09-02 | M3 on AWS: rotation under load measured at 8.4 s of churn, the bundled sandbox worker, retries for throttled fleet calls, the endpoint's socket ceiling |
+| WP2.6 | [wp-2.6-playwright-v1.md](wp-2.6-playwright-v1.md) | 2026-09-02 | Browser suites: the money shot (ten nodes, kill half, 640 golden tiles) and the sandbox's deadline kill and trap paths |
