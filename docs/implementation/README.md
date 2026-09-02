@@ -22,3 +22,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP1.3 | [wp-1.3-store.md](wp-1.3-store.md) | 2026-09-02 | Store package: local and S3 drivers with pinned checksums, the shared client; control plane executes store effects |
 | WP1.4 | [wp-1.4-sandbox.md](wp-1.4-sandbox.md) | 2026-09-02 | WebAssembly sandbox: validation, the five tf imports, filesystem glue, deadline kill, Node and web adapters |
 | WP1.5 | [wp-1.5-sdk-mandelbrot.md](wp-1.5-sdk-mandelbrot.md) | 2026-09-02 | AssemblyScript SDK mirroring the ABI, Mandelbrot program with presets and goldens, build and host scripts |
+| WP1.9 | [wp-1.9-churn-sim.md](wp-1.9-churn-sim.md) | 2026-09-03 | Churn simulation: virtual nodes running real WASM on a virtual timeline, seeded chaos, invariants after every event, goldens per frame; four control-plane fixes it found |
