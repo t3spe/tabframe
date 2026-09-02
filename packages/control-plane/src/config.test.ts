@@ -10,6 +10,7 @@ describe("configFromEnv", () => {
     expect(c.generation).toBe(1);
     expect(c.storeBase).toBeNull();
     expect(c.webDir).toBeNull();
+    expect(c.blobBucket).toBeNull();
     expect(c.localOff).toBe(false);
     expect(c.tickMs).toBe(500);
   });
