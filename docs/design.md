@@ -787,3 +787,6 @@ Dated deviations discovered while building, recorded before the code landed (pla
   Playwright worker: they share a local control plane and, since WP2.3, an upload really launches
   (§12).
 
+  four, after which report order breaks it. Freeze is terminal on the node **record** too: a later
+  `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a
+  worker that computes nothing until the silence window declares it gone (§4, §6.7).

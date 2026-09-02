@@ -449,6 +449,36 @@ describe("queue and controls", () => {
     expect(h.invariants()).toEqual([]);
   });
 
+  test("a frozen node stays frozen: throttle does not revive it, and it is never filled", () => {
+    // Six tasks, two nodes: both fill up, two stay pending. Freeze one node's record the way
+    // freezeHalf does, then throttle everyone — the frozen record must survive, because `fill`
+    // skips frozen nodes and a frozen worker computes nothing until the silence window ends it.
+    const { h, spec } = machine(2, 6);
+    expect(h.assigns(spec).length).toBe(4);
+    const frozen = h.ledger.nodes.get("n1");
+    if (!frozen) throw new Error("no node");
+    frozen.commanded = "freeze";
+    const throttled = h.send("o1", { t: "throttleHalf" });
+    expect(frozen.commanded).toBe("freeze");
+    // Free both of its slots, as a cancel would, then let every fill path run.
+    for (const t of h.ledger.tasks.values()) {
+      for (const a of t.attempts) {
+        if (a.nodeId === "n1" && a.outcome === "running") a.outcome = "cancelled";
+      }
+    }
+    frozen.inFlight = [];
+    for (const e of [...throttled, ...h.tick(), ...h.heartbeat("c2")]) {
+      if (e.kind === "send" && e.msg.t === "assign") expect(e.connId).not.toBe(frozen.connId);
+    }
+    // resumeAll wakes throttled workers only; the frozen one is left for the sweep.
+    const woken = h
+      .send("o1", { t: "resumeAll" })
+      .filter((e) => e.kind === "send" && e.msg.t === "command")
+      .map((e) => (e.kind === "send" ? e.connId : ""));
+    expect(woken).not.toContain(frozen.connId);
+    expect(frozen.commanded).toBe("freeze");
+  });
+
   test("skip cancels the running execution and starts the next; restart relaunches the same program first", () => {
     const { h } = machine(1, 2);
     h.launch({ preset: 9 }, true);
