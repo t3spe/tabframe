@@ -49,6 +49,8 @@ const rows: Summary[] = [];
 for (const { file, label } of sources) {
   const jsonl = readFileSync(file, "utf8");
   const { markdown, summary } = exportTranscript(jsonl, { label, maxResultLines });
+  // A background task's output file is not a session: nothing in it parses as an event.
+  if (summary.events === 0) continue;
   writeFileSync(path.join(outDir, `${summary.sessionId}.md`), markdown);
   rows.push(summary);
   const scrubbed = Object.values(summary.scrubbed).reduce((n, v) => n + v, 0);
