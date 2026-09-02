@@ -175,7 +175,6 @@ export async function createControlPlane(
    * a ledger without programs; the configured default program becomes the machine's loop.
    */
   async function seed(target: Ledger): Promise<void> {
-    if (target.programs.size > 0) return;
     const programs =
       deps.programs ?? (config.programsDir ? discoverPrograms(config.programsDir) : []);
     if (programs.length === 0) {
@@ -189,7 +188,11 @@ export async function createControlPlane(
     if (loop && !target.config.defaultLoop) {
       target.config.defaultLoop = { bundle: loop.bundle, params: loop.manifest.defaultParams };
     }
-    for (const p of seeded) {
+    // Seeding is by bundle hash, not "have we ever seeded": a deploy that ships a new program has
+    // to reach a machine that keeps adopting its predecessor's ledger, and a bundle already in the
+    // ledger is left alone.
+    const added = seeded.filter((p) => !target.programs.has(p.bundle));
+    for (const p of added) {
       dispatch({
         kind: "programAdded",
         bundle: p.bundle,
@@ -200,6 +203,7 @@ export async function createControlPlane(
     }
     log("seed", {
       programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
+      added: added.map((p) => p.name),
       defaultLoop: loop?.name ?? null,
     });
   }
