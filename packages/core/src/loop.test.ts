@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
 import {
+  HUMAN_RESULT_HOLD_MS,
   KEEP_ENDED_EXECUTIONS,
   KEEP_ENDED_TASKS,
   LOOP_BACKOFF_MAX_MS,
@@ -224,5 +225,42 @@ describe("pruning ended executions' tasks", () => {
     adopted.files = { "/out/0/0": { hash: H("1"), size: 256 } };
     pruneExecutions(h.ledger);
     expect(adopted.files).toEqual({});
+  });
+});
+
+describe("a person's result holds the stage", () => {
+  test("the loop waits HUMAN_RESULT_HOLD_MS after a human launch ends before it takes over", () => {
+    const h = harness();
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.launch({ preset: 0 }, true);
+    h.tick();
+    const exec = [...h.ledger.executions.values()][0];
+    if (!exec) throw new Error("nothing launched");
+    const plan = planAssignOf(h, exec.executionId);
+    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
+      kind: "done",
+      next: null,
+    });
+    expect(exec.status).toBe("done");
+    // The loop is configured only now, so the hold is the only thing keeping it back. The node
+    // and the observer keep talking, or the silence window would empty the machine first.
+    h.ledger.config.defaultLoop = { bundle: BUNDLE, params: { preset: 1 } };
+    const alive = () => {
+      h.heartbeat("a");
+      h.send("obs", { t: "ping" });
+    };
+    for (let t = 0; t < HUMAN_RESULT_HOLD_MS - 1_000; t += 1_000) {
+      h.advance(1_000);
+      alive();
+      h.tick();
+    }
+    expect(h.ledger.executions.size).toBe(1);
+    h.advance(1_000);
+    alive();
+    h.tick();
+    expect(h.ledger.executions.size).toBe(2);
+    expect([...h.ledger.executions.values()][1]?.human).toBe(false);
   });
 });

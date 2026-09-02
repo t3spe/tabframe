@@ -485,6 +485,7 @@ function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Ef
   exec.endedAt = now;
   ledger.running = null;
   if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
+  holdResult(ledger, exec, now);
   effects.push(
     ...broadcast(ledger, {
       t: "executionDone",
@@ -543,6 +544,7 @@ export function failExecution(
   exec.status = "failed";
   exec.failure = reason;
   exec.endedAt = now;
+  holdResult(ledger, exec, now);
   if (ledger.running === exec.executionId) ledger.running = null;
   if (isDefaultLoop(ledger, exec)) {
     // A failing loop must not spin: back off, doubling, before the next automatic launch.
@@ -598,6 +600,20 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
   return [...ledger.tasks.values()]
     .filter((t) => t.executionId === executionId)
     .sort((a, b) => a.stage - b.stage || a.index - b.index || (a.kind === "plan" ? -1 : 1));
+}
+
+/**
+ * A person's result stays on the screen: the loop waits this long after a human launch ends
+ * before it takes the stage back (WP4.4: word count's bars were gone before anyone saw them).
+ */
+export const HUMAN_RESULT_HOLD_MS = 20_000;
+
+function holdResult(ledger: Ledger, exec: ExecutionRecord, now: number): void {
+  if (!exec.human) return;
+  ledger.meta.loopPausedUntil = Math.max(
+    ledger.meta.loopPausedUntil ?? 0,
+    now + HUMAN_RESULT_HOLD_MS,
+  );
 }
 
 /** The default loop keeps the machine busy while someone is watching (D4, §6.8). */

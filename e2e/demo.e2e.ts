@@ -109,6 +109,20 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("kill half");
   const alive = (await counts(page)).nodes;
   await page.click("#killHalf");
+  // A click can still land in a reconnect the page hides; a person would click again, so does
+  // the script, and says what the page said about the first one.
+  const applied = await expect(page.locator("#activity"))
+    .toContainText(/killHalf: \S+/, { timeout: 12_000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!applied) {
+    beat(
+      `kill half not applied in 12 s: notice "${await page.locator("#notice").textContent()}", machine "${await page.locator("#machine").textContent()}"; clicking again`,
+    );
+    await page.click("#killHalf");
+  }
   await expect(page.locator("#activity")).toContainText(/killHalf: \S+/, { timeout: 30_000 });
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 30_000 })
@@ -217,9 +231,12 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await page.click('[data-launch-go="wordcount"]');
   await expect(page.locator("#exec")).toContainText("wordcount", { timeout: 300_000 });
   await expect(page.locator("#strip .stage")).toHaveCount(3, { timeout: 180_000 });
-  await expect(page.locator("#exec")).toContainText("done", { timeout: 180_000 });
-  await expect(page.locator("#result .bars .bar-row").first()).toBeVisible({ timeout: 60_000 });
+  // A person's result holds the stage for twenty seconds before the loop resumes (core,
+  // HUMAN_RESULT_HOLD_MS): the bars are read within that window.
+  await expect(page.locator("#exec")).toContainText("wordcount · done", { timeout: 180_000 });
+  await expect(page.locator("#result .bars .bar-row").first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", /\w+/);
+  await expect(page.locator("#files")).toContainText("/in/corpus.txt", { timeout: 15_000 });
   beat("word count drew its bars");
 
   // ---- 10. a rotation: banner, reconnect, the render continues --------------------------------------
