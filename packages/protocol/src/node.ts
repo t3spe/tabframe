@@ -33,6 +33,8 @@ export const result = z
     taskId: z.string().min(1).max(64),
     attempt: z.number().int().min(1),
     output: hash.optional(),
+    /** Byte length of the output blob, for the filesystem manifest entry. */
+    outputSize: z.number().int().nonnegative().optional(),
     error: z.string().min(1).max(1024).optional(),
     writes: z.array(writeEntry).max(LIMITS.maxWriteFiles).default([]),
     log: z
@@ -43,6 +45,9 @@ export const result = z
   })
   .refine((r) => (r.output === undefined) !== (r.error === undefined), {
     message: "exactly one of output or error",
+  })
+  .refine((r) => r.output === undefined || r.outputSize !== undefined, {
+    message: "outputSize accompanies output",
   });
 
 /** Ask for presigned upload URLs for these hashes (design D18). */

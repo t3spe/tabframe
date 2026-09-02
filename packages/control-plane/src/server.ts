@@ -88,12 +88,20 @@ export async function createControlPlane(
 
   function execute(effects: Effect[]): void {
     for (const e of effects) {
-      const ws = conns.get(e.connId);
-      if (!ws) continue;
-      if (e.kind === "send") {
-        if (ws.readyState === ws.OPEN) ws.send(encode(e.msg));
-      } else {
-        ws.close(e.code, e.reason.slice(0, 120));
+      switch (e.kind) {
+        case "send": {
+          const ws = conns.get(e.connId);
+          if (ws && ws.readyState === ws.OPEN) ws.send(encode(e.msg));
+          break;
+        }
+        case "close": {
+          const ws = conns.get(e.connId);
+          if (ws) ws.close(e.code, e.reason.slice(0, 120));
+          break;
+        }
+        default:
+          // fetchBlob, putBlob, and presign are executed against the store from WP1.3/WP1.7 on.
+          log("effect-unhandled", { kind: e.kind });
       }
     }
   }
