@@ -74,8 +74,9 @@ seed, so a violation is replayable to the event.
   never assigned, no third task, no fatal close codes (invalid, rate limited, version, generation),
   observer sequence numbers, snapshot pages, stage completeness.
 - **At the end of a frame.** Every stage-0 task done, its accepted output equal to the golden (a
-  lie is tolerated only where the design tolerates it: with the toggle off, or by a majority vote
-  under D7), 16 KiB in size, present in the store, and in the execution's files; the root manifest
+  lie is tolerated only where the design tolerates it: with the toggle off, or under the toggle
+  when two node ids reported it or a vote by node ids favoured it, D7), 16 KiB in size, present in
+  the store, and in the execution's files; the root manifest
   in the store equals the ledger's files. In the calm phase a frame must complete within a window
   sized from the tile count; otherwise the run is reported as stalled.
 - **Determinism.** No real clock or random source anywhere; the core takes the seeded rng through
@@ -189,9 +190,11 @@ a close.
 - The thousand-seed acceptance runs on the 64-tile subset; whole frames are covered by fewer
   seeds because the simulation's own bookkeeping over 640 tasks dominates the wall time. A
   nightly job (design §12) can run the whole-frame long mode.
-- A liar that reconnects is a new node (D11) and votes again; the vote is robust to a persistent
-  node, not to a node that keeps rejoining. Public compute's answer is the toggle plus
-  verification at the dashboard, not sybil resistance.
+- A liar that reconnects is a new node (D11): long seed 403 shows one reporting a tile, being
+  closed by `killHalf`, rejoining, drawing the same task's second attempt, and agreeing with its
+  former self. Agreement by host id would not help, since the host id is self-reported; the
+  design's answer to a malicious host is the toggle plus verification at the dashboard, not sybil
+  resistance, and the simulation counts such tiles as accepted lies rather than violations.
 - The virtual node models what WP1.6's orchestrator must do on the wire (one presign per task's
   new hashes, then the result; reconnect as a new node; the four commands). The simulation can host
   the real orchestrator later by swapping the node model for it behind the same socket interface.

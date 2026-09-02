@@ -667,9 +667,9 @@ class World implements ChaosWorld {
           );
         } else {
           this.stats.liesAccepted += 1;
-          if (t.requiredAgreement === 2 && !(t.resolvedByVote && this.voteExplains(t, golden)))
+          if (t.requiredAgreement === 2 && !this.agreementExplains(t, golden))
             this.violation(
-              `${t.taskId}: a lie accepted under redundancy without a majority for it`,
+              `${t.taskId}: a lie accepted under redundancy without two nodes behind it`,
             );
         }
       }
@@ -696,15 +696,19 @@ class World implements ChaosWorld {
       this.violation(`${id}: the stored root manifest differs from the ledger's files`);
   }
 
-  /** D7's majority, counted the way the core counts it: nodes per identity, not reports. */
-  private voteExplains(task: TaskRecord, golden: string): boolean {
+  /**
+   * What the toggle promises (D7), counted the way the core counts it: a lie is accepted only when
+   * two node ids reported it, or when a vote by node ids favoured it. A liar that reconnects is a
+   * new node (D11) and may agree with its former self; that is the documented limit, not a bug.
+   */
+  private agreementExplains(task: TaskRecord, golden: string): boolean {
     const wrong = new Set<string>();
     const right = new Set<string>();
     for (const r of task.results) {
       if (r.identity === task.accepted?.identity) wrong.add(r.nodeId);
       else if (r.output === golden) right.add(r.nodeId);
     }
-    return wrong.size >= right.size;
+    return task.resolvedByVote ? wrong.size >= right.size : wrong.size >= 2;
   }
 
   private finalChecks(): void {
