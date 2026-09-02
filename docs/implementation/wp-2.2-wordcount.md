@@ -1,6 +1,6 @@
 # WP2.2 — Word count program
 
-**Milestone:** M2 · **Branch:** `wp/2.2-wordcount` · **Merged:** pending · **Packages:**
+**Milestone:** M2 · **Branch:** `wp/2.2-wordcount` · **Merged:** 2026-09-02 · **Packages:**
 `programs/wordcount`, `packages/sdk-as` (bars builder, staged host, corpus and goldens scripts),
 `packages/protocol` (bars payload), `packages/infra` (image staging of inputs)
 
