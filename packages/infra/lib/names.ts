@@ -74,3 +74,8 @@ export function parameterArn(stack: cdk.Stack, name: string): string {
     arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
   });
 }
+
+/** Every AWS-managed network connector; RunMicrovm needs lambda:PassNetworkConnector on the ones it passes. */
+export function anyManagedConnectorArn(stack: cdk.Stack): string {
+  return `arn:aws:lambda:${stack.region}:aws:network-connector:aws-network-connector:*`;
+}

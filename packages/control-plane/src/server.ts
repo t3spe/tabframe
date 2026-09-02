@@ -249,7 +249,7 @@ export async function createControlPlane(
       }
       return sendJson(res, 200, {
         dns: dnsResult,
-        storeBase,
+        storeBase: ledger?.meta.storeBase ?? storeBase,
         blobs: store.size,
         role,
         generation,

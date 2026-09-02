@@ -29,6 +29,8 @@ export class FleetStack extends cdk.Stack {
     const bundling: cdk.aws_lambda_nodejs.BundlingOptions = {
       format: nodejs.OutputFormat.ESM,
       target: "node22",
+      // The runtime's built-in SDK predates client-lambda-microvms; bundle the SDK we import.
+      bundleAwsSDK: true,
       mainFields: ["module", "main"],
       banner:
         "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
@@ -48,11 +50,13 @@ export class FleetStack extends cdk.Stack {
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
-      reservedConcurrentExecutions: 5,
+      // No reserved concurrency: the account's Lambda concurrency default of 10 must stay fully
+      // unreserved (CloudFormation refuses otherwise). Rotate stays single-writer through its
+      // idempotent check and the per-generation client token instead.
       bundling,
       environment: {
         TABFRAME_POINTER_PARAM: NAMES.pointerParam,
-        TABFRAME_STORE_BASE: core.webOrigin,
+        TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
         TABFRAME_WEB_ORIGIN: core.webOrigin,
         TABFRAME_ROTATE_FUNCTION: NAMES.rotateFunction,
       },
@@ -70,15 +74,9 @@ export class FleetStack extends cdk.Stack {
         resources: [functionArn(this, NAMES.rotateFunction)],
       }),
     );
-    this.sessionUrl = this.session.addFunctionUrl({
-      authType: lambda.FunctionUrlAuthType.NONE,
-      cors: {
-        allowedOrigins: [core.webOrigin],
-        allowedMethods: [lambda.HttpMethod.GET],
-        allowedHeaders: ["content-type"],
-        maxAge: cdk.Duration.hours(1),
-      },
-    });
+    // CORS is answered by the handler itself (GET and OPTIONS); configuring it on the URL as well
+    // would emit the Access-Control-Allow-Origin header twice, which browsers reject.
+    this.sessionUrl = this.session.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
     this.rotate = new nodejs.NodejsFunction(this, "Rotate", {
       functionName: NAMES.rotateFunction,
@@ -88,14 +86,13 @@ export class FleetStack extends cdk.Stack {
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
       timeout: cdk.Duration.minutes(5),
-      reservedConcurrentExecutions: 1,
       bundling,
       environment: {
         TABFRAME_POINTER_PARAM: NAMES.pointerParam,
         TABFRAME_IMAGE_ARN: image.imageArn,
         TABFRAME_CP_ROLE_ARN: image.controlPlaneRole.roleArn,
         TABFRAME_SESSION_URL: this.sessionUrl.url,
-        TABFRAME_STORE_BASE: core.webOrigin,
+        TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
         TABFRAME_FLEET_SECRET_ARN: core.fleetSecret.secretArn,
       },
       description:
@@ -115,15 +112,23 @@ export class FleetStack extends cdk.Stack {
     );
     this.rotate.addToRolePolicy(
       new iam.PolicyStatement({
+        // The managed connectors live in the "aws" account; a wildcard on their ARN pattern was still
+        // denied at deploy, so this action is granted on "*".
+        actions: ["lambda:PassNetworkConnector"],
+        resources: ["*"],
+      }),
+    );
+    this.rotate.addToRolePolicy(
+      new iam.PolicyStatement({
         actions: ["ssm:GetParameter", "ssm:PutParameter"],
         resources: [pointerArn],
       }),
     );
     this.rotate.addToRolePolicy(
       new iam.PolicyStatement({
+        // PassRole is limited to the one role; a PassedToService condition is not honored by RunMicrovm.
         actions: ["iam:PassRole"],
         resources: [image.controlPlaneRole.roleArn],
-        conditions: { StringEquals: { "iam:PassedToService": "lambda.amazonaws.com" } },
       }),
     );
     core.fleetSecret.grantRead(this.rotate);

@@ -24,7 +24,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     mode,
     publicPort: intEnv(env.TABFRAME_PUBLIC_PORT, defaults.pub),
     privatePort: intEnv(env.TABFRAME_PRIVATE_PORT, defaults.priv),
-    host: env.TABFRAME_HOST ?? "127.0.0.1",
+    host: env.TABFRAME_HOST ?? (mode === "image" ? "0.0.0.0" : "127.0.0.1"),
     generation: intEnv(env.TABFRAME_GENERATION, 1),
     storeBase: env.TABFRAME_STORE_BASE ?? null,
     webDir: env.TABFRAME_WEB_DIR ?? null,

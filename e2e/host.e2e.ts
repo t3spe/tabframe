@@ -46,7 +46,8 @@ test("the health route stays private and the fallback page never shows once the 
   baseURL,
 }) => {
   const res = await page.request.get(`${baseURL}/health`);
-  expect(res.status()).toBe(404);
+  // Locally the public listener answers 404; behind CloudFront the missing key is a 403 from S3.
+  expect([403, 404]).toContain(res.status());
   await page.goto("/");
   await expect(page.locator("h1")).toHaveText("TABFRAME");
 });

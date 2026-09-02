@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 merged; WP0.3 merged; WP0.4 and WP0.12 merged; WP0.5 merged; WP0.6 merged; WP0.7 dev on `wp/0.7-dev`; WP0.8/0.9 branches ready to merge; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
+**Where we are (2026-09-02):** M0 — WP0.1–0.10 and 0.12 merged; the machine is deployed and public; WP0.11 verification running.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -71,7 +71,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
   *Acceptance:* `cdk synth` test passes; `cdk deploy --all` succeeds; the image version reaches ACTIVE (build logs tailed).
 - [x] **WP0.9 `fleet` skeleton.** Shared MicroVM client (`@aws-sdk/client-lambda-microvms` — confirm the package at this step), pointer read/write, `session` handler (pointer → off state, or get MicroVM → one shared token per control plane cached for 25 minutes → `{endpoint, token, expiresAt, storeBase, generation}`), `rotate` v0 (idempotent: check pointer and running MicroVMs, launch a control plane if none, wait for run hook, set pointer — no handover yet), scripts `rotate.ts`, `up.ts`, `down.ts` (disable schedule, terminate all, write off).
   *Acceptance:* tests against a fake client; `mise run deploy` ends with a session URL that returns a live endpoint.
-- [ ] **WP0.10 First public hello.** Page from CloudFront connects to the MicroVM control plane through the session token; hello/heartbeat visible in the dashboard and in CloudWatch.
+- [x] **WP0.10 First public hello.** Page from CloudFront connects to the MicroVM control plane through the session token; hello/heartbeat visible in the dashboard and in CloudWatch.
   *Acceptance:* a second browser on another network sees the first browser's node join.
 - [ ] **WP0.11 `mise run verify`.** `verify-m0.ts` with masked output, one check per unknown, each with a pass criterion and the design fallback:
 

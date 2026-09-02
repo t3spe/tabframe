@@ -10,3 +10,4 @@ test-results/
 *.log
 .DS_Store
 .claude/
+packages/infra/image-dist/
