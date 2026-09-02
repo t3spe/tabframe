@@ -132,10 +132,17 @@ export function onResult(
   }
   if (round.length >= task.requiredAgreement) {
     const chosen = round[0] as ResultRecord;
-    return {
-      effects: [...effects, ...accept(ledger, exec, task, chosen, node.nodeId, now)],
-      settlement: settlementFor(task, chosen),
-    };
+    const accepted = accept(ledger, exec, task, chosen, node.nodeId, now);
+    if (task.requiredAgreement > 1 && task.status === "done") {
+      // Agreement by recompute (redundancy on): the node that completed it verified the other.
+      // Without this the toggle's own counter never moved — a twin that agrees *after* a task is
+      // done was counted, the pair that settles it together was not (found by the WP4.4 demo).
+      exec.counters.verified += 1;
+      accepted.push(
+        ...broadcast(ledger, { t: "taskVerified", taskId: task.taskId, nodeId: node.nodeId }),
+      );
+    }
+    return { effects: [...effects, ...accepted], settlement: settlementFor(task, chosen) };
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };

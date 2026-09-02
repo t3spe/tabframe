@@ -240,6 +240,11 @@ describe("verification", () => {
     expect(h.ledger.tasks.get(x.taskId)?.status).toBe("assigned");
     const second = h.result(y.connId, y.taskId, y.attempt, H("7"));
     expect(eventsOf(second, "o1")).toContain("taskDone");
+    // The pair that settles a task together is a verification: the toggle's counter moves —
+    // twice here, since the plan task was settled by two agreeing nodes as well.
+    expect(eventsOf(second, "o1")).toContain("taskVerified");
+    const exec = [...h.ledger.executions.values()][0];
+    expect(exec?.counters.verified).toBe(2);
     expect(h.invariants()).toEqual([]);
   });
 
@@ -277,9 +282,11 @@ describe("verification", () => {
     const repeat = h.result(x.connId, x.taskId, 9, H("7"));
     expect(eventsOf(repeat, "o1")).not.toContain("taskDone");
     expect(h.ledger.tasks.get(x.taskId)?.results.length).toBe(1);
-    expect(h.ledger.executions.get("e1")?.counters.verified).toBe(0);
+    // Only the plan task's agreement has been counted; the repeat verified nothing.
+    expect(h.ledger.executions.get("e1")?.counters.verified).toBe(1);
     const done = h.result(y.connId, y.taskId, y.attempt, H("7"));
     expect(eventsOf(done, "o1")).toContain("taskDone");
+    expect(h.ledger.executions.get("e1")?.counters.verified).toBe(2);
     expect(h.invariants()).toEqual([]);
   });
 

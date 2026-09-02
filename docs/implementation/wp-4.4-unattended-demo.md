@@ -39,6 +39,20 @@ the background, so the browser tests carry no AWS SDK.
   runbook sat in the program list for ever. Seeding now also retires an unshipped program that no
   remaining execution refers to and that is over an hour old — drops stay as long as they are used.
 
+- **Controls were lost between subscribes.** Three runs in a row lost a click: `kill half` twice,
+  the redundancy toggle once. The dashboard resubscribes silently — on a sequence gap (a fast
+  cluster floods an observer: with ten nodes a frame took four seconds) and on a refresh after
+  someone else's control — and a control issued in the few hundred milliseconds between the
+  close and the next snapshot was dropped with a notice the test could not see. `ObserverClient`
+  now holds such controls for the next live socket for ten seconds (`CONTROL_HOLD_MS`) and drops
+  them after; a machine that is off still refuses them outright. Unit-tested with a fake socket.
+- **The money shot's watcher stalled on CI.** Its raw second observer socket never resubscribes,
+  so a gap on the slow runner froze its count at 259 of 640 while the frame finished; it now counts
+  tiles from the dashboard's own state as well, which recovers from gaps by snapshot.
+- **Spawn within the ceiling.** Ten spawned nodes plus three dashboards plus two cores is past the
+  sixteen connections a MicroVM endpoint allows (WP4.5); the script spawns six, and says why on
+  the page's own hint.
+
 ## Results
 
 _Filled by the runs below._
