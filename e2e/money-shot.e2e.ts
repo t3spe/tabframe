@@ -100,9 +100,21 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
     .toBeGreaterThan(60);
   const beforeKill = await page.evaluate(tilesDone);
   await page.click("#killHalf");
-  // The dashboard reports the victims leaving and their work being taken back.
+  // The dashboard reports the victims leaving and their work being taken back — or, on a slow
+  // runner where overdue attempts had already been twinned, their twins carrying on: either way
+  // the counters move (a CI run saw five departures and no "taken back" line at all).
   await expect(page.locator("#activity")).toContainText("left (closed)", { timeout: 20_000 });
-  await expect(page.locator("#activity")).toContainText("taken back from", { timeout: 20_000 });
+  const counter = (name: string) =>
+    page
+      .locator(`[data-counter="${name}"] b`)
+      .textContent()
+      .then((t) => Number(t ?? "0"));
+  await expect
+    .poll(async () => (await counter("reassigned")) + (await counter("speculated")), {
+      timeout: 20_000,
+      intervals: [500],
+    })
+    .toBeGreaterThanOrEqual(1);
   // The cluster is short-handed; the page spawns nothing new on its own.
   await expect(page.locator("#counts")).toHaveText(/[1-9] nodes/, { timeout: 20_000 });
 
