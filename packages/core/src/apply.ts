@@ -37,6 +37,7 @@ import { coreGone, coreLaunched, fleetTick, microvmIdOfHost } from "./fleet.ts";
 import {
   type ConnRole,
   type ConnState,
+  type ExecutionRecord,
   executionView,
   type Ledger,
   type NodeRecord,
@@ -462,12 +463,25 @@ export function programView(p: ProgramRecord): ProgramView {
 /** Room left for task rows once the envelope and page fields are accounted for. */
 const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
 
+function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
+  let latest: ExecutionRecord | undefined;
+  for (const e of ledger.executions.values()) {
+    if (e.endedAt === null) continue;
+    if (!latest || e.endedAt > (latest.endedAt ?? 0)) latest = e;
+  }
+  return latest;
+}
+
 /**
  * Page 0 carries the cluster; every page carries task rows (design §8.3). Pages are packed by
  * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
  * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
  */ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
-  const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  // Nothing running: the snapshot shows the execution that ended last, so a visitor arriving
+  // during the hold after a person's launch — or a dashboard resubscribing for a fresh snapshot —
+  // sees the result on the stage rather than "idle" (WP4.4; the loop's hold is what makes the
+  // window exist). Its tasks are still in the ledger for the two most recent frames.
+  const exec = ledger.running ? ledger.executions.get(ledger.running) : latestEnded(ledger);
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
   const machine: MachineView = {
     awake: ledger.meta.awake,

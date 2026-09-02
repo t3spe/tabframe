@@ -128,3 +128,28 @@ describe("retiring a program", () => {
     expect(h.invariants()).toEqual([]);
   });
 });
+
+/** Nothing running: a late observer still sees the execution that ended last (WP4.4). */
+describe("the snapshot after a launch ends", () => {
+  test("shows the last ended execution with its tasks instead of idle", () => {
+    const h = harness();
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.launch({ preset: 0 }, true);
+    h.tick();
+    const exec = [...h.ledger.executions.values()][0];
+    if (!exec) throw new Error("nothing launched");
+    const plan = planAssignOf(h, exec.executionId);
+    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
+      kind: "done",
+      next: null,
+    });
+    expect(exec.status).toBe("done");
+    expect(h.ledger.running).toBeNull();
+    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    expect(snap.msg.execution?.executionId).toBe(exec.executionId);
+    expect(snap.msg.execution?.status).toBe("done");
+    expect(snap.msg.tasks.length).toBeGreaterThan(0);
+  });
+});
