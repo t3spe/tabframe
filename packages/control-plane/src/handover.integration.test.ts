@@ -288,9 +288,18 @@ describe("a handover between two processes", () => {
       );
     };
     await until(() => nodesSeen() >= 2, 60_000, "the nodes to rejoin the new control plane");
+    // Two minutes: a CI runner has twice needed more than one (the frame is real compute on a
+    // shared box). A frame that finished before this observer subscribed shows as a snapshot whose
+    // execution is done rather than as an event, and counts too.
     await until(
-      () => newObserver.events.some((e) => e.t === "taskDone"),
-      60_000,
+      () =>
+        newObserver.events.some((e) => e.t === "taskDone") ||
+        newObserver.events.some(
+          (e) =>
+            e.t === "snapshot" &&
+            (e as { execution?: { status?: string } | null }).execution?.status === "done",
+        ),
+      120_000,
       "tiles to land on the new generation",
     );
     const snapshot = newObserver.events.find((e) => e.t === "snapshot") as
