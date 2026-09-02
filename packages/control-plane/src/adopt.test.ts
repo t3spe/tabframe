@@ -199,6 +199,12 @@ function secondProgram(base: DiscoveredProgram): DiscoveredProgram {
   };
 }
 
+/** The same program shipped again with a changed manifest: same name, another bundle hash. */
+function revisedProgram(base: DiscoveredProgram): DiscoveredProgram {
+  const manifest = { ...base.manifest, description: "the paced version" };
+  return { ...base, manifest, manifestBytes: new TextEncoder().encode(JSON.stringify(manifest)) };
+}
+
 describe("seeding an adopted ledger", () => {
   const planes: ControlPlane[] = [];
   afterAll(async () => {
@@ -243,5 +249,47 @@ describe("seeding an adopted ledger", () => {
     expect(second.ledger?.programs.size).toBe(2);
     const bundles = [...(second.ledger?.programs.keys() ?? [])];
     expect(new Set(bundles).size).toBe(2);
+  }, 30_000);
+
+  test("a deploy that changes a shipped program retires the old bundle and moves the default loop to the new one", async () => {
+    const snapshots = new MemorySnapshots();
+    const programs = discoverPrograms(programsDir);
+    const first = await createControlPlane(imageConfig, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs,
+    });
+    await run(first, { role: "control-plane", generation: 30, snapshotKey: null });
+    await first.seeded();
+    const oldBundle = [...(first.ledger?.programs.keys() ?? [])][0] as string;
+    expect(first.ledger?.config.defaultLoop?.bundle).toBe(oldBundle);
+    const handed = serializeLedger(first.ledger as Ledger);
+    await first.close();
+
+    const revised = revisedProgram(programs[0] as DiscoveredProgram);
+    const second = await createControlPlane({ ...imageConfig, generation: 31 }, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs: [revised],
+    });
+    planes.push(second);
+    await run(second, { role: "control-plane", generation: 31, snapshotKey: null });
+    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+      method: "POST",
+      body: handed,
+    });
+    expect(adopt.status).toBe(200);
+    await second.seeded();
+    // One mandelbrot, the new one; the old record went with nothing referring to it; the loop
+    // follows the shipped bundle instead of rendering the old frame forever.
+    const listed = [...(second.ledger?.programs.values() ?? [])];
+    expect(listed.map((p) => p.manifest.name)).toEqual(["mandelbrot"]);
+    const newBundle = listed[0]?.bundle as string;
+    expect(newBundle).not.toBe(oldBundle);
+    expect(second.ledger?.config.defaultLoop?.bundle).toBe(newBundle);
+    const health = (await (
+      await fetch(`http://127.0.0.1:${second.privateAddress.port}/health`)
+    ).json()) as { programs: string[] };
+    expect(health.programs).toEqual(["mandelbrot"]);
   }, 30_000);
 });

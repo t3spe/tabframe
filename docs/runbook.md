@@ -108,3 +108,5 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 | A program shipped in the image is not on the machine | the ledger was adopted from a snapshot seeded before the program existed | fixed since WP2.7 (seeding by bundle hash); if it recurs, `mise run rotate` |
 | The session function returns `starting` for minutes | no control plane and the heal did not complete | `mise run logs:fleet`; `mise run up` |
 | The machine is up but nothing renders | asleep (ten minutes without an observer) or no nodes | open the page; the first visitor wakes it, cores follow within seconds |
+| After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed in WP4.9: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
+| RSS climbs in the first half hour after a launch | heap growth to the working set, not a leak: 312 → 370 → 372 MiB over 7 → 33 min on a 1 GB control plane, flat after | `mise run health` shows `memoryMiB`; worry above ~700 MiB |

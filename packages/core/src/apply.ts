@@ -31,6 +31,7 @@ import {
   onStageSpec,
   pruneExecutions,
   resumeAll,
+  retireProgram,
 } from "./executions.ts";
 import { coreGone, coreLaunched, fleetTick, microvmIdOfHost } from "./fleet.ts";
 import {
@@ -97,6 +98,11 @@ export function apply(
         ...addProgram(ledger, event.bundle, event.module, event.manifest, event.files ?? {}, now),
         ...ensureDefaultLoop(ledger, now),
       ];
+    case "programRetired":
+      return retireProgram(ledger, event.bundle);
+    case "setDefaultLoop":
+      ledger.config.defaultLoop = event.loop;
+      return ensureDefaultLoop(ledger, now);
     case "launch": {
       const r = enqueue(
         ledger,
@@ -470,7 +476,7 @@ const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
   };
   const cluster = {
     nodes: [...ledger.nodes.values()].map(nodeView),
-    programs: [...ledger.programs.values()].map(programView),
+    programs: [...ledger.programs.values()].filter((p) => !p.retired).map(programView),
     execution: exec ? executionView(exec) : null,
     queue: ledger.queue
       .map((id) => ledger.executions.get(id))

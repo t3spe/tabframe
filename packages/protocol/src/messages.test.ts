@@ -226,6 +226,7 @@ describe("v1 observer messages", () => {
       { t: "executionFailed", ...ev, executionId: "e1", reason: "write conflict at /x" },
       { t: "controlApplied", ...ev, op: "killHalf", nodeIds: ["n1", "n2"] },
       { t: "programAdded", ...ev, program: H, name: "mandelbrot" },
+      { t: "programRetired", ...ev, program: H, name: "mandelbrot" },
       { t: "controlPlaneRotating", ...ev, next: 3, reconnectAfterMs: 2500 },
       { t: "machineSleeping", ...ev, reason: "no observers for 10 minutes" },
       { t: "budget", ...ev, executionId: "e1", computeMsUsed: 10, computeMsCap: 100 },

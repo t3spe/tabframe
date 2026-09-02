@@ -186,10 +186,6 @@ export async function createControlPlane(
     const { seeded, rejected } = await seedPrograms(store, programs);
     for (const r of rejected) log("seed-rejected", r);
     if (ledger !== target) return; // the role changed under us
-    const loop = seeded.find((p) => p.name === config.defaultProgram) ?? seeded[0] ?? null;
-    if (loop && !target.config.defaultLoop) {
-      target.config.defaultLoop = { bundle: loop.bundle, params: loop.manifest.defaultParams };
-    }
     // Seeding is by bundle hash, not "have we ever seeded": a deploy that ships a new program has
     // to reach a machine that keeps adopting its predecessor's ledger, and a bundle already in the
     // ledger is left alone.
@@ -203,10 +199,33 @@ export async function createControlPlane(
         files: p.files,
       });
     }
+    // The image owns the names it ships (WP4.9): a record under a shipped name with another bundle
+    // is the previous deploy's version (or a drop that borrowed the name) and is retired, so the
+    // list shows one `mandelbrot` and the old one's follow-up chain ends.
+    const shipped = new Set(seeded.map((p) => p.bundle));
+    const names = new Set(seeded.map((p) => p.name));
+    const retired = [...target.programs.values()].filter(
+      (p) => !p.retired && !shipped.has(p.bundle) && names.has(p.manifest.name),
+    );
+    for (const p of retired) dispatch({ kind: "programRetired", bundle: p.bundle });
+    // The machine's own loop follows the shipped program: set when there is none, moved when the
+    // one it points at was just retired or is gone (the old frame kept rendering forever before).
+    const loop = seeded.find((p) => p.name === config.defaultProgram) ?? seeded[0] ?? null;
+    const current = target.config.defaultLoop;
+    const currentProgram = current ? target.programs.get(current.bundle) : undefined;
+    const moved = loop !== null && (!current || !currentProgram || currentProgram.retired === true);
+    if (loop && moved) {
+      dispatch({
+        kind: "setDefaultLoop",
+        loop: { bundle: loop.bundle, params: loop.manifest.defaultParams },
+      });
+    }
     log("seed", {
       programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
       added: added.map((p) => p.name),
+      retired: retired.map((p) => `${p.manifest.name}@${p.bundle.slice(0, 12)}`),
       defaultLoop: loop?.name ?? null,
+      loopMoved: moved,
     });
   }
 
@@ -594,7 +613,9 @@ export async function createControlPlane(
         })),
         cloudCores: ledger?.config.cloudCores ?? false,
         observers: ledger?.observers.size ?? 0,
-        programs: [...(ledger?.programs.values() ?? [])].map((p) => p.manifest.name),
+        programs: [...(ledger?.programs.values() ?? [])]
+          .filter((p) => !p.retired)
+          .map((p) => p.manifest.name),
         running: ledger?.running ?? null,
         queue: ledger?.queue.length ?? 0,
         executions: ledger?.executions.size ?? 0,
