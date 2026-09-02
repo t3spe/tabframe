@@ -3,4 +3,13 @@ root = "packages"
 coverage = true
 coverageSkipTestFiles = true
 coverageThreshold = { lines = 0.85 }
-coveragePathIgnorePatterns = ["packages/web/**", "**/dist/**", "**/sim/**"]
+coveragePathIgnorePatterns = [
+  "packages/web/**",
+  "**/dist/**",
+  "**/sim/**",
+  # Process-level code is exercised by tests that spawn Node (the production runtime); Bun cannot measure it.
+  "packages/control-plane/src/server.ts",
+  "packages/control-plane/src/main.ts",
+  "packages/control-plane/src/static.ts",
+  "packages/control-plane/src/log.ts",
+]

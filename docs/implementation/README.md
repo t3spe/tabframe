@@ -9,3 +9,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.1 | [wp-0.1-repo-scaffold.md](wp-0.1-repo-scaffold.md) | 2026-09-01 | Workspace, tooling, guard task, docs, license |
 | WP0.2 | [wp-0.2-protocol.md](wp-0.2-protocol.md) | 2026-09-01 | Envelope, M0 messages, close codes, limits, canonical codec |
 | WP0.3 | [wp-0.3-core.md](wp-0.3-core.md) | 2026-09-01 | Ledger, apply(event) → effects, liveness sweep, refusals, interfaces |
+| WP0.4 | [wp-0.4-control-plane.md](wp-0.4-control-plane.md) | 2026-09-01 | Process: two listeners, sockets → core, hooks, local store, session emulation |
