@@ -10,6 +10,9 @@ export default defineConfig({
   testDir: "./e2e",
   testMatch: /.*\.e2e\.ts$/,
   fullyParallel: false,
+  // The suites share one local control plane, and since WP2.3 an upload really launches: files
+  // run one at a time, in name order, so a launch in one suite is not a surprise in another.
+  workers: 1,
   retries: 0,
   reporter: [["list"]],
   timeout: 30_000,

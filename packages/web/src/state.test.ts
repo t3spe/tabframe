@@ -7,11 +7,14 @@ import {
   type ClusterState,
   emptyState,
   FLASH_MS,
+  HISTORY_CAP,
   hostCount,
   inFlightByNode,
   isFlashing,
   planTask,
+  programList,
   progress,
+  stageStrip,
   stageTasks,
   THROUGHPUT_WINDOW_MS,
   taskColor,
@@ -536,7 +539,7 @@ describe("cluster state: throughput, controls, and system events", () => {
   test("programs, rotation, and sleep are recorded; the activity list is capped", () => {
     const sc = new Script();
     sc.send({ t: "programAdded", program: HASH, name: "wordcount" });
-    expect(sc.state.programs.get(HASH)).toBe("wordcount");
+    expect(sc.state.programs.get(HASH)).toMatchObject({ name: "wordcount", view: null });
     sc.send({ t: "controlPlaneRotating", next: 3, reconnectAfterMs: 2_500 });
     expect(sc.state.rotation).toMatchObject({ next: 3, reconnectAfterMs: 2_500 });
     expect(sc.state.activity.at(-1)?.text).toContain("2.5 s");
@@ -565,5 +568,241 @@ describe("cluster state: throughput, controls, and system events", () => {
     expect(s.rotation?.next).toBe(3);
     expect(s.machine?.awake).toBe(true);
     expect(s.tasks.size).toBe(1);
+  });
+});
+
+describe("dashboard v2: programs, stages, attempts, failures", () => {
+  test("programs come from the snapshot with their views; programAdded fills in the rest", () => {
+    let s = applyMessage(emptyState(), {
+      t: "snapshot",
+      ...env,
+      seq: 1,
+      page: 0,
+      pages: 1,
+      nodes: [],
+      programs: [
+        {
+          bundle: HASH,
+          name: "mandelbrot",
+          view: "tiles",
+          description: null,
+          defaultParams: { preset: 0 },
+          addedAt: 1,
+        },
+      ],
+      execution: null,
+      queue: [],
+      machine: { awake: true, reason: null, redundancy: false, nextRotationAt: null, uptimeMs: 1 },
+      tasks: [],
+      at: 1,
+    });
+    expect(programList(s).map((p) => p.name)).toEqual(["mandelbrot"]);
+    expect(s.programs.get(HASH)?.defaultParams).toEqual({ preset: 0 });
+    s = applyMessage(s, { t: "programAdded", ...env, seq: 2, program: "b".repeat(64), name: "wc" });
+    expect(programList(s).map((p) => p.name)).toEqual(["mandelbrot", "wc"]);
+    expect(s.programs.get("b".repeat(64))?.view).toBeNull();
+    // An announcement for a known program keeps what the snapshot said.
+    s = applyMessage(s, { t: "programAdded", ...env, seq: 3, program: HASH, name: "mandelbrot" });
+    expect(s.programs.get(HASH)?.view).toBe("tiles");
+  });
+
+  test("the stage strip: a plan step, then stages with tallies and roots, then done", () => {
+    const sc = new Script();
+    sc.send({ t: "executionStarted", execution: executionView() });
+    expect(stageStrip(sc.state)).toEqual([{ kind: "plan", stage: 0, holders: [] }]);
+    sc.send({ t: "taskAssigned", taskId: "p1", nodeId: "n1", attempt: 1 });
+    expect(stageStrip(sc.state)).toEqual([{ kind: "plan", stage: 0, holders: ["n1"] }]);
+    sc.send({ t: "taskDone", taskId: "p1", nodeId: "n1", output: HASH, place: null, computeMs: 3 });
+    sc.send({
+      t: "stageStarted",
+      executionId: "e1",
+      stage: 0,
+      name: "map",
+      taskCount: 2,
+      canvas: null,
+      tasks: [taskView("t1", 0, { place: null }), taskView("t2", 1, { place: null })],
+    });
+    let strip = stageStrip(sc.state);
+    expect(strip).toHaveLength(1);
+    expect(strip[0]).toMatchObject({ kind: "stage", current: true });
+    expect(sc.state.execution?.stages[0]).toMatchObject({ name: "map", taskCount: 2, done: 0 });
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n1", attempt: 1 });
+    sc.send({ t: "taskDone", taskId: "t1", nodeId: "n1", output: HASH, place: null, computeMs: 5 });
+    expect(sc.state.execution?.stages[0]?.done).toBe(1);
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n2", attempt: 1 });
+    sc.send({ t: "taskDone", taskId: "t2", nodeId: "n2", output: HASH, place: null, computeMs: 5 });
+    sc.send({ t: "stageDone", executionId: "e1", stage: 0, root: "e".repeat(64) });
+    strip = stageStrip(sc.state);
+    expect(strip).toHaveLength(2);
+    expect(strip[0]).toMatchObject({
+      kind: "stage",
+      current: false,
+      stage: { status: "done", done: 2, root: "e".repeat(64) },
+    });
+    expect(strip[1]).toEqual({ kind: "plan", stage: 1, holders: [] });
+    sc.send({
+      t: "stageStarted",
+      executionId: "e1",
+      stage: 1,
+      name: "reduce",
+      taskCount: 1,
+      canvas: null,
+      tasks: [taskView("t3", 0, { stage: 1, place: null })],
+    });
+    expect(sc.state.execution?.stages.map((s) => s.name)).toEqual(["map", "reduce"]);
+    sc.send({ t: "taskAssigned", taskId: "t3", nodeId: "n1", attempt: 1 });
+    sc.send({ t: "taskDone", taskId: "t3", nodeId: "n1", output: HASH, place: null, computeMs: 5 });
+    sc.send({ t: "stageDone", executionId: "e1", stage: 1, root: "f".repeat(64) });
+    sc.send({ t: "executionDone", executionId: "e1", root: "f".repeat(64), followUp: null });
+    expect(sc.state.execution?.stages.every((s) => s.status === "done")).toBe(true);
+    expect(stageStrip(sc.state).every((e) => e.kind === "stage")).toBe(true);
+  });
+
+  test("a snapshot mid-execution knows the current stage and that earlier ones happened", () => {
+    const s = applyMessage(emptyState(), {
+      t: "snapshot",
+      ...env,
+      seq: 1,
+      page: 0,
+      pages: 1,
+      nodes: [],
+      execution: executionView({ stage: 2, stageName: "merge", taskCount: 1 }),
+      queue: [],
+      machine: { awake: true, reason: null, redundancy: false, nextRotationAt: null, uptimeMs: 1 },
+      tasks: [taskView("t9", 0, { stage: 2, status: "done", output: HASH, place: null })],
+      at: 1,
+    });
+    const stages = s.execution?.stages ?? [];
+    expect(stages.map((st) => st.known)).toEqual([false, false, true]);
+    expect(stages[2]).toMatchObject({ name: "merge", taskCount: 1, done: 1, status: "running" });
+  });
+
+  test("a task's history follows its attempts: twins, releases, retractions, failures", () => {
+    const sc = new Script();
+    sc.startStage(2);
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n1", attempt: 1 });
+    sc.send({ t: "taskSpeculated", taskId: "t1", nodeId: "n2" });
+    let t1 = sc.state.tasks.get("t1");
+    expect(t1?.history.map((a) => [a.attempt, a.nodeId, a.speculative, a.outcome])).toEqual([
+      [1, "n1", false, "running"],
+      [2, "n2", true, "running"],
+    ]);
+    // n2 answers first: its attempt is done, n1's is cancelled by the core.
+    sc.send({ t: "taskDone", taskId: "t1", nodeId: "n2", output: HASH, place: null, computeMs: 7 });
+    t1 = sc.state.tasks.get("t1");
+    expect(t1?.history.map((a) => a.outcome)).toEqual(["cancelled", "done"]);
+    expect(t1?.history[1]?.computeMs).toBe(7);
+    // A late duplicate from n1 agrees: verified, recorded even though its attempt was closed.
+    sc.send({ t: "taskVerified", taskId: "t1", nodeId: "n1" });
+    expect(sc.state.tasks.get("t1")?.history.at(-1)).toMatchObject({
+      nodeId: "n1",
+      outcome: "verified",
+    });
+    // The other task: taken back, then a lying twin forces a retraction, then it fails.
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n1", attempt: 1 });
+    sc.send({ t: "taskReassigned", taskId: "t2", fromNode: "n1" });
+    expect(sc.state.tasks.get("t2")?.history[0]?.outcome).toBe("released");
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n2", attempt: 2 });
+    sc.send({ t: "taskDone", taskId: "t2", nodeId: "n2", output: HASH, place: null, computeMs: 4 });
+    sc.send({ t: "taskMismatch", taskId: "t2", nodeId: "n1" });
+    const t2 = sc.state.tasks.get("t2");
+    expect(t2?.history.map((a) => [a.nodeId, a.outcome])).toEqual([
+      ["n1", "released"],
+      ["n2", "retracted"],
+      ["n1", "mismatch"],
+    ]);
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n2", attempt: 3 });
+    sc.send({ t: "taskFailed", taskId: "t2", reason: "trap: unreachable" });
+    expect(sc.state.tasks.get("t2")?.history.at(-1)?.outcome).toBe("failed");
+    expect(sc.state.tasks.get("t2")?.failure).toBe("trap: unreachable");
+    expect(sc.state.execution?.stages[0]).toMatchObject({ done: 1, failed: 1 });
+  });
+
+  test("history is capped and a snapshot row reconstructs running attempts from its holders", () => {
+    const sc = new Script();
+    sc.startStage(1);
+    for (let i = 1; i <= HISTORY_CAP + 4; i++) {
+      sc.send({ t: "taskAssigned", taskId: "t1", nodeId: `n${i}`, attempt: i });
+      sc.send({ t: "taskReassigned", taskId: "t1", fromNode: `n${i}` });
+    }
+    const t1 = sc.state.tasks.get("t1");
+    expect(t1?.history).toHaveLength(HISTORY_CAP);
+    expect(t1?.history.at(-1)?.attempt).toBe(HISTORY_CAP + 4);
+    const s = applyMessage(emptyState(), {
+      t: "snapshot",
+      ...env,
+      seq: 1,
+      page: 0,
+      pages: 1,
+      nodes: [],
+      execution: executionView({ taskCount: 1 }),
+      queue: [],
+      machine: { awake: true, reason: null, redundancy: false, nextRotationAt: null, uptimeMs: 1 },
+      tasks: [taskView("t1", 0, { status: "assigned", holders: ["n1", "n2"], attempts: 3 })],
+      at: 1,
+    });
+    expect(s.tasks.get("t1")?.history).toEqual([
+      expect.objectContaining({ attempt: 2, nodeId: "n1", speculative: false, fromSnapshot: true }),
+      expect.objectContaining({ attempt: 3, nodeId: "n2", speculative: true, fromSnapshot: true }),
+    ]);
+  });
+
+  test("the accepted result's log rides on taskDone when the wire carries it", () => {
+    const sc = new Script();
+    sc.startStage(1);
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n1", attempt: 1 });
+    sc.send({
+      t: "taskDone",
+      taskId: "t1",
+      nodeId: "n1",
+      output: HASH,
+      place: null,
+      computeMs: 4,
+      log: { text: "64 rows" },
+    });
+    expect(sc.state.tasks.get("t1")?.log).toEqual({ text: "64 rows" });
+  });
+
+  test("a queued execution that is dropped leaves the queue without a banner", () => {
+    const sc = new Script();
+    sc.startStage(1);
+    sc.send({
+      t: "executionQueued",
+      entry: { executionId: "e2", programName: "wordcount", human: true, queuedAt: 5 },
+    });
+    expect(sc.state.queue.map((q) => q.executionId)).toEqual(["e2"]);
+    sc.send({ t: "executionFailed", executionId: "e2", reason: "cancelled by an operator" });
+    expect(sc.state.queue).toEqual([]);
+    expect(sc.state.lastFailure).toBeNull();
+    expect(sc.state.execution?.phase).toBe("running");
+    expect(sc.state.activity.at(-1)?.text).toBe("wordcount failed: cancelled by an operator");
+  });
+
+  test("warnings attach to the execution; a failure is kept until the next success", () => {
+    const sc = new Script();
+    sc.startStage(1);
+    sc.send({
+      t: "executionWarning",
+      executionId: "e1",
+      code: "expired-root",
+      message: "the inherited filesystem is gone; starting from the bundle",
+    });
+    expect(sc.state.execution?.warnings).toEqual([
+      "the inherited filesystem is gone; starting from the bundle",
+    ]);
+    sc.send({ t: "executionWarning", executionId: "e9", code: "expired-root", message: "other" });
+    expect(sc.state.execution?.warnings).toHaveLength(1);
+    sc.send({ t: "executionFailed", executionId: "e1", reason: "write conflict at /x" });
+    expect(sc.state.lastFailure).toMatchObject({
+      executionId: "e1",
+      programName: "mandelbrot",
+      reason: "write conflict at /x",
+    });
+    expect(sc.state.execution?.stages[0]?.status).toBe("failed");
+    // The next execution starts; the failure stays visible until one succeeds.
+    sc.send({ t: "executionStarted", execution: executionView({ executionId: "e2" }) });
+    expect(sc.state.lastFailure?.executionId).toBe("e1");
+    sc.send({ t: "executionDone", executionId: "e2", root: null, followUp: null });
+    expect(sc.state.lastFailure).toBeNull();
   });
 });

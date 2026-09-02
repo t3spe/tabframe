@@ -3,16 +3,24 @@
 // Mandelbrot tiles from an in-memory store under their true hashes, so the dashboard's fetch and
 // re-hash path runs unchanged. Nothing here touches the network. Used for screenshots and for
 // looking at the dashboard without a cluster.
+//
+// The machine cycles through three programs: a Mandelbrot frame (the story of dashboard v1: a
+// straggler, a liar, a scrambled tile, kill half, a rotation), a word count (three stages, a
+// `bars` result, a filesystem to browse, logs on the tasks), and a broken program whose planner
+// traps (the failure banner). `?program=<name>` starts the cycle there; `?hold=1` pauses after the
+// first execution ends.
 import type {
   ControlPlaneToObserver,
   Counters,
   ExecutionView,
+  FsManifest,
   NodeView,
   PlaceView,
+  ProgramView,
   Snapshot,
   TaskView,
 } from "@tabframe/protocol";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
+import { canonicalStringify, encodeBars, PROTOCOL_VERSION } from "@tabframe/protocol";
 import { sha256Hex } from "@tabframe/store/hash";
 import type { ControlRequest } from "./observer.ts";
 
@@ -23,8 +31,70 @@ const ROWS = DEMO_CANVAS.h / DEMO_TILE;
 export const DEMO_TASKS = COLS * ROWS;
 const SLOTS = 2;
 const PROGRAM = "9c2f0d6b1e4a7c3f5d8b2a6e0c4f1d7b3a9e5c8f2b6d0a4e8c1f3b7d5a9e2c6f";
+const WORDCOUNT = "4d3b2a1908f7e6d5c4b3a2918070f6e5d4c3b2a1908f7e6d5c4b3a2918070f6e";
+const BROKEN = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
 /** The tile (in completion order) served under its true hash with the wrong bytes. */
 export const DEMO_SCRAMBLED_AT = 150;
+/** The programs the demo machine offers, in cycle order. */
+export const DEMO_CYCLE = ["mandelbrot", "wordcount", "mandelbrot", "broken"] as const;
+export type DemoProgram = (typeof DEMO_CYCLE)[number];
+
+export const DEMO_PROGRAMS: ProgramView[] = [
+  {
+    bundle: PROGRAM,
+    name: "mandelbrot",
+    view: "tiles",
+    description:
+      "640 tiles of 64×64 per 2048×1280 frame, smooth coloring, presets advance every frame.",
+    defaultParams: { preset: 0, palette: "ocean" },
+    addedAt: 0,
+  },
+  {
+    bundle: WORDCOUNT,
+    name: "wordcount",
+    view: "bars",
+    description: "Map, reduce, merge over /in/corpus.txt; the last task emits the global top-K.",
+    defaultParams: { k: 25, mapTasks: 8 },
+    addedAt: 0,
+  },
+  {
+    bundle: BROKEN,
+    name: "broken",
+    view: "text",
+    description: "A planner that traps on its first call, so the machine can show a failure.",
+    defaultParams: {},
+    addedAt: 0,
+  },
+];
+
+/** Moby-Dick's top words, as the real word count reports them. */
+const TOP_WORDS: Array<[string, number]> = [
+  ["the", 14529],
+  ["of", 6620],
+  ["and", 6446],
+  ["a", 4736],
+  ["to", 4625],
+  ["in", 4172],
+  ["that", 3085],
+  ["his", 2530],
+  ["it", 2522],
+  ["i", 2127],
+  ["he", 1896],
+  ["but", 1818],
+  ["as", 1741],
+  ["is", 1725],
+  ["with", 1722],
+  ["was", 1644],
+  ["for", 1642],
+  ["all", 1526],
+  ["this", 1440],
+  ["at", 1336],
+  ["whale", 1240],
+  ["by", 1229],
+  ["not", 1168],
+  ["from", 1104],
+  ["so", 1067],
+];
 
 export interface DemoClock {
   now(): number;
@@ -37,11 +107,15 @@ export interface DemoOptions {
   store: Map<string, Uint8Array>;
   /** 1 is real time. */
   speed?: number;
-  /** Pause (and stop the clock) once this many tiles of a frame are done; 0 never pauses. */
+  /** Pause (and stop the clock) once this many tasks of an execution are done; 0 never pauses. */
   pauseAtDone?: number;
   onPause?(): void;
   /** Virtual clock the page renders with; advanced by the script so flashes freeze on pause. */
   clock?: DemoClock;
+  /** Start the cycle at this program instead of the first Mandelbrot frame. */
+  startWith?: DemoProgram;
+  /** Pause once the first execution has ended (done or failed), so its result stays on screen. */
+  holdAfterFirst?: boolean;
 }
 
 export interface DemoHandle {
@@ -154,6 +228,19 @@ export function centreOut(): number[] {
   return idx;
 }
 
+const utf8 = new TextEncoder();
+
+/** The word count's staged outputs: partition counts as text, then the top-K as a bars payload. */
+function wordcountStage(stage: number, index: number, count: number): Uint8Array {
+  if (stage === 2) return encodeBars(TOP_WORDS.map(([label, value]) => ({ label, value })));
+  const words = TOP_WORDS.filter((_, i) => i % count === index);
+  const lines = words.map(([w, n]) => `${w} ${stage === 0 ? Math.round(n / 8) : n}`);
+  return utf8.encode(`${lines.join("\n")}\n`);
+}
+
+const CORPUS_HEAD =
+  "Call me Ishmael. Some years ago—never mind how long precisely—having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world.\n";
+
 export function startDemo(opts: DemoOptions): DemoHandle {
   const speed = opts.speed ?? 1;
   const pauseAtDone = opts.pauseAtDone ?? 0;
@@ -170,8 +257,13 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   let redundancy = false;
   let done = 0;
   let execution: ExecutionView | null = null;
+  let program: DemoProgram = "mandelbrot";
+  let cycleAt = Math.max(0, DEMO_CYCLE.indexOf(opts.startWith ?? "mandelbrot"));
+  let executionsEnded = 0;
   let tasks: DemoTask[] = [];
   let pending: number[] = [];
+  /** The filesystem as the stages fold it, for the word count's roots. */
+  let files: FsManifest["files"] = {};
   const tally = { reassigned: 0, speculated: 0, verified: 0, mismatched: 0 };
   const nodes = new Map<string, DemoNode>();
   const beats = new Set<number>();
@@ -195,6 +287,13 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       Math.max(0, ms / speed),
     );
     timers.add(handle);
+  };
+
+  /** Put bytes in the store under their true hash; the dashboard fetches and re-hashes them. */
+  const put = async (bytes: Uint8Array): Promise<string> => {
+    const hash = await sha256Hex(bytes);
+    opts.store.set(hash, bytes);
+    return hash;
   };
 
   const node = (
@@ -255,6 +354,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
           ? {
               ...base,
               nodes: [...nodes.values()].map(view),
+              programs: DEMO_PROGRAMS.map((p) => ({ ...p, addedAt: vnow - 41 * 60_000 })),
               execution: execution ? { ...execution, counters: counters() } : null,
               queue: [
                 {
@@ -290,9 +390,62 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   const alive = (): DemoNode[] => [...nodes.values()].filter((n) => n.health !== "gone");
   const preset = (): Preset => PRESETS[frame % PRESETS.length] as Preset;
 
+  // ---- executions ------------------------------------------------------------------------------
+
+  const startNext = (): void => {
+    program = DEMO_CYCLE[cycleAt % DEMO_CYCLE.length] as DemoProgram;
+    cycleAt += 1;
+    if (program === "mandelbrot") startFrame();
+    else if (program === "wordcount") startWordcount();
+    else startBroken();
+  };
+
+  /** The planner runs as a task on the first live node, like the real machine's (D6). */
+  const plan = (stage: number, onDone: (planId: string) => void): void => {
+    const planId = `t${++taskCounter}`;
+    const planner = alive()[0];
+    if (!planner) return;
+    after(200, () =>
+      emit({ t: "taskAssigned", taskId: planId, nodeId: planner.nodeId, attempt: 1 }),
+    );
+    after(700, () => {
+      planner.tasksDone += 1;
+      emit({
+        t: "taskDone",
+        taskId: planId,
+        nodeId: planner.nodeId,
+        output: stage === 0 ? PROGRAM : WORDCOUNT,
+        place: null,
+        computeMs: 412,
+        log: {
+          text: `plan(${stage}): ${program === "mandelbrot" ? "640 tiles, centre out" : program === "wordcount" ? ["8 map tasks over the corpus", "8 reduce tasks, one per partition", "done: no follow-up"][stage] : ""}`,
+        },
+      });
+      onDone(planId);
+    });
+  };
+
+  const stageTasks = (executionId: string, stage: number, count: number, placed: boolean): void => {
+    tasks = Array.from({ length: count }, (_, index) => ({
+      taskId: `t${++taskCounter}`,
+      executionId,
+      stage,
+      index,
+      kind: "run" as const,
+      status: "pending" as const,
+      holders: [],
+      attempts: 0,
+      output: null,
+      place: placed ? place(index) : null,
+      contested: false,
+      running: new Map<string, number>(),
+    }));
+    pending = placed ? centreOut() : tasks.map((t) => t.index);
+    done = 0;
+  };
+
   const startFrame = (): void => {
     frame += 1;
-    done = 0;
     beats.clear();
     tally.reassigned = tally.speculated = tally.verified = tally.mismatched = 0;
     const executionId = `e${++executionCounter}`;
@@ -317,43 +470,13 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       startedAt: vnow,
     };
     tasks = [];
+    files = {};
     after(300, () => {
       if (!execution) return;
       emit({ t: "executionStarted", execution: { ...execution } });
-      const planId = `t${++taskCounter}`;
-      const planner = alive()[0];
-      if (planner) {
-        after(200, () =>
-          emit({ t: "taskAssigned", taskId: planId, nodeId: planner.nodeId, attempt: 1 }),
-        );
-        after(700, () =>
-          emit({
-            t: "taskDone",
-            taskId: planId,
-            nodeId: planner.nodeId,
-            output: PROGRAM,
-            place: null,
-            computeMs: 412,
-          }),
-        );
-      }
-      after(800, () => {
+      plan(0, () => {
         if (!execution) return;
-        tasks = Array.from({ length: DEMO_TASKS }, (_, index) => ({
-          taskId: `t${++taskCounter}`,
-          executionId,
-          stage: 0,
-          index,
-          kind: "run" as const,
-          status: "pending" as const,
-          holders: [],
-          attempts: 0,
-          output: null,
-          place: place(index),
-          contested: false,
-          running: new Map<string, number>(),
-        }));
-        pending = centreOut();
+        stageTasks(executionId, 0, DEMO_TASKS, true);
         execution = { ...execution, stageName: "render", taskCount: DEMO_TASKS };
         emit({
           t: "stageStarted",
@@ -368,6 +491,147 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       });
     });
   };
+
+  const WC_STAGES: Array<{ name: string; count: number }> = [
+    { name: "map", count: 8 },
+    { name: "reduce", count: 8 },
+    { name: "merge", count: 1 },
+  ];
+
+  const startWordcount = (): void => {
+    tally.reassigned = tally.speculated = tally.verified = tally.mismatched = 0;
+    const executionId = `e${++executionCounter}`;
+    emit({
+      t: "executionQueued",
+      entry: { executionId, programName: "wordcount", human: true, queuedAt: vnow },
+    });
+    execution = {
+      executionId,
+      program: WORDCOUNT,
+      programName: "wordcount",
+      status: "running",
+      human: true,
+      view: "bars",
+      params: { k: 25, mapTasks: 8 },
+      stage: 0,
+      stageName: "",
+      taskCount: 0,
+      canvas: null,
+      root: null,
+      counters: counters(),
+      startedAt: vnow,
+    };
+    tasks = [];
+    // The bundle's own files are the first root (design §5.4).
+    void Promise.all([
+      put(utf8.encode("\0asm\x01\0\0\0 (demo module bytes)")),
+      put(
+        utf8.encode(
+          JSON.stringify({
+            name: "wordcount",
+            view: "bars",
+            defaultParams: { k: 25, mapTasks: 8 },
+          }),
+        ),
+      ),
+      put(utf8.encode(CORPUS_HEAD.repeat(6))),
+    ]).then(([module, manifest, corpus]) => {
+      files = {
+        "/program.wasm": { hash: module, size: 34 },
+        "/manifest.json": { hash: manifest, size: 62 },
+        "/in/corpus.txt": { hash: corpus, size: CORPUS_HEAD.length * 6 },
+      };
+      void put(utf8.encode(canonicalStringify({ version: 1, files }))).then((root) => {
+        if (!execution || execution.executionId !== executionId) return;
+        execution = { ...execution, root };
+        after(300, () => {
+          if (!execution) return;
+          emit({ t: "executionStarted", execution: { ...execution } });
+          emit({
+            t: "executionWarning",
+            executionId,
+            code: "expired-root",
+            message: "the filesystem inherited from e38 is gone; starting from the bundle",
+          });
+          wordcountStageAt(executionId, 0);
+        });
+      });
+    });
+  };
+
+  const wordcountStageAt = (executionId: string, stage: number): void => {
+    plan(stage, () => {
+      if (!execution || execution.executionId !== executionId) return;
+      const spec = WC_STAGES[stage];
+      if (!spec) return;
+      stageTasks(executionId, stage, spec.count, false);
+      execution = { ...execution, stage, stageName: spec.name, taskCount: spec.count };
+      emit({
+        t: "stageStarted",
+        executionId,
+        stage,
+        name: spec.name,
+        taskCount: spec.count,
+        canvas: null,
+        tasks: tasks.map(taskView),
+      });
+      fill();
+    });
+  };
+
+  const startBroken = (): void => {
+    const executionId = `e${++executionCounter}`;
+    emit({
+      t: "executionQueued",
+      entry: { executionId, programName: "broken", human: true, queuedAt: vnow },
+    });
+    execution = {
+      executionId,
+      program: BROKEN,
+      programName: "broken",
+      status: "running",
+      human: true,
+      view: "text",
+      params: {},
+      stage: 0,
+      stageName: "",
+      taskCount: 0,
+      canvas: null,
+      root: BROKEN,
+      counters: counters(),
+      startedAt: vnow,
+    };
+    tasks = [];
+    after(300, () => {
+      if (!execution) return;
+      emit({ t: "executionStarted", execution: { ...execution } });
+      const planId = `t${++taskCounter}`;
+      const planner = alive()[0];
+      if (!planner) return;
+      after(200, () =>
+        emit({ t: "taskAssigned", taskId: planId, nodeId: planner.nodeId, attempt: 1 }),
+      );
+      after(900, () => {
+        const reason = "trap: unreachable (assembly/index.ts:12:3)";
+        emit({ t: "taskFailed", taskId: planId, reason });
+        emit({ t: "executionFailed", executionId, reason: `task ${planId} failed: ${reason}` });
+        execution = null;
+        ended();
+      });
+    });
+  };
+
+  /** An execution ended one way or the other: hold if asked, else the next program after a beat. */
+  const ended = (): void => {
+    executionsEnded += 1;
+    if (opts.holdAfterFirst && executionsEnded === 1) {
+      pause();
+      return;
+    }
+    after(2_500, startNext);
+  };
+
+  // ---- tasks -----------------------------------------------------------------------------------
 
   const assign = (task: DemoTask, n: DemoNode, speculative: boolean): void => {
     task.attempts += 1;
@@ -399,15 +663,39 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   };
 
   const bytesFor = (task: DemoTask, scramble: boolean): Uint8Array => {
+    if (program === "wordcount") return wordcountStage(task.stage, task.index, tasks.length);
     const bytes = renderTile(task.index % COLS, Math.floor(task.index / COLS), preset());
     if (scramble) for (let i = 0; i < bytes.length; i += 4) bytes[i] = 255 - (bytes[i] as number);
     return bytes;
   };
 
+  /** A log line per task, so the detail panel has something to show; the merge's goes to the store. */
+  const logFor = async (
+    task: DemoTask,
+    ms: number,
+  ): Promise<{ text: string } | { hash: string } | null> => {
+    if (program === "wordcount") {
+      if (task.stage === 2) {
+        return {
+          hash: await put(
+            utf8.encode(`merge: read 8 partitions\ntop-25 of 17358 distinct words\n${ms} ms\n`),
+          ),
+        };
+      }
+      return {
+        text:
+          task.stage === 0
+            ? `map ${task.index}: bytes ${task.index * 152_541}..${(task.index + 1) * 152_541} → 8 partitions`
+            : `reduce ${task.index}: merged 8 inputs for partition ${task.index}`,
+      };
+    }
+    return task.index % 50 === 0 ? { text: `tile ${task.index}: ${ms} ms` } : null;
+  };
+
   const complete = (task: DemoTask, n: DemoNode, attempt: number): void => {
     if (task.running.get(n.nodeId) !== attempt) return;
     const bytes = bytesFor(task, false);
-    void sha256Hex(bytes).then((hash) => {
+    void sha256Hex(bytes).then(async (hash) => {
       if (paused || task.running.get(n.nodeId) !== attempt) return;
       task.running.delete(n.nodeId);
       const ms = Math.round(duration(n));
@@ -422,9 +710,12 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       if (task.status !== "assigned") return;
       // One tile per frame is served under the right hash with the wrong bytes: the dashboard
       // must catch that on its own.
-      opts.store.set(hash, done === DEMO_SCRAMBLED_AT - 1 ? bytesFor(task, true) : bytes);
+      const scramble = program === "mandelbrot" && done === DEMO_SCRAMBLED_AT - 1;
+      opts.store.set(hash, scramble ? bytesFor(task, true) : bytes);
       task.status = "done";
       task.output = hash;
+      const log = await logFor(task, ms);
+      if (paused) return;
       emit({
         t: "taskDone",
         taskId: task.taskId,
@@ -432,14 +723,15 @@ export function startDemo(opts: DemoOptions): DemoHandle {
         output: hash,
         place: task.place,
         computeMs: ms,
+        ...(log ? { log } : {}),
       });
       done += 1;
-      beat();
+      if (program === "mandelbrot") beat();
       if (pauseAtDone > 0 && done >= pauseAtDone) {
         pause();
         return;
       }
-      if (done >= DEMO_TASKS) finish();
+      if (done >= tasks.length) finish();
       else fill();
     });
   };
@@ -474,7 +766,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   const soloTaskOn = (nodeId: string): DemoTask | undefined =>
     tasks.find((t) => t.status === "assigned" && t.running.has(nodeId) && t.running.size === 1);
 
-  /** The story, keyed by tiles done in the frame. */
+  /** The Mandelbrot story, keyed by tiles done in the frame. */
   const beat = (): void => {
     once(40, () => {
       // A straggler: n3 slows down, its task gets a speculative twin on a core, both agree.
@@ -580,19 +872,46 @@ export function startDemo(opts: DemoOptions): DemoHandle {
     });
   };
 
+  /** The stage's outputs land at /out/<stage>/<index>; the folded manifest is the new root. */
+  const fold = async (): Promise<string> => {
+    const next: FsManifest["files"] = { ...files };
+    for (const t of tasks) {
+      if (t.output)
+        next[`/out/${t.stage}/${t.index}`] = {
+          hash: t.output,
+          size: opts.store.get(t.output)?.length ?? 0,
+        };
+    }
+    files = next;
+    return put(utf8.encode(canonicalStringify({ version: 1, files: next })));
+  };
+
   const finish = (): void => {
     if (!execution) return;
-    const root = PROGRAM.split("").reverse().join("");
-    emit({ t: "stageDone", executionId: execution.executionId, stage: 0, root });
-    after(300, () => {
-      if (!execution) return;
-      emit({
-        t: "executionDone",
-        executionId: execution.executionId,
-        root,
-        followUp: { preset: (frame + 1) % PRESETS.length, palette: "ocean" },
+    const exec = execution;
+    void fold().then((root) => {
+      if (paused || execution !== exec) return;
+      emit({ t: "stageDone", executionId: exec.executionId, stage: exec.stage, root });
+      execution = { ...exec, root };
+      if (program === "wordcount" && exec.stage < WC_STAGES.length - 1) {
+        after(300, () => wordcountStageAt(exec.executionId, exec.stage + 1));
+        return;
+      }
+      after(300, () => {
+        if (!execution) return;
+        emit({
+          t: "executionDone",
+          executionId: exec.executionId,
+          root,
+          followUp:
+            program === "mandelbrot"
+              ? { preset: (frame + 1) % PRESETS.length, palette: "ocean" }
+              : program === "wordcount"
+                ? { k: 50, mapTasks: 8 }
+                : null,
+        });
+        ended();
       });
-      after(2_500, startFrame);
     });
   };
 
@@ -613,8 +932,12 @@ export function startDemo(opts: DemoOptions): DemoHandle {
         if (n) after(duration(n), () => complete(t, n, attempt));
       }
     }
+    if (!execution) {
+      after(600, startNext);
+      return;
+    }
     fill();
-    if (pending.length === 0 && done >= DEMO_TASKS) finish();
+    if (pending.length === 0 && done >= tasks.length && tasks.length > 0) finish();
   };
 
   const control = (c: ControlRequest): void => {
@@ -657,14 +980,16 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       case "skip":
       case "killExecution": {
         if (!execution) return;
-        const reason = c.t === "restart" ? "restarted" : c.t === "skip" ? "skipped" : "cancelled";
+        const reason =
+          c.t === "restart" ? "restarted" : c.t === "skip" ? "skipped" : "cancelled by an operator";
         for (const h of timers) clearTimeout(h);
         timers = new Set();
         for (const t of tasks) t.running.clear();
         emit({ t: "executionFailed", executionId: execution.executionId, reason });
         emit({ t: "controlApplied", op: c.t, nodeIds: [] });
         execution = null;
-        after(600, startFrame);
+        if (c.t === "restart") cycleAt = Math.max(0, cycleAt - 1);
+        after(600, startNext);
         return;
       }
       case "setRedundancy":
@@ -672,7 +997,33 @@ export function startDemo(opts: DemoOptions): DemoHandle {
         emit({ t: "controlApplied", op: "setRedundancy", nodeIds: [] });
         fill();
         return;
-      case "launch":
+      case "launch": {
+        // A launch from the programs panel: queue it, and run it next.
+        const p = DEMO_PROGRAMS.find((x) => x.bundle === c.bundle);
+        if (!p) {
+          opts.apply({
+            t: "error",
+            v: PROTOCOL_VERSION,
+            gen,
+            code: "launch-refused",
+            message: "unknown program",
+          });
+          return;
+        }
+        const at = DEMO_CYCLE.indexOf(p.name as DemoProgram);
+        if (at >= 0) cycleAt = at;
+        emit({
+          t: "executionQueued",
+          entry: {
+            executionId: `e${executionCounter + 1}`,
+            programName: p.name,
+            human: true,
+            queuedAt: vnow,
+          },
+        });
+        if (!execution) after(400, startNext);
+        return;
+      }
       case "runFollowUp":
         opts.apply({
           t: "error",
@@ -696,7 +1047,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
     nodes.set(n.nodeId, n);
 
   snapshot();
-  after(400, startFrame);
+  after(400, startNext);
 
   return {
     control,

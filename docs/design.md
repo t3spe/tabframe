@@ -765,4 +765,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
   the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
   but has no fleet (§6.8, §12).
+- **2026-09-02 (WP2.5).** The `taskDone` observer event and the task view carry an optional
+  `log` (inline text or a blob hash), the shape the node already reports to the control plane; the
+  dashboard renders it when present and says plainly when the wire did not carry one (§8.3). The
+  `bars` view draws the single output of the last stage; a last stage with several outputs is
+  listed in the files panel instead (§5.1). The files panel browses any root the execution has had,
+  not only the current one; roots are the stage strip's links (§5.4). The browser suites run on one
+  Playwright worker: they share a local control plane and, since WP2.3, an upload really launches
+  (§12).
 
