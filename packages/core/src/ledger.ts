@@ -160,8 +160,15 @@ export interface ProgramRecord {
   addedAt: number;
 }
 
+/**
+ * Where a control plane is in its life (design §9.4). Only an `active` one assigns work; a
+ * `handing-over` one has given its ledger away and is waiting to be drained.
+ */
+export type Phase = "active" | "handing-over" | "drained";
+
 export interface Meta {
   generation: number;
+  phase: Phase;
   /** Base URL nodes and observers fetch blobs from; handed out in welcome. */
   storeBase: string;
   /** Monotonic event sequence, incremented for every event emitted to observers. */
@@ -244,6 +251,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       redundancy: false,
       startedAt: now,
       lastInteractionAt: now,
+      phase: "active",
       loopBackoffMs: 0,
       loopPausedUntil: 0,
     },

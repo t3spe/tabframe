@@ -4,9 +4,12 @@ import type { Socket } from "node:net";
 import {
   adoptLedger,
   apply,
+  beginHandover,
   type Clock,
   createLedger,
   DEFAULT_TASK_LIMITS,
+  deserializeLedger,
+  drain,
   type Effect,
   type Event,
   type Ledger,
@@ -33,6 +36,20 @@ import { type SnapshotStatus, Snapshotter } from "./snapshotter.ts";
 import { readBody, send, sendJson, serveStatic } from "./static.ts";
 
 const MAX_BLOB_BYTES = 8 * 1024 * 1024;
+/** A serialized ledger: tasks carry base64 inputs, so it is bigger than the blob cap. */
+const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
+/** Private routes that require the fleet secret from the run payload (design §8). */
+const FLEET_ROUTES = new Set(["/handover", "/adopt", "/drain", "/snapshot", "/diag"]);
+
+function parseNext(body: Uint8Array | null): number | null {
+  if (!body || body.length === 0) return null;
+  try {
+    const v = (JSON.parse(new TextDecoder().decode(body)) as { next?: unknown }).next;
+    return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface Address {
   host: string;
@@ -48,6 +65,8 @@ export interface ControlPlane {
   readonly ledger: Ledger | null;
   readonly store: StoreDriver;
   readonly snapshots: SnapshotStatus;
+  /** The rotation phase of this control plane (design §9.4). */
+  readonly phase: "neutral" | "active" | "handing-over" | "drained";
   /** Resolves when seeding has run for the current ledger (tests wait on it). */
   seeded(): Promise<void>;
   /** Write a snapshot now if the ledger changed; the key written, or null. */
@@ -79,6 +98,7 @@ export async function createControlPlane(
   let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
 
+  const rng = () => Math.random();
   const conns = new Map<string, WebSocket>();
   let connCounter = 0;
   const wss = new WebSocketServer({ noServer: true, maxPayload: LIMITS.maxMessageBytes });
@@ -251,7 +271,8 @@ export async function createControlPlane(
   function onUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
     const path = new URL(req.url ?? "/", "http://x").pathname;
     const connRole = path === "/node" ? "node" : path === "/observer" ? "observer" : null;
-    if (!connRole || role !== "control-plane") {
+    // A control plane that has handed over takes no new clients; they belong to its successor.
+    if (!connRole || role !== "control-plane" || ledger?.meta.phase !== "active") {
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -400,10 +421,75 @@ export async function createControlPlane(
     }
   }
 
+  /**
+   * The fleet's routes carry the secret from the run payload (design §8, §9.3). In local mode
+   * there is no payload and no secret, so they are open — the private port is not routable from a
+   * browser in either case, and locally it is bound to the loopback address.
+   */
+  function fleetAuthorized(req: IncomingMessage): boolean {
+    if (!fleetSecret) return true;
+    const header = req.headers["x-tabframe-fleet-secret"];
+    const given = Array.isArray(header) ? header[0] : header;
+    if (typeof given !== "string" || given.length !== fleetSecret.length) return false;
+    // Constant-time enough for a secret compared a handful of times an hour.
+    let diff = 0;
+    for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ fleetSecret.charCodeAt(i);
+    return diff === 0;
+  }
+
   async function handlePrivate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname.startsWith(HOOK_PREFIX))
       return handleHook(hookHost, url.pathname.slice(HOOK_PREFIX.length), req, res);
+    if (FLEET_ROUTES.has(url.pathname) && !fleetAuthorized(req)) {
+      log("fleet-unauthorized", { path: url.pathname });
+      return sendJson(res, 403, { error: "fleet secret required" });
+    }
+    if (url.pathname === "/handover" && req.method === "POST") {
+      // Step 2 of a rotation: stop assigning, pause intake, hand the ledger over (design §9.4).
+      if (!ledger || role !== "control-plane") return sendJson(res, 409, { error: "no ledger" });
+      const { json, generation: gen } = beginHandover(ledger);
+      await snapshotNow("handover");
+      log("handover", { generation: gen, nodes: ledger.nodes.size, bytes: json.length });
+      return send(res, 200, "application/json", `{"generation":${gen},"ledger":${json}}`);
+    }
+    if (url.pathname === "/adopt" && req.method === "POST") {
+      // Step 3: become the active control plane with the ledger the previous one handed over.
+      const body = await readBody(req, MAX_LEDGER_BYTES);
+      if (!body) return sendJson(res, 413, { error: "ledger too large" });
+      let adopted: Ledger;
+      try {
+        adopted = deserializeLedger(new TextDecoder().decode(body));
+      } catch (err) {
+        log("adopt-failed", { error: String(err) });
+        return sendJson(res, 400, { error: "unreadable ledger" });
+      }
+      // A ledger from a *later* generation would be a rollback; anything at or before ours is
+      // either the handover we were launched for or a retry of it, and adopting twice is safe.
+      if (adopted.meta.generation > generation) {
+        log("adopt-refused", { theirs: adopted.meta.generation, ours: generation });
+        return sendJson(res, 409, { error: "that ledger is newer than this control plane" });
+      }
+      const gen = generation;
+      becomeControlPlane(gen, adopted.meta.storeBase || storeBase, adopted);
+      await seeding;
+      dispatch({ kind: "tick" });
+      log("adopt", { generation: gen, nodes: adopted.nodes.size });
+      return sendJson(res, 200, { adopted: true, generation: gen });
+    }
+    if (url.pathname === "/drain" && req.method === "POST") {
+      // Step 5: let every client go with a jittered reconnect delay (design §8.4, §9.4).
+      if (!ledger || role !== "control-plane") return sendJson(res, 409, { error: "no ledger" });
+      const body = await readBody(req, 4096);
+      const next = parseNext(body) ?? generation + 1;
+      const clients = ledger.conns.size;
+      execute(drain(ledger, next, rng));
+      for (const ws of conns.values()) ws.close(1001, "rotating");
+      conns.clear();
+      await snapshotNow("drain");
+      log("drain", { next, clients });
+      return sendJson(res, 200, { drained: clients, next });
+    }
     if (url.pathname === "/health") {
       return sendJson(res, 200, {
         ok: true,
@@ -447,6 +533,9 @@ export async function createControlPlane(
   }
 
   return {
+    get phase() {
+      return role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral";
+    },
     get publicAddress() {
       return publicAddress;
     },
