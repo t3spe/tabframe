@@ -1,0 +1,17 @@
+{
+  "name": "@tabframe/fleet",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Fleet functions: session (token vending, heal) and rotate (control-plane lifecycle), plus operator scripts",
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "3.1124.0",
+    "@aws-sdk/client-lambda": "3.1124.0",
+    "@aws-sdk/client-lambda-microvms": "3.1124.0",
+    "@aws-sdk/client-secrets-manager": "3.1124.0",
+    "@aws-sdk/client-ssm": "3.1124.0"
+  },
+  "devDependencies": {
+    "aws-sdk-client-mock": "4.1.0"
+  }
+}
