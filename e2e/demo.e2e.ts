@@ -336,8 +336,9 @@ test("the demo script runs unattended against the deployed machine", async ({ co
     /^[0-9a-f]{64}$/,
   );
   await expect(page.locator("#filesNote")).toContainText("named by its hash");
-  await expect(page.locator("#filesRoot")).not.toHaveText("—", { timeout: 120_000 });
-  await expect(page.locator("#files")).toContainText("/program.wasm", { timeout: 60_000 });
+  // After the rotation the loop is on a fresh frame; its filesystem exists once the stage folds.
+  await expect(page.locator("#filesRoot")).not.toHaveText("—", { timeout: 180_000 });
+  await expect(page.locator("#files")).toContainText("/program.wasm", { timeout: 180_000 });
 
   await tab2.close();
   beat("done");

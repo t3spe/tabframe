@@ -129,8 +129,10 @@ build went well past that ceiling by deliberate choice: an evening of brainstorm
 design walkthrough (the decisions D1–D20 and the design record), and then the build itself — M0
 to M5 across one long session from the evening of 2026-09-01 through 2026-09-02, every milestone
 verified against AWS. I kept a time log with two columns because the honest number has two parts.
-`docs/timelog.md` records **<<total hours>>** of wall-clock session time in total, of which
-**<<developer hours>>** were my own hours at the keyboard.
+`docs/timelog.md` records **about 33 hours** of session time in total (measured from the transcripts;
+the build session is still open as this is written and the log is finalised with it), plus eight and a
+half hours of worker sessions that ran in parallel, of which **<<developer hours>>** were my own hours
+at the keyboard.
 
 The rest was an AI coding agent working under my direction: the design walkthrough, the
 decisions register D1–D20, the scoping calls above, and every gate — deploys, the budget, what

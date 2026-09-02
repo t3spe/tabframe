@@ -106,6 +106,14 @@ the demo and it is the platform's, not the machine's; an EC2 control plane (WP4.
 
 The demo runs against AWS only; CI runs the local suites and skips this one.
 
+**Open observation.** In one later run the page showed the *asleep* banner ("ten minutes with
+nobody watching") for a few seconds at the very start of the rotation beat, before the rotating
+banner, with two dashboards connected; a direct probe of a rotation (`packages/infra/scripts/
+rotation-probe.ts`) shows the successor's first snapshot awake. The suspects are the sleep clock
+during the seconds of a rotation and a successor that had been launched by an earlier, interrupted
+rotation (the rotate function finishes such a rotation rather than launching anew). It heals itself
+on the next snapshot and the suite tolerates it; it is tracked in the runbook.
+
 ## Tests
 
 - `packages/core/src/fleet.test.ts`: a core that never says hello is terminated after the link
