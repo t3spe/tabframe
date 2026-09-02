@@ -144,18 +144,25 @@ Each item is a control-plane fix in this branch with a focused test in `packages
 
 ## Evidence
 
-- `bun test packages/core`: 52 tests (45 core, 7 simulation), among them the new ones: solicited
+- `bun test packages/core`: 84 tests after the merge with main (77 core, 7 simulation), among
+  them the new ones: solicited
   messages under the rate limit; the second attempt never goes to the node that answered; a node
   cannot agree with itself; the vote counts nodes; the vote's outcome reaches nodes and observers;
   a mismatch after the fold withdraws nothing; snapshot pages of a full frame of done tiles stay
   under the cap; a stale result closes no newer attempt; a contested task goes to a node that has
-  not reported; a tie starts another round. Full workspace: {{WORKSPACE_TESTS}} tests
+  not reported; a tie starts another round. Full workspace: 351 tests
   pass; all three `tsc` projects clean; Biome clean.
 - `node packages/core/sim/run.ts`: normal scenario, seeds 1–120 on 32- and 64-tile subsets, all
   pass (about a minute in total); long scenario, seeds 1–25 on the 64-tile subset (180 s);
   whole 640-tile frames, seeds 1–3 (239 s wall, 1 295 real task computations, 3 frames per seed).
-- Long scenario, seeds 1–1000 on the 64-tile subset, and seeds 1–10 over whole frames: in
-  progress at the time of this commit; the numbers land in the follow-up commit.
+- Long scenario over whole frames, seeds 1–3: pass (733 s wall; 12–16 frames and 17–19 thousand
+  attempts per seed, 26 nodes at peak). The default `mise run sim` (seeds 1–3, whole frames):
+  pass, 243 s.
+- Long scenario, seeds 1–1000 on the 64-tile subset, six shards in parallel on the final core
+  before the merge with main: 441 seeds passed and 0 failed when this branch was pushed
+  (the run was still going; about eight seconds a seed per shard). After the merge, seeds 1–40 of
+  the normal scenario and the six long seeds that had failed at some point (9, 23, 144, 403, 612,
+  845) were rerun and pass.
 - A typical line: `seed 24 ok frames 48 done, 4 cancelled, 0 failed nodes 216 joins (peak 28), 34
   leaves, 54 crashes, 37 freezes tasks 5015 attempts, 3360 done, 44 reassigned, 155 speculated,
   6 verified, 0 mismatched closes declaredGone 109 lies 6 told, 5 accepted virtual 5.0 min, wall
