@@ -841,4 +841,9 @@ Dated deviations discovered while building, recorded before the code landed (pla
   ceiling and is never replaced; the simulation models the poller the process still needs.
   `checkInvariants` gained one invariant: a core's node link names a live node of that core's own
   host (§6.10).
+- **2026-09-02 (WP3.3 follow-up).** The process polls which of the ledger's cores are gone
+  (`TABFRAME_CORE_CHECK_MS`, 30 s) and reports `coreGone`, closing the gap the churn simulation
+  found: the policy counts records, and a dead MicroVM kept its record until the age ceiling
+  (§6.8). A fresh ledger's clocks now start at the real time; with the zero default a new control
+  plane believed nobody had watched it for decades and started asleep.
 

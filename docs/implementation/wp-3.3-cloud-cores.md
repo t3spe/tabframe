@@ -64,7 +64,12 @@ Suite: 426 tests, 94 % of lines; lint and the three type-check projects green.
   ledger plus the pending record in the pointer cover the failure paths we have. If a control
   plane dies without draining, its cores keep dialling the session function and rejoin the
   successor as ordinary nodes — the successor inherits their ids from the snapshot.
-- Watching a core's MicroVM state from the control plane (the `gone` query exists but nothing
-  polls it) is left to M4's observability pass; a core that dies simply stops heartbeating, and
-  its slot is refilled once its record is cleared by the ceiling rule or a handover.
+- ~~Watching a core's MicroVM state from the control plane~~ Done in the follow-up on
+  2026-09-02 after the churn simulation showed the gap: the process now polls `gone()` every
+  `TABFRAME_CORE_CHECK_MS` (30 s) and dispatches `coreGone` for a MicroVM that is no longer
+  serving, so the policy replaces it. `packages/control-plane/src/core-reaper.test.ts` drives the
+  whole loop against a fake fleet: two launched a second apart, one declared dead, forgotten and
+  replaced. The same test found that `createLedger` defaults its clocks to zero and the process
+  never passed one, so a fresh control plane was born asleep until its first observer; it now
+  starts its clocks at the real time.
 - A real rotation with cores in flight, and the churn numbers, are WP3.5.

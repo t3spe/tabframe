@@ -149,7 +149,9 @@ export async function createControlPlane(
       adopted.meta.storeBase = base;
       ledger = adopted;
     } else {
-      ledger = createLedger(gen, { storeBase: base, cloudCores: canRunCores() });
+      // The ledger's clocks start now: with the default of zero a fresh control plane believes
+      // nobody has watched it for fifty years and is born asleep (found by the reaper test).
+      ledger = createLedger(gen, { storeBase: base, cloudCores: canRunCores() }, clock.now());
     }
     ledger.config.cloudCores = canRunCores();
     if (canRunCores() && !cores) {
@@ -215,6 +217,22 @@ export async function createControlPlane(
   const timer = setInterval(() => {
     if (ledger) dispatch({ kind: "tick" });
   }, config.tickMs);
+  // The core's fleet policy counts records; only a `coreGone` removes one. Without this poll a
+  // core whose MicroVM died would keep its record until the age ceiling and never be replaced
+  // (found by the churn simulation, WP1.9 sim cores).
+  const coreReaper = setInterval(() => {
+    if (!ledger || role !== "control-plane" || !cores || ledger.cores.size === 0) return;
+    const ids = [...ledger.cores.keys()];
+    void cores
+      .gone(ids)
+      .then((dead) => {
+        for (const microvmId of dead) {
+          log("core-gone", { microvmId });
+          dispatch({ kind: "coreGone", microvmId });
+        }
+      })
+      .catch((err) => log("core-check-failed", { error: String(err) }));
+  }, config.coreCheckMs);
   const snapshotTimer = setInterval(() => {
     if (ledger && role === "control-plane") {
       void snapshotter
@@ -624,6 +642,7 @@ export async function createControlPlane(
     async close() {
       clearInterval(timer);
       clearInterval(snapshotTimer);
+      clearInterval(coreReaper);
       for (const ws of conns.values()) ws.terminate();
       conns.clear();
       wss.close();

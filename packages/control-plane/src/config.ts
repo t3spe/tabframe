@@ -26,6 +26,8 @@ export interface Config {
   /** Image mode: the bucket the snapshotter writes to. */
   snapshotBucket: string | null;
   snapshotEveryMs: number;
+  /** How often the process asks AWS which of the ledger's cores are gone (design §6.8). */
+  coreCheckMs: number;
   /** Image mode: what the control plane needs to launch cloud cores (design §6.8). */
   imageArn: string | null;
   imageVersion: string | null;
@@ -56,6 +58,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     defaultProgram: env.TABFRAME_DEFAULT_PROGRAM ?? "mandelbrot",
     snapshotBucket: env.TABFRAME_SNAPSHOT_BUCKET ?? null,
     snapshotEveryMs: intEnv(env.TABFRAME_SNAPSHOT_MS, 5_000),
+    coreCheckMs: intEnv(env.TABFRAME_CORE_CHECK_MS, 30_000),
     imageArn: env.TABFRAME_IMAGE_ARN ?? null,
     imageVersion: env.TABFRAME_IMAGE_VERSION ?? null,
     coreRoleArn: env.TABFRAME_CORE_ROLE_ARN ?? null,

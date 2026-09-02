@@ -25,6 +25,7 @@ const imageConfig: Config = {
   defaultProgram: "mandelbrot",
   snapshotBucket: null,
   snapshotEveryMs: 60_000,
+  coreCheckMs: 60_000,
   imageArn: null,
   imageVersion: null,
   coreRoleArn: null,
