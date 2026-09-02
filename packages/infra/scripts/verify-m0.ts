@@ -308,16 +308,20 @@ try {
     const t1 = Date.now();
     let status = 0;
     let answers = 0;
-    while (Date.now() - t1 < 20_000) {
+    const states: string[] = [];
+    while (Date.now() - t1 < 60_000) {
       const r = await get("/health", 8081);
       answers++;
       status = r.status;
+      const g = await mv.send(new GetMicrovmCommand({ microvmIdentifier: id }));
+      const st = `${g.state}@${Math.round((Date.now() - t1) / 100) / 10}s`;
+      if (!states.length || !states[states.length - 1]?.startsWith(`${g.state}@`)) states.push(st);
       if (status === 200) break;
       await sleep(250);
     }
     record(
       "resume latency",
-      `${Math.round((Date.now() - t1) / 100) / 10} s to the first 200 (${answers} requests, last status ${status})`,
+      `${Math.round((Date.now() - t1) / 100) / 10} s to the first 200 (${answers} requests, last status ${status}; states ${states.join(" → ")})`,
       status === 200 && Date.now() - t1 < 5_000,
     );
   }
