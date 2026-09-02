@@ -9,6 +9,7 @@ export {
   executionTasks,
   failExecution,
   KEEP_ENDED_EXECUTIONS,
+  KEEP_ENDED_TASKS,
   type LaunchRequest,
   LOOP_BACKOFF_MAX_MS,
   LOOP_BACKOFF_MIN_MS,

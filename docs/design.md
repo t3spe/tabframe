@@ -846,4 +846,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   found: the policy counts records, and a dead MicroVM kept its record until the age ceiling
   (§6.8). A fresh ledger's clocks now start at the real time; with the zero default a new control
   plane believed nobody had watched it for decades and started asleep.
+- **2026-09-02 (WP4.3).** Mandelbrot gets exact interior shortcuts (cardioid, period-2 bulb, and
+  Brent periodicity on f64 equality — output unchanged, checked against the goldens) and retuned
+  presets that keep `ss² × maxIter` at or under about 7 000, so the worst tile is about 300 ms
+  under Node and under the two-second deadline floor in a tab; the default frame is 22 s of Node
+  compute, about a minute in one browser tab (§5.6, §6.4). Word count needs no read batching: the
+  whole program is 200 ms of compute (§5.6). Ended executions keep their records for 32 frames but
+  their tasks for only the last two (`KEEP_ENDED_TASKS`), which takes the deployed five-second
+  snapshot from 2.2 MB gzipped to about a tenth of that (§9.4).
 

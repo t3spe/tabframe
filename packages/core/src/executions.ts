@@ -611,22 +611,42 @@ export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[
   return { effects, victims };
 }
 
+/** Ended executions whose *tasks* are kept, so the last frames stay browsable; older ones keep the record only. */
+export const KEEP_ENDED_TASKS = 2;
+
 /**
- * Keep the ledger small: ended executions beyond the most recent `keep` are dropped with their
- * tasks. Results live in the store by hash, and a continuation copies what it inherits at
+ * Keep the ledger small (design §9.4): ended executions beyond the most recent `keep` are dropped
+ * outright, and the tasks of ended executions beyond the most recent `keepTasks` are dropped while
+ * the record stays — a record is a few hundred bytes, a frame's tasks are hundreds of kilobytes,
+ * and it is the tasks that made the five-second snapshot two megabytes on the deployed machine
+ * (WP4.3). Results live in the store by hash and a continuation copies what it inherits at
  * enqueue, so nothing live points at what is pruned.
  */
-export function pruneExecutions(ledger: Ledger, keep = KEEP_ENDED_EXECUTIONS): string[] {
+export function pruneExecutions(
+  ledger: Ledger,
+  keep = KEEP_ENDED_EXECUTIONS,
+  keepTasks = KEEP_ENDED_TASKS,
+): string[] {
   const ended = [...ledger.executions.values()]
     .filter((e) => e.status === "done" || e.status === "failed" || e.status === "cancelled")
     .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
-  const pruned: string[] = [];
-  for (const exec of ended.slice(keep)) {
+  const dropRecords = ended.slice(keep).map((e) => e.executionId);
+  // Whose tasks still exist? The first task tells; once it is gone the rest went with it, so an
+  // already-pruned execution costs nothing on later ticks.
+  const dropTasks = new Set(
+    ended
+      .slice(keepTasks)
+      .filter((e) => {
+        const probe = e.planTaskId ?? e.stageTaskIds[0];
+        return probe !== undefined && ledger.tasks.has(probe);
+      })
+      .map((e) => e.executionId),
+  );
+  if (dropTasks.size > 0) {
     for (const [taskId, task] of ledger.tasks) {
-      if (task.executionId === exec.executionId) ledger.tasks.delete(taskId);
+      if (dropTasks.has(task.executionId)) ledger.tasks.delete(taskId);
     }
-    ledger.executions.delete(exec.executionId);
-    pruned.push(exec.executionId);
   }
-  return pruned;
+  for (const id of dropRecords) ledger.executions.delete(id);
+  return dropRecords;
 }

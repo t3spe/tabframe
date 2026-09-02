@@ -26,7 +26,7 @@ export interface GoldenRun {
   stageName: string;
   taskCount: number;
   hashes: string[];
-  msPerTile: { min: number; median: number; max: number; total: number };
+  msPerTile: { min: number; median: number; p95: number; max: number; total: number };
 }
 
 export async function runGolden(
@@ -44,9 +44,12 @@ export async function runGolden(
   for (let i = 0; i < count; i += step) {
     const task = spec.tasks[i] as (typeof spec.tasks)[number];
     const inst = await instantiate(module);
-    const t0 = performance.now();
+    // CPU time, not wall time: the pacing numbers must not depend on what else the machine is
+    // doing while goldens are regenerated (WP4.3).
+    const c0 = process.cpuUsage();
     const out = inst.run(0, i, count, task.input);
-    times.push(performance.now() - t0);
+    const c1 = process.cpuUsage(c0);
+    times.push((c1.user + c1.system) / 1000);
     hashes.push(createHash("sha256").update(out).digest("hex"));
   }
   const sorted = [...times].sort((a, b) => a - b);
@@ -59,6 +62,7 @@ export async function runGolden(
     msPerTile: {
       min: round(sorted[0] ?? 0),
       median: round(sorted[Math.floor(sorted.length / 2)] ?? 0),
+      p95: round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0),
       max: round(sorted[sorted.length - 1] ?? 0),
       total: round(total),
     },
@@ -118,7 +122,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         sample ? Number(sample) : 8,
       );
       console.log(
-        `preset ${p}: ${r.taskCount} tiles, ms/tile min ${r.msPerTile.min} median ${r.msPerTile.median} max ${r.msPerTile.max}, est. frame ${Math.round(r.msPerTile.total / 1000)} s`,
+        `preset ${p}: ${r.taskCount} tiles, cpu ms/tile min ${r.msPerTile.min} median ${r.msPerTile.median} p95 ${r.msPerTile.p95} max ${r.msPerTile.max}, est. frame ${Math.round(r.msPerTile.total / 1000)} s`,
       );
       const next = (await instantiate((await loadProgram(wasm)).module)).plan(1, {
         ...manifest.defaultParams,

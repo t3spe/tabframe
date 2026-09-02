@@ -39,3 +39,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP3.5 | [wp-3.5-deploy-m3.md](wp-3.5-deploy-m3.md) | 2026-09-02 | M3 on AWS: rotation under load measured at 8.4 s of churn, the bundled sandbox worker, retries for throttled fleet calls, the endpoint's socket ceiling |
 | WP2.6 | [wp-2.6-playwright-v1.md](wp-2.6-playwright-v1.md) | 2026-09-02 | Browser suites: the money shot (ten nodes, kill half, 640 golden tiles) and the sandbox's deadline kill and trap paths |
 | WP2.7 | [wp-2.7-deploy-m2.md](wp-2.7-deploy-m2.md) | 2026-09-02 | M2 on AWS: the editor compiles and launches on the cluster, word count exact, faults visible; seeding made idempotent |
+| WP4.3 | [wp-4.3-pacing.md](wp-4.3-pacing.md) | pending | Pacing: exact interior shortcuts (106 s → 22 s, outputs unchanged), presets bounded to a 300 ms worst tile, word count measured, snapshot tasks pruned (2.2 MB → ~200 KB) |

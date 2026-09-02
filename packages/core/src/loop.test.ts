@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
 import {
   KEEP_ENDED_EXECUTIONS,
+  KEEP_ENDED_TASKS,
   LOOP_BACKOFF_MAX_MS,
   LOOP_BACKOFF_MIN_MS,
   pruneExecutions,
@@ -151,3 +152,65 @@ function planAssignOf(h: ReturnType<typeof harness>, executionId: string) {
   if (!node) throw new Error("no node");
   return { connId: node.connId, taskId: task.taskId, attempt: attempt.attempt, kind: task.kind };
 }
+
+describe("pruning ended executions' tasks", () => {
+  test(`only the ${KEEP_ENDED_TASKS} most recent ended executions keep their tasks; records stay; the running one is untouched`, () => {
+    const h = harness();
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    /** Run a three-tile frame to the end: fold the stage, then let its follow-up planner say done. */
+    const finish = (preset: number): string => {
+      h.launch({ preset }, true);
+      h.tick(); // the plan task is assigned on the next fill
+      const exec = [...h.ledger.executions.values()].find((e) => e.status === "running");
+      if (!exec) throw new Error("nothing running");
+      const plan = planAssignOf(h, exec.executionId);
+      const stage = h.planSpec(
+        h.result(plan.connId, plan.taskId, plan.attempt, H("e")),
+        renderSpec(3),
+      );
+      let pending = h.assigns(stage).filter((a) => a.kind === "run");
+      let last: ReturnType<typeof h.result> = stage;
+      while (pending.length > 0) {
+        const next: typeof pending = [];
+        for (const run of pending) {
+          last = h.result(run.connId, run.taskId, run.attempt, H("1"));
+          next.push(...h.assigns(last).filter((a) => a.kind === "run"));
+        }
+        pending = next.length > 0 ? next : h.assigns(h.tick()).filter((a) => a.kind === "run");
+      }
+      h.manifestStored(last, H("f"));
+      h.advance(10);
+      const again = planAssignOf(h, exec.executionId);
+      h.planSpec(h.result(again.connId, again.taskId, again.attempt, H("d")), {
+        kind: "done",
+        next: null,
+      });
+      expect(exec.status).toBe("done");
+      return exec.executionId;
+    };
+    const ids = Array.from({ length: KEEP_ENDED_TASKS + 3 }, (_, i) => finish(i));
+    const tasksOf = (id: string) =>
+      [...h.ledger.tasks.values()].filter((t) => t.executionId === id).length;
+    // One more, running, with tasks of its own.
+    h.launch({ preset: 99 }, true);
+    const running = [...h.ledger.executions.values()].find((e) => e.status === "running");
+    if (!running) throw new Error("nothing running");
+    const before = tasksOf(running.executionId);
+
+    pruneExecutions(h.ledger);
+    const recent = ids.slice(-KEEP_ENDED_TASKS);
+    const older = ids.slice(0, -KEEP_ENDED_TASKS);
+    expect(recent.every((id) => tasksOf(id) > 0)).toBe(true);
+    expect(older.every((id) => tasksOf(id) === 0)).toBe(true);
+    // The records are all still there, with what they knew.
+    expect(older.every((id) => h.ledger.executions.has(id))).toBe(true);
+    expect(h.ledger.executions.get(older[0] as string)?.stageTaskIds.length).toBe(3);
+    expect(tasksOf(running.executionId)).toBe(before);
+    expect(h.invariants()).toEqual([]);
+    // Idempotent: a second pass finds nothing left to drop.
+    const tasksNow = h.ledger.tasks.size;
+    expect(pruneExecutions(h.ledger)).toEqual([]);
+    expect(h.ledger.tasks.size).toBe(tasksNow);
+  });
+});
