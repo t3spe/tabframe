@@ -158,6 +158,8 @@ mise run deploy                 # build → test → cdk deploy (four stacks) �
 mise run verify:m1              # browser tabs render a frame on the deployed machine; kill half; golden hashes
 mise run verify:m2              # edit and compile in the page; word count; a program fault
 mise run verify:m3              # a rotation under load: churn seconds, drain jitter, session concurrency
+mise run demo -- --repeat 3     # the demo script, unattended, against the deployed machine (--video records)
+mise run health -- --cores      # /health and /diag of the control plane, and each cloud core's own /health
 mise run down                   # off: disable the schedule, terminate every MicroVM, write the off state
 mise run up                     # back on
 mise run logs                   # tail the MicroVM log group

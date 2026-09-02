@@ -30,7 +30,8 @@ export const PATTERNS: readonly ScrubPattern[] = [
   },
   {
     name: "microvm-endpoint",
-    re: /\b[a-z0-9-]+\.lambda-microvm\.[a-z0-9-]+\.on\.aws\b/g,
+    // A hostname cut short by a terminal's column limit is still a hostname: the suffix is optional.
+    re: /\b[a-z0-9-]+\.lambda-microvm(?:\.[a-z0-9-]+)*(?:\.on\.aws)?\b/g,
     replacement: "<microvm-endpoint>",
   },
   {
@@ -51,17 +52,36 @@ export const PATTERNS: readonly ScrubPattern[] = [
   },
 ];
 
+/**
+ * Words the operator wants gone as well — a surname, a domain — come from `TABFRAME_SCRUB_WORDS`
+ * (comma-separated, matched case-insensitively), so the repo never carries them itself.
+ */
+export function extraPatterns(words: string | undefined): ScrubPattern[] {
+  return (words ?? "")
+    .split(",")
+    .map((w) => w.trim())
+    .filter((w) => w.length > 0)
+    .map((w) => ({
+      name: "word",
+      re: new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+      replacement: "<redacted>",
+    }));
+}
+
 /** Scrub text; the counts say how many of each pattern were replaced. */
-export function scrub(text: string): { text: string; counts: Record<string, number> } {
+export function scrub(
+  text: string,
+  extra: readonly ScrubPattern[] = extraPatterns(process.env.TABFRAME_SCRUB_WORDS),
+): { text: string; counts: Record<string, number> } {
   const counts: Record<string, number> = {};
   let out = text;
-  for (const p of PATTERNS) {
+  for (const p of [...PATTERNS, ...extra]) {
     let n = 0;
     out = out.replace(p.re, () => {
       n += 1;
       return p.replacement;
     });
-    if (n > 0) counts[p.name] = n;
+    if (n > 0) counts[p.name] = (counts[p.name] ?? 0) + n;
   }
   return { text: out, counts };
 }
