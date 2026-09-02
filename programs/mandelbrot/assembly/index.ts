@@ -35,17 +35,21 @@ class Preset {
   ) {}
 }
 
-// Widths are in complex-plane units across the 2048-pixel canvas; maxIter and ss are tuned so one
-// core takes about a minute per frame (measurements in the WP document).
+// Widths are in complex-plane units across the 2048-pixel canvas. Two knobs pace a preset: `ss`
+// (ss² orbits per pixel) and `maxIter`. A tile that is entirely interior and escapes the exact
+// shortcuts costs ss² × 4096 × maxIter iterations whatever the zoom, so the product ss² × maxIter
+// stays at or under about 7 000: a worst-case tile of roughly half a second under Node, which is
+// about two seconds — the scheduler's deadline floor — in a browser tab, where tiles run two to
+// four times slower. The frame's total comes from the boundary work; WP4.3 has the numbers.
 const PRESETS: Preset[] = [
-  new Preset("overview", -0.75, 0.0, 3.5, 6000, 2),
-  new Preset("seahorse valley", -0.7436, 0.1314, 0.003, 13000, 6),
-  new Preset("elephant valley", 0.2755, 0.006, 0.01, 1200, 2),
-  new Preset("triple spiral", -0.088, 0.654, 0.005, 6500, 4),
-  new Preset("antenna minibrot", -1.7549, 0.0, 0.01, 750, 2),
-  new Preset("double spiral", -0.1607, 1.0376, 0.0003, 30000, 4),
-  new Preset("feigenbaum", -1.4012, 0.0, 0.002, 9000, 5),
-  new Preset("julia island", -1.7688, -0.0017, 0.00001, 3400, 3),
+  new Preset("overview", -0.75, 0.0, 3.5, 140, 7),
+  new Preset("seahorse valley", -0.7436, 0.1314, 0.003, 13000, 4),
+  new Preset("elephant valley", 0.2755, 0.006, 0.01, 1600, 2),
+  new Preset("triple spiral", -0.088, 0.654, 0.005, 750, 3),
+  new Preset("antenna minibrot", -1.7549, 0.0, 0.01, 750, 3),
+  new Preset("double spiral", -0.1607, 1.0376, 0.0003, 750, 3),
+  new Preset("feigenbaum", -1.4012, 0.0, 0.002, 1600, 2),
+  new Preset("julia island", -1.7688, -0.0017, 0.00001, 1600, 2),
 ];
 
 const PALETTES: string[] = ["ocean", "fire", "mono"];
@@ -127,17 +131,40 @@ function channel(palette: i32, stop: i32, c: i32): f64 {
 
 /** Packed 0x00RRGGBB for one sample point, or 0 for an interior point. */
 function sample(cr: f64, ci: f64, maxIter: u32, palette: i32): u32 {
+  // Two exact interior tests first: a point inside the main cardioid or the period-2 bulb never
+  // escapes, so answering at once costs nothing in output and is what keeps the overview's
+  // interior tiles under the scheduler's deadline (WP4.3). Pure f64 arithmetic, deterministic.
+  const xq = cr - 0.25;
+  const q = xq * xq + ci * ci;
+  if (q * (q + xq) <= 0.25 * ci * ci) return 0;
+  const xp = cr + 1.0;
+  if (xp * xp + ci * ci <= 0.0625) return 0;
+
   let zr = 0.0;
   let zi = 0.0;
   let zr2 = 0.0;
   let zi2 = 0.0;
   let n: u32 = 0;
+  // Periodicity check (Brent): an orbit that returns *exactly* to a saved point is periodic and
+  // interior. Exact f64 equality has no false positives and is deterministic across engines, so
+  // the output is unchanged; the only effect is that interior points stop early.
+  let sr = 0.0;
+  let si = 0.0;
+  let check: u32 = 8;
+  let span: u32 = 8;
   while (n < maxIter && zr2 + zi2 <= ESCAPE2) {
     zi = 2.0 * zr * zi + ci;
     zr = zr2 - zi2 + cr;
     zr2 = zr * zr;
     zi2 = zi * zi;
     n++;
+    if (zr == sr && zi == si) return 0;
+    if (n == check) {
+      sr = zr;
+      si = zi;
+      if (span < 4096) span <<= 1;
+      check += span;
+    }
   }
   if (n >= maxIter) return 0;
   // Smooth iteration count; log2 arguments are > 0 because the orbit escaped past R² = 256.

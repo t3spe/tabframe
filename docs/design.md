@@ -851,6 +851,14 @@ Dated deviations discovered while building, recorded before the code landed (pla
   snapshots, and the dashboard (§9.3, §11). The functions' log groups are kept fourteen days via
   `logRetention`, because Lambda created them before any stack could. `/diag` performs a store
   put-and-get round trip.
+- **2026-09-02 (WP4.3).** Mandelbrot gets exact interior shortcuts (cardioid, period-2 bulb, and
+  Brent periodicity on f64 equality — output unchanged, checked against the goldens) and retuned
+  presets that keep `ss² × maxIter` at or under about 7 000, so the worst tile is about 300 ms
+  under Node and under the two-second deadline floor in a tab; the default frame is 22 s of Node
+  compute, about a minute in one browser tab (§5.6, §6.4). Word count needs no read batching: the
+  whole program is 200 ms of compute (§5.6). Ended executions keep their records for 32 frames but
+  their tasks for only the last two (`KEEP_ENDED_TASKS`), which takes the deployed five-second
+  snapshot from 2.2 MB gzipped to about a tenth of that (§9.4).
 
 - **2026-09-02 (WP4.1).** The dashboard's flashes cover every event that moves a task — taken
   back, twinned, verified, retracted — not only reassignments (§6.7), and each leaves a pulse the
