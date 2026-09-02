@@ -785,6 +785,10 @@ function describeEvent(event: Event): string {
       return `launch ${event.human ? "human" : "auto"}`;
     case "bundleRejected":
       return `bundleRejected ${event.bundle.slice(0, 8)} ${event.reason}`;
+    case "coreLaunched":
+      return `coreLaunched ${event.microvmId}`;
+    case "coreGone":
+      return `coreGone ${event.microvmId}`;
   }
 }
 
@@ -806,5 +810,9 @@ function describeEffect(e: Effect): string {
       return `presign ${e.connId} ${e.items.length}`;
     case "resolveBundle":
       return `resolveBundle ${e.connId} ${e.bundle.slice(0, 8)}`;
+    case "launchCore":
+      return "launchCore";
+    case "terminateCore":
+      return `terminateCore ${e.microvmId}`;
   }
 }

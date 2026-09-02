@@ -24,6 +24,11 @@ const imageConfig: Config = {
   defaultProgram: "mandelbrot",
   snapshotBucket: null,
   snapshotEveryMs: 60_000,
+  imageArn: null,
+  imageVersion: null,
+  coreRoleArn: null,
+  region: "us-west-2",
+  sessionUrl: null,
 };
 
 let programsDir = "";

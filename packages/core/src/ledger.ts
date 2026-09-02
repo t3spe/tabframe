@@ -153,6 +153,17 @@ export interface ExecutionRecord {
   counters: Counters;
 }
 
+/**
+ * A cloud core the control plane launched (design §6.8). Its MicroVM id lives in the ledger, so
+ * the cores follow a snapshot through a handover and the successor inherits rather than relaunches.
+ */
+export interface CoreRecord {
+  microvmId: string;
+  launchedAt: number;
+  /** The node this core connected as, once it has said hello. */
+  nodeId: string | null;
+}
+
 export interface ProgramRecord {
   bundle: string;
   module: string;
@@ -182,6 +193,13 @@ export interface Meta {
   startedAt: number;
   /** Last human interaction, for the sleep policy (design §6.8). */
   lastInteractionAt: number;
+  /** Last moment an observer was connected, for the sleep policy. */
+  lastObserverAt: number;
+  /** Awake means cores are kept and the default loop runs; asleep says why. */
+  awake: boolean;
+  sleepReason: string | null;
+  /** When the last core was launched: the account allows one RunMicrovm a second. */
+  lastCoreLaunchAt: number;
   /** The default loop backs off after a failed execution: current delay and when it may relaunch. */
   loopBackoffMs: number;
   loopPausedUntil: number;
@@ -200,6 +218,8 @@ export interface LedgerConfig {
   taskCap?: number;
   /** Launches one observer may start per minute (design §5.5). */
   launchesPerMinute?: number;
+  /** Whether this control plane can launch cloud cores; only the MicroVM image can (design §6.8). */
+  cloudCores?: boolean;
   /** Deadline floor and multiplier (design §6.4). */
   deadlineFloorMs?: number;
   deadlineFactor?: number;
@@ -217,6 +237,7 @@ export interface Ledger {
       | "fsBytesCap"
       | "taskCap"
       | "launchesPerMinute"
+      | "cloudCores"
     >
   > & {
     defaultLoop: { bundle: string; params: Record<string, unknown> } | null;
@@ -226,6 +247,8 @@ export interface Ledger {
   nodeByConn: Map<string, string>;
   observers: Map<string, ObserverRecord>;
   programs: Map<string, ProgramRecord>;
+  /** Cloud cores by MicroVM id (design §6.8). */
+  cores: Map<string, CoreRecord>;
   executions: Map<string, ExecutionRecord>;
   /** Queued execution ids in order; human launches ahead of automatic continuations. */
   queue: string[];
@@ -253,6 +276,10 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       redundancy: false,
       startedAt: now,
       lastInteractionAt: now,
+      lastObserverAt: now,
+      awake: true,
+      sleepReason: null,
+      lastCoreLaunchAt: 0,
       phase: "active",
       loopBackoffMs: 0,
       loopPausedUntil: 0,
@@ -264,6 +291,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       fsBytesCap: config.fsBytesCap ?? 256 * 1024 * 1024,
       taskCap: config.taskCap ?? 20_000,
       launchesPerMinute: config.launchesPerMinute ?? 6,
+      cloudCores: config.cloudCores ?? false,
       deadlineFloorMs: config.deadlineFloorMs ?? 2_000,
       deadlineFactor: config.deadlineFactor ?? 3,
     },
@@ -272,6 +300,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
     nodeByConn: new Map(),
     observers: new Map(),
     programs: new Map(),
+    cores: new Map(),
     executions: new Map(),
     queue: [],
     running: null,
