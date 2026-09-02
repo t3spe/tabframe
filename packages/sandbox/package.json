@@ -9,7 +9,8 @@
     "./adapters/node-host": "./src/adapters/node-host.ts",
     "./adapters/node-worker": "./src/adapters/node-worker.ts",
     "./adapters/web-host": "./src/adapters/web-host.ts",
-    "./adapters/web-worker": "./src/adapters/web-worker.ts"
+    "./adapters/web-worker": "./src/adapters/web-worker.ts",
+    "./validate": "./src/validate.ts"
   },
   "dependencies": {
     "@tabframe/protocol": "workspace:*"

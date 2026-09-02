@@ -702,3 +702,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   executions beyond the most recent 32 are pruned with their tasks on every tick, keeping the
   ledger and its snapshots bounded (§9.4).
 
+- **2026-09-02 (WP2.4).** The in-page compiler is asc bundled with Bun for the browser, minified
+  (1.6 MB), its Node-only imports left as dynamic imports that a worker never takes; binaryen is
+  served **as is** as a sibling asset (13.6 MB, almost all of it the compiler's own WebAssembly —
+  a minifying pass made it larger), not minified as §5.6 planned. Both load in a module worker
+  only when the editor opens. A page compile is byte-identical to the build's (pinned under Bun
+  and in Chromium). A page-built bundle is the manifest blob seeding produces, except its
+  manifest is compact JSON, so the same program uploaded from the page and shipped in the image
+  are two bundles and two program records (§5.6, §7.3). `@tabframe/sandbox` exports a
+  `./validate` subpath for the page.
