@@ -1,38 +1,114 @@
 import {
   CLOSE,
+  type Control,
   type ControlPlaneToObserver,
   decode,
   type Heartbeat,
   type Hello,
   LIMITS,
+  type MachineView,
   nodeToControlPlane,
-  type ObserverEvent,
   observerToControlPlane,
   PROTOCOL_VERSION,
+  type Snapshot,
 } from "@tabframe/protocol";
 import type { Effect, Event } from "./events.ts";
-import { type ConnRole, type Ledger, type NodeRecord, nodeView } from "./ledger.ts";
+import {
+  addProgram,
+  afterTaskSettled,
+  cancelExecution,
+  commandHalf,
+  enqueue,
+  ensureDefaultLoop,
+  executionTasks,
+  maybeStart,
+  onManifestStored,
+  onStageSpec,
+  resumeAll,
+} from "./executions.ts";
+import {
+  type ConnRole,
+  executionView,
+  type Ledger,
+  type NodeRecord,
+  nodeView,
+  queueEntry,
+  taskView,
+} from "./ledger.ts";
+import { broadcast } from "./observers.ts";
+import { onResult } from "./results.ts";
+import { fill, relabelHealth, releaseNode } from "./scheduler.ts";
 
 /** Connections that never say hello or subscribe are dropped after this long. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 /** Observers that stop pinging are dropped after this long. */
 const OBSERVER_SILENCE_MS = 5 * LIMITS.observerPingMs;
 
+export interface ApplyOptions {
+  /** Uniform random in [0, 1); victim selection for the demo controls. */
+  rng?: () => number;
+}
+
 /**
  * The control plane as a function: one inbound event, the ledger updated in place, and the
  * effects the process must carry out. No I/O happens here; time is a parameter.
  */
-export function apply(ledger: Ledger, event: Event, now: number): Effect[] {
+export function apply(
+  ledger: Ledger,
+  event: Event,
+  now: number,
+  opts: ApplyOptions = {},
+): Effect[] {
+  const rng = opts.rng ?? Math.random;
   switch (event.kind) {
     case "connected":
       return onConnected(ledger, event.connId, event.role, now);
     case "message":
-      return onMessage(ledger, event.connId, event.raw, now);
+      return onMessage(ledger, event.connId, event.raw, now, rng);
     case "disconnected":
       return removeConnection(ledger, event.connId, "closed");
     case "tick":
-      return sweep(ledger, now);
+      return tick(ledger, now);
+    case "programAdded":
+      return [
+        ...addProgram(ledger, event.bundle, event.module, event.manifest, now),
+        ...ensureDefaultLoop(ledger, now),
+      ];
+    case "launch":
+      return enqueue(
+        ledger,
+        { bundle: event.bundle, params: event.params, human: event.human, inherit: event.inherit },
+        now,
+      ).effects;
+    case "blobFetched":
+      if (event.purpose.type === "stageSpec")
+        return onStageSpec(
+          ledger,
+          event.purpose.executionId,
+          event.purpose.taskId,
+          event.bytes,
+          now,
+        );
+      return [];
+    case "blobStored":
+      if (event.purpose.type === "manifest")
+        return onManifestStored(
+          ledger,
+          event.purpose.executionId,
+          event.purpose.stage,
+          event.hash,
+          now,
+        );
+      return [];
   }
+}
+
+function tick(ledger: Ledger, now: number): Effect[] {
+  const effects = sweep(ledger, now);
+  effects.push(...relabelHealth(ledger));
+  effects.push(...ensureDefaultLoop(ledger, now));
+  effects.push(...fill(ledger, now));
+  return effects;
 }
 
 function onConnected(ledger: Ledger, connId: string, role: ConnRole, now: number): Effect[] {
@@ -47,7 +123,13 @@ function onConnected(ledger: Ledger, connId: string, role: ConnRole, now: number
   return [];
 }
 
-function onMessage(ledger: Ledger, connId: string, raw: unknown, now: number): Effect[] {
+function onMessage(
+  ledger: Ledger,
+  connId: string,
+  raw: unknown,
+  now: number,
+  rng: () => number,
+): Effect[] {
   const conn = ledger.conns.get(connId);
   if (!conn) return [];
 
@@ -68,9 +150,22 @@ function onMessage(ledger: Ledger, connId: string, raw: unknown, now: number): E
         return onHello(ledger, connId, d.msg, now);
       case "heartbeat":
         return onHeartbeat(ledger, connId, d.msg, now);
-      default:
-        // result and presign arrive with scheduling (WP1.2, WP1.3).
-        return [];
+      case "result": {
+        const node = nodeOf(ledger, connId);
+        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "result before hello");
+        node.lastSeen = now;
+        const { effects, settlement } = onResult(ledger, node, d.msg, now);
+        if (settlement.kind === "done" || settlement.kind === "failed")
+          effects.push(...afterTaskSettled(ledger, settlement.task, now));
+        effects.push(...fill(ledger, now));
+        return effects;
+      }
+      case "presign": {
+        const node = nodeOf(ledger, connId);
+        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello");
+        node.lastSeen = now;
+        return [{ kind: "presign", connId, items: d.msg.items }];
+      }
     }
   }
   const d = decode(observerToControlPlane, raw, opts);
@@ -80,10 +175,124 @@ function onMessage(ledger: Ledger, connId: string, raw: unknown, now: number): E
       return onSubscribe(ledger, connId, now);
     case "ping":
       return onPing(ledger, connId, now);
+    case "presign":
+      if (!ledger.observers.has(connId))
+        return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe");
+      return [{ kind: "presign", connId, items: d.msg.items }];
     default:
-      // Controls, launch, and presign arrive with scheduling and programs (WP1.2, WP2.3).
-      return [];
+      if (!ledger.observers.has(connId))
+        return refuse(ledger, connId, CLOSE.invalidMessage, "control before subscribe");
+      ledger.meta.lastInteractionAt = now;
+      return onControl(ledger, connId, d.msg, now, rng);
   }
+}
+
+function onControl(
+  ledger: Ledger,
+  connId: string,
+  msg: Control,
+  now: number,
+  rng: () => number,
+): Effect[] {
+  const running = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  switch (msg.t) {
+    case "killHalf":
+    case "freezeHalf":
+    case "throttleHalf": {
+      const op = msg.t === "killHalf" ? "close" : msg.t === "freezeHalf" ? "freeze" : "throttle";
+      const { effects, victims } = commandHalf(ledger, op, rng);
+      effects.push(...broadcast(ledger, { t: "controlApplied", op: msg.t, nodeIds: victims }));
+      return effects;
+    }
+    case "resumeAll": {
+      const { effects, victims } = resumeAll(ledger);
+      effects.push(
+        ...broadcast(ledger, { t: "controlApplied", op: "resumeAll", nodeIds: victims }),
+      );
+      return effects;
+    }
+    case "restart": {
+      if (!running) return [];
+      const effects = cancelExecution(ledger, running, "restarted", now);
+      effects.push(...broadcast(ledger, { t: "controlApplied", op: "restart", nodeIds: [] }));
+      const relaunch = enqueue(
+        ledger,
+        {
+          bundle: running.bundle,
+          params: running.params,
+          human: running.human,
+          inherit: running.inheritedFrom,
+        },
+        now,
+      );
+      // A relaunch goes first whatever the queue holds.
+      if (relaunch.executionId && ledger.queue.includes(relaunch.executionId)) {
+        ledger.queue = [
+          relaunch.executionId,
+          ...ledger.queue.filter((id) => id !== relaunch.executionId),
+        ];
+      }
+      effects.push(...relaunch.effects, ...maybeStart(ledger, now), ...fill(ledger, now));
+      return effects;
+    }
+    case "skip": {
+      if (!running) return [];
+      const effects = cancelExecution(ledger, running, "skipped", now);
+      effects.push(...broadcast(ledger, { t: "controlApplied", op: "skip", nodeIds: [] }));
+      effects.push(
+        ...ensureDefaultLoop(ledger, now),
+        ...maybeStart(ledger, now),
+        ...fill(ledger, now),
+      );
+      return effects;
+    }
+    case "killExecution": {
+      const target = ledger.executions.get(msg.executionId);
+      if (!target)
+        return [
+          { kind: "send", connId, msg: errorMsg(ledger, "unknown-execution", msg.executionId) },
+        ];
+      const effects = cancelExecution(ledger, target, "cancelled by an operator", now);
+      effects.push(...broadcast(ledger, { t: "controlApplied", op: "killExecution", nodeIds: [] }));
+      effects.push(
+        ...ensureDefaultLoop(ledger, now),
+        ...maybeStart(ledger, now),
+        ...fill(ledger, now),
+      );
+      return effects;
+    }
+    case "launch": {
+      const r = enqueue(
+        ledger,
+        { bundle: msg.bundle, params: msg.params, human: true, inherit: msg.inherit },
+        now,
+      );
+      if (r.error)
+        return [{ kind: "send", connId, msg: errorMsg(ledger, "launch-refused", r.error) }];
+      return [...r.effects, ...fill(ledger, now)];
+    }
+    case "runFollowUp": {
+      const done = ledger.executions.get(msg.executionId);
+      if (!done || done.status !== "done" || !done.followUp)
+        return [{ kind: "send", connId, msg: errorMsg(ledger, "no-follow-up", msg.executionId) }];
+      const r = enqueue(
+        ledger,
+        { bundle: done.bundle, params: done.followUp, human: true, inherit: done.executionId },
+        now,
+      );
+      if (r.error)
+        return [{ kind: "send", connId, msg: errorMsg(ledger, "launch-refused", r.error) }];
+      return [...r.effects, ...fill(ledger, now)];
+    }
+    case "setRedundancy": {
+      ledger.meta.redundancy = msg.on;
+      return broadcast(ledger, { t: "controlApplied", op: "setRedundancy", nodeIds: [] });
+    }
+  }
+}
+
+function errorMsg(ledger: Ledger, code: string, message: string): ControlPlaneToObserver {
+  return { t: "error", v: PROTOCOL_VERSION, gen: ledger.meta.generation, code, message };
 }
 
 function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effect[] {
@@ -106,7 +315,9 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
     health: "fast",
     tasksDone: 0,
     lastTaskMs: null,
+    ewmaMs: null,
     inFlight: [],
+    commanded: null,
   };
   ledger.nodes.set(nodeId, node);
   ledger.nodeByConn.set(connId, nodeId);
@@ -127,6 +338,7 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
     },
   ];
   effects.push(...broadcast(ledger, { t: "nodeJoined", node: nodeView(node) }));
+  effects.push(...fill(ledger, now));
   return effects;
 }
 
@@ -135,11 +347,7 @@ function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number
   if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "heartbeat before hello");
   node.lastSeen = now;
   node.visible = msg.visible;
-  node.tasksDone = msg.tasksDone;
-  node.lastTaskMs = msg.lastTaskMs;
-
   // Throttled is the one label the node's own evidence decides: its host tab is hidden.
-  // Fast versus slow comes from compute statistics and arrives with scheduling (WP1.2).
   if (!msg.visible && node.health !== "throttled") {
     node.health = "throttled";
     return broadcast(ledger, { t: "nodeHealth", nodeId: node.nodeId, health: node.health });
@@ -154,30 +362,58 @@ function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number
 function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   if (ledger.observers.has(connId))
     return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate subscribe");
-  if (ledger.observers.size >= LIMITS.observerCap) {
+  if (ledger.observers.size >= LIMITS.observerCap)
     return refuse(ledger, connId, CLOSE.observerCap, "observer cap reached");
-  }
   ledger.observers.set(connId, { connId, subscribedAt: now, lastSeen: now });
+  ledger.meta.lastInteractionAt = now;
+  const effects = snapshotPages(ledger, connId, now);
+  effects.push(...ensureDefaultLoop(ledger, now));
+  effects.push(...fill(ledger, now));
+  return effects;
+}
 
-  const nodes = [...ledger.nodes.values()].map(nodeView);
+/** Page 0 carries the cluster; every page carries task rows (design §8.3). */
+export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
+  const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
   const pageSize = LIMITS.snapshotPageTasks;
-  const pages = Math.max(1, Math.ceil(nodes.length / pageSize));
+  const pages = Math.max(1, Math.ceil(tasks.length / pageSize));
+  const machine: MachineView = {
+    awake: true,
+    reason: null,
+    redundancy: ledger.meta.redundancy,
+    nextRotationAt: null,
+    uptimeMs: Math.max(0, now - ledger.meta.startedAt),
+  };
   const effects: Effect[] = [];
   for (let page = 0; page < pages; page++) {
+    const slice = tasks.slice(page * pageSize, (page + 1) * pageSize);
+    const base: Snapshot = {
+      t: "snapshot",
+      v: PROTOCOL_VERSION,
+      gen: ledger.meta.generation,
+      seq: ledger.meta.seq,
+      page,
+      pages,
+      tasks: slice,
+      at: now,
+    };
     effects.push({
       kind: "send",
       connId,
-      msg: {
-        t: "snapshot",
-        v: PROTOCOL_VERSION,
-        gen: ledger.meta.generation,
-        seq: ledger.meta.seq,
-        page,
-        pages,
-        nodes: nodes.slice(page * pageSize, (page + 1) * pageSize),
-        tasks: [],
-        at: now,
-      },
+      msg:
+        page === 0
+          ? {
+              ...base,
+              nodes: [...ledger.nodes.values()].map(nodeView),
+              execution: exec ? executionView(exec) : null,
+              queue: ledger.queue
+                .map((id) => ledger.executions.get(id))
+                .filter((e) => e !== undefined)
+                .map(queueEntry),
+              machine,
+            }
+          : base,
     });
   }
   return effects;
@@ -243,15 +479,21 @@ function refuse(ledger: Ledger, connId: string, code: number, reason: string): E
   return effects;
 }
 
-/** Forget a connection. A node's departure is announced to observers; an observer's is not. */
-function removeConnection(ledger: Ledger, connId: string, reason: "closed" | "silent"): Effect[] {
+/** Forget a connection. A node's departure releases its work and is announced; an observer's is not. */
+export function removeConnection(
+  ledger: Ledger,
+  connId: string,
+  reason: "closed" | "silent",
+): Effect[] {
   const effects: Effect[] = [];
   const nodeId = ledger.nodeByConn.get(connId);
   if (nodeId !== undefined) {
+    const node = ledger.nodes.get(nodeId);
     ledger.nodes.delete(nodeId);
     ledger.nodeByConn.delete(connId);
     ledger.conns.delete(connId);
     effects.push(...broadcast(ledger, { t: "nodeLeft", nodeId, reason }));
+    if (node) effects.push(...releaseNode(ledger, node));
     return effects;
   }
   ledger.observers.delete(connId);
@@ -262,20 +504,4 @@ function removeConnection(ledger: Ledger, connId: string, reason: "closed" | "si
 function nodeOf(ledger: Ledger, connId: string): NodeRecord | undefined {
   const nodeId = ledger.nodeByConn.get(connId);
   return nodeId === undefined ? undefined : ledger.nodes.get(nodeId);
-}
-
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
-type EventBody = DistributiveOmit<ObserverEvent, "v" | "gen" | "seq">;
-
-/** Stamp an event with the next sequence number and address it to every observer. */
-function broadcast(ledger: Ledger, body: EventBody): Effect[] {
-  if (ledger.observers.size === 0) return [];
-  const seq = ++ledger.meta.seq;
-  const msg = {
-    v: PROTOCOL_VERSION,
-    gen: ledger.meta.generation,
-    seq,
-    ...body,
-  } as ControlPlaneToObserver;
-  return [...ledger.observers.keys()].map((connId) => ({ kind: "send", connId, msg }));
 }

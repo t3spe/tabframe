@@ -40,6 +40,7 @@ describe("v1 node messages", () => {
       taskId: "t1",
       attempt: 1,
       output: H,
+      outputSize: 3,
       writes: [{ path: "/out/x", hash: H, size: 3 }],
       log: { text: "hi" },
       computeMs: 12,

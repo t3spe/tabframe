@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0 complete and tagged `m0` — deployed, public, verified. M1 in progress: WP1.1 merged; WP1.4 sandbox and WP1.5 SDK + Mandelbrot in parallel worktrees; WP1.2 core v1 next.
+**Where we are (2026-09-02):** M0 complete and tagged `m0` — deployed, public, verified. M1 in progress: WP1.1 merged; WP1.2 core v1 on `wp/1.2-core-v1`; WP1.4 sandbox and WP1.5 SDK + Mandelbrot in parallel worktrees; WP1.3 store next.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -101,7 +101,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 **Goal:** Mandelbrot renders across tabs and local cores as a real program; kill half on a laptop and on AWS, the image completes and hashes match goldens; the churn simulation passes.
 
 - [x] **WP1.1 `protocol` v1.** `assign`, `result` (hashes; error form), `cancel`, `command`; task events; snapshot pages with tasks; controls `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `setRedundancy`; limits for inline input and pages.
-- [ ] **WP1.2 `core` v1.** Executions, tasks, attempts; fill with three tiers; deadlines (3× rolling median, floor 2 s); release on gone; speculation; both verification policies including contested → recompute → vote after two rounds; result identity (output + sorted writes); health labels; counters; snapshot serialize/deserialize; victim selection with the injected random source; redundancy toggle; an `invariants.ts` checker used by tests and the simulation.
+- [x] **WP1.2 `core` v1.** Executions, tasks, attempts; fill with three tiers; deadlines (3× rolling median, floor 2 s); release on gone; speculation; both verification policies including contested → recompute → vote after two rounds; result identity (output + sorted writes); health labels; counters; snapshot serialize/deserialize; victim selection with the injected random source; redundancy toggle; an `invariants.ts` checker used by tests and the simulation.
   *Acceptance:* every invariant in design §6.10 has a failing test if you break it.
 - [ ] **WP1.3 `store`.** Local driver (hashing PUT, GET with Range); S3 driver (presign with pinned SHA-256 checksum and immutable cache-control for key = hash, existence check); presign served as a socket message; browser-side SHA-256 via `crypto.subtle`; one client flow in `node` and `web`.
   *Acceptance:* a PUT with wrong bytes is refused by both drivers.
