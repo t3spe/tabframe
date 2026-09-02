@@ -3,7 +3,7 @@
 // per process: the bytes of a task are a pure function of module, kind, input, and filesystem
 // root, so twins, retries, and later seeds reuse them instead of paying the WebAssembly time again.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -39,10 +39,10 @@ export interface LoadedProgram {
 export function loadProgram(name = "mandelbrot"): LoadedProgram {
   const dir = path.join(ROOT, "programs", name);
   const built = path.join(dir, "dist", "program.wasm");
-  if (!existsSync(built)) {
-    // A fresh checkout has no built programs (dist/ is not committed). Build them here, once, the
-    // way `mise run build:programs` does, so `bun test` needs no step before it — this is what CI
-    // was missing for a day (WP4.8).
+  if (!existsSync(built) || staleAgainstSources(built, dir)) {
+    // A fresh checkout has no built programs (dist/ is not committed), and a checkout that changed
+    // a program or the SDK has a stale one that no longer matches its goldens. Build them here the
+    // way `mise run build:programs` does, so `bun test` needs no step before it (WP4.8).
     execFileSync("node", [path.join(ROOT, "packages/sdk-as/scripts/build-programs.ts")], {
       cwd: ROOT,
       stdio: "ignore",
@@ -118,3 +118,16 @@ export function compute(
 }
 
 export const computeCacheStats = () => ({ entries: cache.size, misses });
+
+/** True when any program or SDK source is newer than the built module. */
+function staleAgainstSources(built: string, programDir: string): boolean {
+  const builtAt = statSync(built).mtimeMs;
+  const dirs = [path.join(programDir, "assembly"), path.join(ROOT, "packages/sdk-as/assembly")];
+  for (const d of dirs) {
+    if (!existsSync(d)) continue;
+    for (const f of readdirSync(d)) {
+      if (f.endsWith(".ts") && statSync(path.join(d, f)).mtimeMs > builtAt) return true;
+    }
+  }
+  return false;
+}

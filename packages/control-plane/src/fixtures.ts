@@ -1,5 +1,5 @@
 // Test fixture: the demo programs compiled into a directory shaped like `/app/programs`.
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { compileProgram } from "../../sdk-as/scripts/build-programs.ts";
 
@@ -11,9 +11,16 @@ export async function buildFixturePrograms(): Promise<string> {
   const src = path.join(ROOT, "programs/mandelbrot");
   const out = path.join(PROGRAMS_DIR, "mandelbrot");
   mkdirSync(out, { recursive: true });
-  if (!existsSync(path.join(out, "program.wasm"))) {
-    await compileProgram(path.join(src, "assembly/index.ts"), path.join(out, "program.wasm"));
-  }
+  const built = path.join(out, "program.wasm");
+  // Rebuild when absent or older than any program or SDK source: a stale fixture no longer
+  // matches its goldens, which failed a deploy after the pacing change (WP4.8).
+  const sources = [path.join(src, "assembly"), path.join(ROOT, "packages/sdk-as/assembly")].flatMap(
+    (d) => (existsSync(d) ? readdirSync(d).map((f) => path.join(d, f)) : []),
+  );
+  const stale =
+    !existsSync(built) ||
+    sources.some((f) => f.endsWith(".ts") && statSync(f).mtimeMs > statSync(built).mtimeMs);
+  if (stale) await compileProgram(path.join(src, "assembly/index.ts"), built);
   copyFileSync(path.join(src, "manifest.json"), path.join(out, "manifest.json"));
   return PROGRAMS_DIR;
 }
