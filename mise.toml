@@ -1,0 +1,86 @@
+# Tabframe — tooling, environment, and tasks. Everything installs through mise.
+[tools]
+node = "22"
+bun = "1.3"
+aws-cli = "latest"
+gh = "latest"
+"npm:aws-cdk" = "latest"
+
+[env]
+AWS_PROFILE = "tabframe"
+AWS_REGION = "us-west-2"
+_.file = ".env.local" # gitignored: TABFRAME_ACCOUNT_ID, TABFRAME_BUDGET_EMAIL
+
+[tasks.install]
+description = "Install workspace dependencies and the Playwright browser"
+run = ["bun install", "bunx playwright install chromium"]
+
+[tasks.whoami]
+description = "Assert the AWS identity is the Tabframe account; every AWS task depends on it"
+run = "node packages/infra/scripts/whoami.ts"
+
+[tasks.lint]
+description = "Biome lint and format check, then a TypeScript type check"
+run = ["bunx biome check .", "bunx tsc -p tsconfig.json --noEmit"]
+
+[tasks.test]
+description = "Unit and integration tests, then browser tests"
+depends = ["lint"]
+run = ["bun test", "bunx playwright test --pass-with-no-tests"]
+
+[tasks.dev]
+description = "Local topology: control plane, local store, two local cores, web bundles in watch mode"
+run = "node packages/dev/src/up.ts"
+
+[tasks."dev:rotate"]
+description = "Start a second control plane and run a local handover"
+run = "node packages/dev/src/rotate.ts"
+
+[tasks.sim]
+description = "Churn simulation (--seed N, --long)"
+run = "node packages/core/sim/run.ts"
+
+[tasks.goldens]
+description = "Regenerate program goldens from single-node runs"
+run = "node packages/sdk-as/scripts/goldens.ts"
+
+[tasks."build:programs"]
+description = "Compile the AssemblyScript demo programs"
+run = "node packages/sdk-as/scripts/build-programs.ts"
+
+[tasks."build:web"]
+description = "Bundle the browser entry points"
+run = "bun build packages/web/src/host.ts packages/web/src/node.ts packages/web/src/sandbox.ts packages/web/src/editor.ts --target=browser --outdir packages/web/dist"
+
+[tasks."build:image"]
+description = "Bundle the control-plane process for the MicroVM image"
+run = "bun build packages/control-plane/src/main.ts --target=node --outfile packages/control-plane/dist/main.js"
+
+[tasks.build]
+description = "Build everything"
+depends = ["build:programs", "build:web", "build:image"]
+
+[tasks.deploy]
+description = "Deploy the stacks and rotate onto the new image version"
+depends = ["whoami", "build", "test"]
+run = ["cdk deploy --all --require-approval never", "node packages/fleet/scripts/rotate.ts"]
+
+[tasks.verify]
+description = "M0 runbook against the real account (masked output)"
+depends = ["whoami"]
+run = "node packages/infra/scripts/verify-m0.ts"
+
+[tasks.up]
+description = "Clear the off state and launch a control plane"
+depends = ["whoami"]
+run = "node packages/fleet/scripts/up.ts"
+
+[tasks.down]
+description = "Off: disable the schedule, terminate every MicroVM, write the off state"
+depends = ["whoami"]
+run = "node packages/fleet/scripts/down.ts"
+
+[tasks.logs]
+description = "Tail the MicroVM logs"
+depends = ["whoami"]
+run = "aws logs tail /aws/lambda/microvms/tabframe --follow"
