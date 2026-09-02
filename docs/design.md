@@ -718,6 +718,21 @@ Dated deviations discovered while building, recorded before the code landed (pla
   same one, which is what makes a retried rotation safe. `/health` is **not** gated by the fleet
   secret — the operator scripts poll it and it carries only counts; `/handover`, `/adopt`,
   `/drain`, `/snapshot`, and `/diag` are (§8).
+- **2026-09-02 (WP3.2).** The successor is always launched with the latest snapshot key, so a
+  failed `/handover` costs repeated work rather than state (§9.4). The pointer carries a `pending`
+  record naming a launched-but-not-promoted successor; the next run finishes, forgets, or
+  terminates it. Rotate has **no reserved concurrency** (the account cannot spare it); overlapping
+  runs are made safe by the per-generation client token, the pointer, and idempotent
+  handover/adopt instead (§9.2).
+- **2026-09-02 (WP2.2).** The `bars` view has a byte format:
+  `"TFBR" u32 version | u32 count | count × (str label | f64 value)`, values finite (§5.1, §5.3).
+  Word count's map tasks own the words that *start* inside their byte range — they skip a word
+  straddling the start and read past the end to finish one straddling the end — which is the
+  precise form of "extended to whitespace on both ends" (§5.6). The corpus is normalized at build
+  time beyond stripping the boilerplate: typographic apostrophes, quotation marks, dashes, and a
+  few accented letters become ASCII, and the edition's transcriber's notes go; the word rule is a
+  byte rule (ASCII letters and apostrophes) and non-ASCII bytes separate words. The attribution
+  file ships inside the bundle as `/in/ATTRIBUTION.txt`.
 - **2026-09-03 (WP1.9).** Found by the churn simulation. Results and presigns do not count
   against the per-node message bucket at all: they answer assignments, which `maxInFlight` already
   paces (§8.4; WP1.7 had raised the bucket to 1000 a second for the same reason). Agreement means

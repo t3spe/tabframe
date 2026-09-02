@@ -21,7 +21,9 @@ copyFileSync(path.join(src, "Dockerfile"), path.join(out, "Dockerfile"));
 writeFileSync(path.join(out, "package.json"), '{ "type": "module" }\n');
 copyFileSync(bundle, path.join(out, "main.js"));
 writeFileSync(path.join(out, "programs", ".gitkeep"), "");
-// Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/
+// Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
+// inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as
+// /in/<file> of the bundle.
 if (existsSync(programs)) {
   for (const name of readdirSync(programs)) {
     const dist = path.join(programs, name, "dist");
@@ -29,6 +31,12 @@ if (existsSync(programs)) {
     mkdirSync(path.join(out, "programs", name), { recursive: true });
     for (const f of readdirSync(dist))
       copyFileSync(path.join(dist, f), path.join(out, "programs", name, f));
+    const inputs = path.join(programs, name, "in");
+    if (existsSync(inputs)) {
+      mkdirSync(path.join(out, "programs", name, "in"), { recursive: true });
+      for (const f of readdirSync(inputs))
+        copyFileSync(path.join(inputs, f), path.join(out, "programs", name, "in", f));
+    }
   }
 }
 console.log(`[stage-image] ${path.relative(root, out)} ready (${readdirSync(out).join(", ")})`);

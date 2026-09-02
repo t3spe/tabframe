@@ -52,6 +52,7 @@
         "@aws-sdk/client-eventbridge": "3.1124.0",
         "@aws-sdk/client-lambda": "3.1124.0",
         "@aws-sdk/client-lambda-microvms": "3.1124.0",
+        "@aws-sdk/client-s3": "3.1124.0",
         "@aws-sdk/client-secrets-manager": "3.1124.0",
         "@aws-sdk/client-ssm": "3.1124.0",
       },
@@ -131,6 +132,13 @@
     },
     "programs/mandelbrot": {
       "name": "@tabframe/program-mandelbrot",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/sdk-as": "workspace:*",
+      },
+    },
+    "programs/wordcount": {
+      "name": "@tabframe/program-wordcount",
       "version": "0.0.0",
       "dependencies": {
         "@tabframe/sdk-as": "workspace:*",
@@ -307,6 +315,8 @@
     "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
     "@tabframe/program-mandelbrot": ["@tabframe/program-mandelbrot@workspace:programs/mandelbrot"],
+
+    "@tabframe/program-wordcount": ["@tabframe/program-wordcount@workspace:programs/wordcount"],
 
     "@tabframe/protocol": ["@tabframe/protocol@workspace:packages/protocol"],
 

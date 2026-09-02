@@ -8,6 +8,8 @@
  *   plan output : "TFSS" u32 version=1 | u8 kind (0 = stage, 1 = done)
  *                 stage: str name | u8 hasCanvas [u32 w u32 h] | u32 n | n × (u32 len input[len] | u8 hasPlace [i32 x y w h])
  *                 done : u8 hasNext [table next]
+ *   bars        : "TFBR" u32 version=1 | u32 count | count × (str label | f64 value)
+ *                 — what a `bars` program's final task returns (design §5.1); the dashboard draws it
  *   table       : u32 count | count × (str key | str value)   — values are JSON text
  *   str         : u32 len | utf8[len]
  */
@@ -16,6 +18,7 @@ export const ABI_VERSION = 1;
 const MAGIC_RUN = 0x4e524654; // "TFRN" little-endian
 const MAGIC_PLAN = 0x4c504654; // "TFPL"
 const MAGIC_SPEC = 0x53534654; // "TFSS"
+const MAGIC_BARS = 0x52424654; // "TFBR"
 
 /** Params and hints travel as a flat table of key → JSON text, so a program needs no JSON parser. */
 export type ParamTable = Record<string, unknown>;
@@ -57,6 +60,19 @@ export const SPEC_LIMITS = {
   maxNameBytes: 64,
 } as const;
 
+/** One bar of the `bars` view: a label and a finite value. */
+export interface Bar {
+  label: string;
+  value: number;
+}
+
+/** Structural caps on a bars payload: enough for a top-K, small enough to draw. */
+export const BARS_LIMITS = {
+  maxBars: 4096,
+  maxLabelBytes: 256,
+  maxBytes: 1024 * 1024,
+} as const;
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -87,6 +103,11 @@ class Writer {
     this.ensure(4);
     this.view.setInt32(this.pos, v | 0, true);
     this.pos += 4;
+  }
+  f64(v: number): void {
+    this.ensure(8);
+    this.view.setFloat64(this.pos, v, true);
+    this.pos += 8;
   }
   bytes(b: Uint8Array): void {
     this.u32(b.length);
@@ -135,6 +156,12 @@ class Reader {
     this.need(4);
     const v = this.view.getInt32(this.pos, true);
     this.pos += 4;
+    return v;
+  }
+  f64(): number {
+    this.need(8);
+    const v = this.view.getFloat64(this.pos, true);
+    this.pos += 8;
     return v;
   }
   bytes(): Uint8Array {
@@ -278,4 +305,44 @@ export function decodeStageSpec(b: Uint8Array, limits = SPEC_LIMITS): StageSpec 
   }
   if (r.remaining !== 0) throw new AbiError("trailing bytes");
   return spec;
+}
+
+export function encodeBars(bars: Bar[]): Uint8Array {
+  const w = new Writer();
+  w.u32(MAGIC_BARS);
+  w.u32(ABI_VERSION);
+  w.u32(bars.length);
+  for (const b of bars) {
+    w.str(b.label);
+    w.f64(b.value);
+  }
+  return w.done();
+}
+
+/**
+ * Decode and validate a `bars` payload: the caps above, and every value finite — NaN payload bits
+ * differ between engines, so a NaN would make identical programs disagree (design §5.5).
+ */
+export function decodeBars(
+  b: Uint8Array,
+  limits: { maxBars: number; maxLabelBytes: number; maxBytes: number } = BARS_LIMITS,
+): Bar[] {
+  if (b.length > limits.maxBytes)
+    throw new AbiError(`bars payload is ${b.length} bytes, cap ${limits.maxBytes}`);
+  const r = new Reader(b);
+  if (r.u32() !== MAGIC_BARS) throw new AbiError("not a bars payload");
+  if (r.u32() !== ABI_VERSION) throw new AbiError("unsupported ABI version");
+  const n = r.u32();
+  if (n > limits.maxBars) throw new AbiError(`bar count ${n} exceeds ${limits.maxBars}`);
+  const out: Bar[] = [];
+  for (let i = 0; i < n; i++) {
+    const raw = r.bytes();
+    if (raw.length > limits.maxLabelBytes)
+      throw new AbiError(`bar ${i} label exceeds ${limits.maxLabelBytes} bytes`);
+    const value = r.f64();
+    if (!Number.isFinite(value)) throw new AbiError(`bar ${i} value is not finite`);
+    out.push({ label: dec.decode(raw), value });
+  }
+  if (r.remaining !== 0) throw new AbiError("trailing bytes");
+  return out;
 }

@@ -169,6 +169,86 @@ export function memoryLimits(wasm: Uint8Array): { min: number; max: number | nul
   return { min: 0, max: null };
 }
 
+export interface StagedStage {
+  name: string;
+  taskCount: number;
+  outputs: Uint8Array[];
+  /** sha-256 hex of each task output, by task index. */
+  hashes: string[];
+  logs: string[][];
+}
+
+export interface StagedRun {
+  stages: StagedStage[];
+  /** The filesystem at the end: bundle inputs, every `/out/<stage>/<task>`, every write. */
+  files: Map<string, Uint8Array>;
+  /** The last stage's output when it had exactly one task (the `bars` and `text` views), else null. */
+  final: Uint8Array | null;
+  followUp: ParamTable | null;
+}
+
+/**
+ * Run a whole execution single-threaded the way the control plane would (design §5.2, §5.4):
+ * plan each stage, run its tasks in fresh instances against the filesystem as of the stage start,
+ * land outputs at `/out/<stage>/<task>`, fold writes (two tasks writing different bytes to one
+ * path is a program bug), and stop at `done`. Goldens and tests compare against this.
+ */
+export async function runStaged(
+  module: WebAssembly.Module,
+  inputs: Map<string, Uint8Array>,
+  params: ParamTable,
+  opts: { hints?: ParamTable; maxStages?: number } = {},
+): Promise<StagedRun> {
+  const { createHash } = await import("node:crypto");
+  let files = new Map(inputs);
+  const stages: StagedStage[] = [];
+  const maxStages = opts.maxStages ?? 16;
+  for (let s = 0; s < maxStages; s++) {
+    const planner = await instantiate(module, { files });
+    const spec = planner.plan(s, params, opts.hints ?? {});
+    const next = new Map(files);
+    for (const [p, b] of planner.writes) next.set(p, b);
+    if (spec.kind === "done") {
+      const last = stages[stages.length - 1];
+      return {
+        stages,
+        files: next,
+        final: last && last.outputs.length === 1 ? (last.outputs[0] as Uint8Array) : null,
+        followUp: spec.next,
+      };
+    }
+    const outputs: Uint8Array[] = [];
+    const hashes: string[] = [];
+    const logs: string[][] = [];
+    const written = new Map<string, Uint8Array>();
+    for (let i = 0; i < spec.tasks.length; i++) {
+      const task = spec.tasks[i] as (typeof spec.tasks)[number];
+      const inst = await instantiate(module, { files });
+      const out = inst.run(s, i, spec.tasks.length, task.input);
+      outputs.push(out);
+      hashes.push(createHash("sha256").update(out).digest("hex"));
+      logs.push(inst.logs);
+      next.set(`/out/${s}/${i}`, out);
+      for (const [p, b] of inst.writes) {
+        const seen = written.get(p);
+        if (seen && !sameBytes(seen, b))
+          throw new ProgramError(`write conflict at ${p} in stage ${s} (${spec.name})`);
+        written.set(p, b);
+        next.set(p, b);
+      }
+    }
+    stages.push({ name: spec.name, taskCount: spec.tasks.length, outputs, hashes, logs });
+    files = next;
+  }
+  throw new ProgramError(`no done after ${maxStages} stages`);
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /** Compile once, instantiate per call. */
 export async function loadProgram(
   wasm: Uint8Array,
