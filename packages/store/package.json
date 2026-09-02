@@ -1,0 +1,21 @@
+{
+  "name": "@tabframe/store",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The content-addressed blob store: drivers for the control plane (local, S3) and the client nodes and pages use",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./local": "./src/local.ts",
+    "./s3": "./src/s3.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1124.0",
+    "@aws-sdk/s3-request-presigner": "3.1124.0",
+    "@tabframe/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "aws-sdk-client-mock": "4.1.0"
+  }
+}

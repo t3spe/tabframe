@@ -3,9 +3,9 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
+import { LocalStore, parseRange } from "@tabframe/store";
 import { parseRunBody } from "./hooks.ts";
 import { selfTest } from "./server.ts";
-import { LocalStore, parseRange } from "./store/local.ts";
 
 // The process under test runs under Node, the production runtime, not under Bun.
 const MAIN = path.resolve(import.meta.dir, "main.ts");
@@ -275,17 +275,17 @@ describe("pure helpers", () => {
     const bytes = new TextEncoder().encode("abc");
     const hash = await store.put(bytes);
     expect(hash).toBe(sha(bytes));
-    expect(store.has(hash)).toBe(true);
-    expect(store.get(hash)).toEqual(bytes);
-    expect(store.url(hash)).toBe(`http://x/blob/${hash}`);
+    expect(await store.exists(hash)).toBe(true);
+    expect(await store.get(hash)).toEqual(bytes);
+    expect(store.urlFor(hash)).toBe(`http://x/blob/${hash}`);
     expect(store.size).toBe(1);
     expect(await store.put(bytes)).toBe(hash);
     expect(store.size).toBe(1);
-    const wrong = store.putVerified("0".repeat(64), bytes);
+    const wrong = await store.putVerified("0".repeat(64), bytes);
     expect(wrong.ok).toBe(false);
-    const right = store.putVerified(sha(new Uint8Array([9])), new Uint8Array([9]));
+    const right = await store.putVerified(sha(new Uint8Array([9])), new Uint8Array([9]));
     expect(right).toEqual({ ok: true, size: 1 });
-    expect(store.get("f".repeat(64))).toBeUndefined();
+    expect(await store.get("f".repeat(64))).toBeNull();
   });
 
   test("parseRange", () => {

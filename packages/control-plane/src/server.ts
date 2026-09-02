@@ -11,12 +11,12 @@ import {
   systemClock,
 } from "@tabframe/core";
 import { encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
+import { HASH_RE, LocalStore, parseRange, S3Store, type StoreDriver } from "@tabframe/store";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Config, Role } from "./config.ts";
 import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
 import { log } from "./log.ts";
 import { readBody, send, sendJson, serveStatic } from "./static.ts";
-import { HASH_RE, LocalStore, parseRange } from "./store/local.ts";
 
 const MAX_BLOB_BYTES = 8 * 1024 * 1024;
 
@@ -32,7 +32,7 @@ export interface ControlPlane {
   readonly generation: number;
   /** Present once the process is a control plane. */
   readonly ledger: Ledger | null;
-  readonly store: LocalStore;
+  readonly store: StoreDriver;
   close(): Promise<void>;
 }
 
@@ -66,7 +66,12 @@ export async function createControlPlane(
   const publicAddress = await listen(publicServer, config.publicPort, config.host);
   const privateAddress = await listen(privateServer, config.privatePort, config.host);
   const storeBase = config.storeBase ?? `http://${publicAddress.host}:${publicAddress.port}/blob`;
-  const store = new LocalStore(storeBase);
+  const local = new LocalStore(storeBase);
+  // Image mode writes to the blob bucket behind CloudFront; local mode serves blobs itself.
+  const store: StoreDriver =
+    config.mode === "image" && config.blobBucket
+      ? new S3Store({ bucket: config.blobBucket, base: storeBase })
+      : local;
 
   function becomeControlPlane(gen: number, base: string): void {
     generation = gen;
@@ -99,9 +104,36 @@ export async function createControlPlane(
           if (ws) ws.close(e.code, e.reason.slice(0, 120));
           break;
         }
-        default:
-          // fetchBlob, putBlob, and presign are executed against the store from WP1.3/WP1.7 on.
-          log("effect-unhandled", { kind: e.kind });
+        case "presign":
+          void store
+            .presign(e.items)
+            .then((urls) => {
+              const ws = conns.get(e.connId);
+              if (ws && ws.readyState === ws.OPEN) {
+                ws.send(encode({ t: "presigned", v: PROTOCOL_VERSION, gen: generation, urls }));
+              }
+            })
+            .catch((err) => log("presign-failed", { error: String(err) }));
+          break;
+        case "fetchBlob":
+          void store
+            .get(e.hash)
+            .then((bytes) =>
+              dispatch({ kind: "blobFetched", hash: e.hash, bytes, purpose: e.purpose }),
+            )
+            .catch((err) => {
+              log("fetch-failed", { hash: e.hash, error: String(err) });
+              dispatch({ kind: "blobFetched", hash: e.hash, bytes: null, purpose: e.purpose });
+            });
+          break;
+        case "putBlob":
+          void store
+            .put(e.bytes)
+            .then((hash) =>
+              dispatch({ kind: "blobStored", hash, size: e.bytes.length, purpose: e.purpose }),
+            )
+            .catch((err) => log("put-failed", { error: String(err) }));
+          break;
       }
     }
   }
@@ -158,11 +190,11 @@ export async function createControlPlane(
     if (req.method === "PUT") {
       const body = await readBody(req, MAX_BLOB_BYTES);
       if (!body) return send(res, 413, "text/plain", "blob too large");
-      const r = store.putVerified(hash, body);
+      const r = await local.putVerified(hash, body);
       if (!r.ok) return sendJson(res, 400, { error: "bytes do not hash to key", actual: r.actual });
       return sendJson(res, 200, { hash, size: r.size });
     }
-    const bytes = store.get(hash);
+    const bytes = local.getSync(hash);
     if (!bytes) return send(res, 404, "text/plain", "unknown blob");
     const headers: Record<string, string | number> = {
       "content-type": "application/octet-stream",
@@ -258,7 +290,7 @@ export async function createControlPlane(
       return sendJson(res, 200, {
         dns: dnsResult,
         storeBase: ledger?.meta.storeBase ?? storeBase,
-        blobs: store.size,
+        blobs: local.size,
         role,
         generation,
         node: process.version,

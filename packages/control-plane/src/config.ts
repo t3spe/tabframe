@@ -12,6 +12,8 @@ export interface Config {
   /** Where nodes and observers fetch blobs. Locally, the process itself. */
   storeBase: string | null;
   webDir: string | null;
+  /** Image mode: the blob bucket the S3 driver writes to (from the image environment). */
+  blobBucket: string | null;
   /** Local mode only: serve `{off: true}` from the emulated session endpoint. */
   localOff: boolean;
   tickMs: number;
@@ -28,6 +30,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     generation: intEnv(env.TABFRAME_GENERATION, 1),
     storeBase: env.TABFRAME_STORE_BASE ?? null,
     webDir: env.TABFRAME_WEB_DIR ?? null,
+    blobBucket: env.TABFRAME_BLOB_BUCKET ?? null,
     localOff: env.TABFRAME_LOCAL_OFF === "1",
     tickMs: intEnv(env.TABFRAME_TICK_MS, 500),
   };

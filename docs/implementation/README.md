@@ -19,3 +19,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.10 | [wp-0.10-first-hello.md](wp-0.10-first-hello.md) | 2026-09-02 | First deploy: four stacks, control plane in a MicroVM, page on CloudFront, browser nodes through the proxy |
 | WP1.1 | [wp-1.1-protocol-v1.md](wp-1.1-protocol-v1.md) | 2026-09-02 | Full wire vocabulary: assign/result/presign, controls, events, views, manifests; ABI byte formats |
 | WP1.2 | [wp-1.2-core-v1.md](wp-1.2-core-v1.md) | 2026-09-02 | Scheduler: tiers, deadlines, speculation, verification, execution lifecycle, controls, snapshots, invariants |
+| WP1.3 | [wp-1.3-store.md](wp-1.3-store.md) | 2026-09-02 | Store package: local and S3 drivers with pinned checksums, the shared client; control plane executes store effects |
