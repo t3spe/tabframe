@@ -1,0 +1,15 @@
+{
+  "name": "@tabframe/node",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The orchestrator that makes a browser tab or a MicroVM a Tabframe node; two platform entry points",
+  "exports": {
+    ".": "./src/orchestrator.ts",
+    "./platform/web": "./src/platform/web.ts",
+    "./platform/node": "./src/platform/node.ts"
+  },
+  "dependencies": {
+    "@tabframe/protocol": "workspace:*"
+  }
+}
