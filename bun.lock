@@ -119,6 +119,7 @@
       "dependencies": {
         "@tabframe/node": "workspace:*",
         "@tabframe/protocol": "workspace:*",
+        "@tabframe/store": "workspace:*",
       },
     },
     "programs/mandelbrot": {
