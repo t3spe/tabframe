@@ -1,0 +1,7 @@
+{
+  "name": "@tabframe/dev",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "One-command local topology: control plane, local store, two local cores, web bundles in watch mode"
+}

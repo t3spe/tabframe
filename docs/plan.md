@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 merged; WP0.3 merged; WP0.4 and WP0.12 merged; WP0.5 merged; WP0.6 web on `wp/0.6-web`; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
+**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 merged; WP0.3 merged; WP0.4 and WP0.12 merged; WP0.5 merged; WP0.6 merged; WP0.7 dev on `wp/0.7-dev`; WP0.8/0.9 branches ready to merge; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -64,7 +64,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
   *Acceptance:* both platforms join the local control plane; killing the process shows `nodeLeft`.
 - [x] **WP0.6 `web` minimal.** Host page: fetch session (handles waking, starting, and off), observer socket, node table with join/leave, spawn N, per-node close, `?observe` mode; `config.json` with the session URL.
   *Acceptance:* two tabs show each other's nodes live.
-- [ ] **WP0.7 `dev` topology.** `up.ts` starts the control plane under `node --watch`, two local cores, and `bun build --watch` for the web bundles.
+- [x] **WP0.7 `dev` topology.** `up.ts` starts the control plane under `node --watch`, two local cores, and `bun build --watch` for the web bundles.
   *Acceptance:* `mise run dev`, open the page, see the tab's node plus two cores; close the tab, the cores remain.
 - [ ] **WP0.8 `infra` skeleton (CDK).** Stacks in order: **Core** (buckets: artifacts, blobs, snapshots, web; CloudFront with S3 origins via OAC, `/blob/*` + `/` behaviors, error-caching TTL 0 on `/blob/*`; blob-bucket CORS allowing PUT with `x-amz-checksum-sha256` from the page's origin; one-year lifecycle on blobs; SSM pointer parameter with an off state; the budget from `TABFRAME_BUDGET_EMAIL`); **Image** (`CfnMicrovmImage` with a CDK asset zip of Dockerfile + `main.js` + programs dir, **hooks on port 8081**, environment variables for bucket names and pointer name only — nothing fleet-related, build role reading the asset bucket, control-plane and core execution roles per design §10.1); **Fleet** (session and rotate `NodejsFunction`s, function URL with CORS for GET, modest reserved concurrency on session, hourly EventBridge rule created **disabled**, roles). Base image version resolved by a small script and passed as context (currently `1` for `al2023-1`). Build and execution roles trust `lambda.amazonaws.com` for `sts:AssumeRole` and `sts:TagSession`; control-plane and fleet roles get the `lambda:*Microvm*` actions plus `iam:PassRole`.
   *Gates:* `cdk bootstrap` confirmation; first deploy confirmation (budget).

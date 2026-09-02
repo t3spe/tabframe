@@ -13,3 +13,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.12 | [wp-0.12-ci.md](wp-0.12-ci.md) | 2026-09-01 | GitHub Actions: lint, unit, browser tests on every push; nightly simulation; no AWS in CI |
 | WP0.5 | [wp-0.5-node.md](wp-0.5-node.md) | 2026-09-01 | Orchestrator: session, hello, heartbeat, reconnect with backoff and rotation delay; web and Node platforms |
 | WP0.6 | [wp-0.6-web.md](wp-0.6-web.md) | 2026-09-01 | Host page: session states, observer client, node table, local nodes, controls; Playwright acceptance |
+| WP0.7 | [wp-0.7-dev.md](wp-0.7-dev.md) | 2026-09-01 | `mise run dev`: control plane, two local cores, web watch, one-command teardown |
