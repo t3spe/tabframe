@@ -4,7 +4,8 @@ import {
   CONTROL_PLANE_MAX_DURATION_SECONDS,
   type RotateConfig,
 } from "../src/config.ts";
-import { type ControlPlanePayload, createRotateHandler } from "../src/rotate.ts";
+import type { ControlPlaneClient, ControlPlaneTarget } from "../src/cp-client.ts";
+import { type ControlPlanePayload, createRotateHandler, DRAIN_GRACE_MS } from "../src/rotate.ts";
 import {
   FakeClock,
   FakeLogger,
@@ -27,7 +28,7 @@ const config: RotateConfig = {
   pollIntervalMs: 2000,
 };
 
-describe("rotate handler v0", () => {
+describe("rotate handler", () => {
   let microvms: FakeMicrovmClient;
   let clock: FakeClock;
   let sleep: FakeSleeper;
@@ -63,16 +64,17 @@ describe("rotate handler v0", () => {
     expect(pointer.writes).toHaveLength(0);
   });
 
-  test("a running control plane is left alone (idempotent)", async () => {
+  test("a running control plane is rotated, not left alone", async () => {
     microvms.add({ microvmId: "mvm-9", state: "RUNNING" });
     const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-9", generation: 7 });
-    expect(await handler(pointer)()).toEqual({
-      action: "noop-running",
-      microvmId: "mvm-9",
-      generation: 7,
-    });
-    expect(microvms.runs).toHaveLength(0);
-    expect(pointer.writes).toHaveLength(0);
+    const result = await handler(pointer)();
+    expect(result).toMatchObject({ action: "rotated", from: "mvm-9", generation: 8 });
+    expect(microvms.runs).toHaveLength(1);
+    // Without a control-plane client there is no handover; the successor keeps its snapshot state.
+    expect(result.action === "rotated" && result.handedOver).toBe(false);
+    expect(microvms.terminated).toEqual(["mvm-9"]);
+    expect(pointer.writes.at(-1)?.generation).toBe(8);
+    expect(pointer.writes.at(-1)?.pending).toBeNull();
   });
 
   test("launches a control plane with the design's payload, connectors, policy, and role", async () => {
@@ -161,6 +163,209 @@ describe("rotate handler v0", () => {
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer)();
     expect(result.action).toBe("failed");
+    expect(pointer.writes).toHaveLength(0);
+  });
+});
+
+// ---- the full rotation, with a fake control plane on the other end --------------------------------
+
+class FakeControlPlane implements ControlPlaneClient {
+  readonly calls: string[] = [];
+  ledger = '{"version":1,"meta":{"generation":7}}';
+  failHandover = false;
+  failAdopt = false;
+  failDrain = false;
+  clients = 3;
+  adopted: string | null = null;
+  drainedNext: number | null = null;
+
+  async handover(target: ControlPlaneTarget) {
+    this.calls.push(`handover:${target.microvmId}`);
+    if (this.failHandover) throw new Error("handover unreachable");
+    return { generation: 7, ledger: this.ledger };
+  }
+  async adopt(target: ControlPlaneTarget, ledger: string) {
+    this.calls.push(`adopt:${target.microvmId}`);
+    if (this.failAdopt) throw new Error("adopt refused");
+    this.adopted = ledger;
+    return { generation: 8 };
+  }
+  async drain(target: ControlPlaneTarget, next: number) {
+    this.calls.push(`drain:${target.microvmId}`);
+    if (this.failDrain) throw new Error("drain unreachable");
+    this.drainedNext = next;
+    return { drained: this.clients };
+  }
+  async health() {
+    return { role: "control-plane", generation: 7 };
+  }
+}
+
+describe("rotation", () => {
+  let microvms: FakeMicrovmClient;
+  let clock: FakeClock;
+  let sleep: FakeSleeper;
+  let log: FakeLogger;
+  let cp: FakeControlPlane;
+  const secrets = new FakeSecretReader({ [config.fleetSecretArn]: "s3cret" });
+
+  beforeEach(() => {
+    microvms = new FakeMicrovmClient();
+    clock = new FakeClock();
+    sleep = new FakeSleeper(clock);
+    log = new FakeLogger();
+    cp = new FakeControlPlane();
+  });
+
+  const rotate = (
+    pointer: ReturnType<typeof pointerStoreWith>,
+    latestSnapshotKey: string | null = "g7/2026-09-02.json.gz",
+  ) =>
+    createRotateHandler({
+      pointer,
+      microvms,
+      secrets,
+      clock,
+      sleep,
+      log,
+      config,
+      controlPlane: () => cp,
+      latestSnapshotKey: async () => latestSnapshotKey,
+    });
+
+  test("the five steps happen in order, and the successor is told where the snapshot is", async () => {
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-old",
+      endpoint: "old.on.aws",
+      generation: 7,
+    });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({
+      action: "rotated",
+      from: "mvm-old",
+      generation: 8,
+      handedOver: true,
+      drained: 3,
+    });
+    const to = result.action === "rotated" ? result.to : "";
+    expect(cp.calls).toEqual([`handover:mvm-old`, `adopt:${to}`, `drain:mvm-old`]);
+    expect(cp.adopted).toBe(cp.ledger);
+    expect(cp.drainedNext).toBe(8);
+    const payload = JSON.parse(
+      microvms.runs[0]?.params.runHookPayload ?? "{}",
+    ) as ControlPlanePayload;
+    expect(payload.snapshotKey).toBe("g7/2026-09-02.json.gz");
+    expect(payload.generation).toBe(8);
+    // The pointer records the successor before the handover and clears it after the flip.
+    expect(pointer.writes[0]?.pending).toMatchObject({ microvmId: to, generation: 8 });
+    expect(pointer.writes.at(-1)).toMatchObject({ microvmId: to, generation: 8, pending: null });
+    // The old one is drained, given a grace period, then terminated.
+    expect(sleep.slept.at(-1)).toBe(DRAIN_GRACE_MS);
+    expect(microvms.terminated).toEqual(["mvm-old"]);
+  });
+
+  test("a handover that fails still rotates: the successor booted from the snapshot", async () => {
+    cp.failHandover = true;
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "rotated", handedOver: false });
+    expect(cp.adopted).toBeNull();
+    expect(microvms.terminated).toEqual(["mvm-old"]);
+    expect(log.lines.some((l) => l.level === "warn")).toBe(true);
+  });
+
+  test("an adopt that fails is the same story, and a drain that fails still terminates", async () => {
+    cp.failAdopt = true;
+    cp.failDrain = true;
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "rotated", handedOver: false, drained: 0 });
+    expect(microvms.terminated).toEqual(["mvm-old"]);
+    expect(pointer.writes.at(-1)?.generation).toBe(8);
+  });
+
+  test("a successor that never boots leaves the pointer alone", async () => {
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    microvms.terminateAfterRun = true;
+    const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
+    const result = await rotate(pointer)();
+    expect(result.action).toBe("failed");
+    expect(pointer.writes).toHaveLength(0);
+    expect(microvms.terminated).toEqual([]);
+    expect(cp.calls).toEqual([]);
+  });
+
+  test("a rotation that died after launching is finished by the next run", async () => {
+    const successor = microvms.add({ microvmId: "mvm-new", state: "RUNNING" });
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-old",
+      endpoint: "old.on.aws",
+      generation: 7,
+      pending: { microvmId: "mvm-new", endpoint: successor.endpoint, generation: 8 },
+    });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "repaired", microvmId: "mvm-new", generation: 8 });
+    expect(microvms.runs).toHaveLength(0); // nothing new was launched
+    expect(pointer.writes.at(-1)).toMatchObject({
+      microvmId: "mvm-new",
+      generation: 8,
+      pending: null,
+    });
+    expect(microvms.terminated).toEqual(["mvm-old"]);
+    expect(cp.calls).toEqual(["drain:mvm-old"]);
+  });
+
+  test("a pending successor that died is forgotten, and the run carries on", async () => {
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-old",
+      generation: 7,
+      pending: { microvmId: "mvm-ghost", endpoint: null, generation: 8 },
+    });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "rotated", generation: 8 });
+    expect(pointer.writes[0]?.pending).toBeNull();
+    expect(microvms.terminated).toEqual(["mvm-old"]);
+  });
+
+  test("a pending successor the pointer already passed is terminated", async () => {
+    microvms.add({ microvmId: "mvm-stale", state: "RUNNING" });
+    microvms.add({ microvmId: "mvm-live", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-live",
+      generation: 9,
+      pending: { microvmId: "mvm-stale", endpoint: null, generation: 8 },
+    });
+    const result = await rotate(pointer)();
+    expect(microvms.terminated).toContain("mvm-stale");
+    expect(result).toMatchObject({ action: "rotated", from: "mvm-live", generation: 10 });
+  });
+
+  test("nothing serving: a heal launches one and never calls the old one", async () => {
+    microvms.add({ microvmId: "mvm-dead", state: "TERMINATED" });
+    const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-dead", generation: 4 });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "launched", generation: 5 });
+    expect(cp.calls).toEqual([]);
+    expect(microvms.terminated).toEqual([]);
+  });
+
+  test("off is still off, whatever is pending", async () => {
+    const pointer = pointerStoreWith({
+      state: "off",
+      microvmId: "mvm-old",
+      pending: { microvmId: "mvm-new", endpoint: null, generation: 8 },
+    });
+    expect(await rotate(pointer)()).toEqual({ action: "skipped-off" });
+    expect(microvms.runs).toHaveLength(0);
     expect(pointer.writes).toHaveLength(0);
   });
 });

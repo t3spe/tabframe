@@ -718,4 +718,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   same one, which is what makes a retried rotation safe. `/health` is **not** gated by the fleet
   secret — the operator scripts poll it and it carries only counts; `/handover`, `/adopt`,
   `/drain`, `/snapshot`, and `/diag` are (§8).
+- **2026-09-02 (WP3.2).** The successor is always launched with the latest snapshot key, so a
+  failed `/handover` costs repeated work rather than state (§9.4). The pointer carries a `pending`
+  record naming a launched-but-not-promoted successor; the next run finishes, forgets, or
+  terminates it. Rotate has **no reserved concurrency** (the account cannot spare it); overlapping
+  runs are made safe by the per-generation client token, the pointer, and idempotent
+  handover/adopt instead (§9.2).
 

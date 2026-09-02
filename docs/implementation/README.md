@@ -29,3 +29,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP2.1 | [wp-2.1-filesystem.md](wp-2.1-filesystem.md) | 2026-09-02 | Execution filesystem: bundle files as the first root, persist inheritance, expired-root warning, per-execution size cap |
 | WP2.3 | [wp-2.3-launch-path.md](wp-2.3-launch-path.md) | 2026-09-02 | Launch path: uploaded bundles resolved and validated by the process, per-execution task budget, per-observer launch rate |
 | WP3.1 | [wp-3.1-cp-lifecycle.md](wp-3.1-cp-lifecycle.md) | 2026-09-02 | Rotation, control-plane side: phases, handover, generation-guarded adopt, jittered drain, fleet-secret gate |
+| WP3.2 | [wp-3.2-fleet-v1.md](wp-3.2-fleet-v1.md) | 2026-09-02 | Rotation, fleet side: the five steps, the private-port client, failure paths, and repair of an interrupted rotation |
