@@ -10,6 +10,12 @@ export interface Pointer {
   generation: number;
   imageVersion: string | null;
   updatedAt: string;
+  /**
+   * A successor a rotation launched but has not yet promoted (design §9.4). A rotation that dies
+   * between the launch and the pointer flip leaves this behind, and the next run finishes or
+   * rolls it back rather than leaving an orphan MicroVM burning money.
+   */
+  pending: { microvmId: string; endpoint: string | null; generation: number } | null;
 }
 
 export const EMPTY_POINTER: Pointer = {
@@ -19,6 +25,7 @@ export const EMPTY_POINTER: Pointer = {
   generation: 0,
   imageVersion: null,
   updatedAt: "",
+  pending: null,
 };
 
 export interface PointerStore {
@@ -52,7 +59,18 @@ export function parsePointer(raw: string | undefined | null): Pointer {
     generation,
     imageVersion: asString(o.imageVersion),
     updatedAt: asString(o.updatedAt) ?? "",
+    pending: parsePending(o.pending),
   };
+}
+
+function parsePending(value: unknown): Pointer["pending"] {
+  if (typeof value !== "object" || value === null) return null;
+  const p = value as Record<string, unknown>;
+  const microvmId = asString(p.microvmId);
+  const generation =
+    typeof p.generation === "number" && Number.isInteger(p.generation) ? p.generation : null;
+  if (!microvmId || generation === null) return null;
+  return { microvmId, endpoint: asString(p.endpoint), generation };
 }
 
 export function serializePointer(pointer: Pointer): string {

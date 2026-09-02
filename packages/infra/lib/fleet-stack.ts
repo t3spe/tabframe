@@ -94,9 +94,10 @@ export class FleetStack extends cdk.Stack {
         TABFRAME_SESSION_URL: this.sessionUrl.url,
         TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
         TABFRAME_FLEET_SECRET_ARN: core.fleetSecret.secretArn,
+        TABFRAME_SNAPSHOT_BUCKET: core.snapshotBucket.bucketName,
       },
       description:
-        "Tabframe rotate: launches and (from M3) hands over control planes; sole pointer writer",
+        "Tabframe rotate: launches and hands over control planes; the sole pointer writer",
     });
     this.rotate.addToRolePolicy(
       microvmActionsOnImages([
@@ -136,8 +137,9 @@ export class FleetStack extends cdk.Stack {
 
     this.hourlyRule = new cdk.aws_events.Rule(this, "Hourly", {
       ruleName: NAMES.hourlyRule,
-      description: "Tabframe hourly control-plane rotation (enabled at M3)",
+      description: "Tabframe hourly control-plane rotation; `mise run up` enables it",
       schedule: cdk.aws_events.Schedule.rate(cdk.Duration.hours(1)),
+      // Created disabled so a deploy never starts rotating on its own; `up` enables it (D20).
       enabled: false,
       targets: [new cdk.aws_events_targets.LambdaFunction(this.rotate)],
     });

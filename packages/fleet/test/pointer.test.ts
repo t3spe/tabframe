@@ -36,6 +36,7 @@ describe("parsePointer", () => {
       generation: 12,
       imageVersion: "3",
       updatedAt: "2026-09-01T00:00:00.000Z",
+      pending: { microvmId: "mvm-2", endpoint: "mvm-2.on.aws", generation: 13 },
     };
     expect(parsePointer(serializePointer(p))).toEqual(p);
   });
