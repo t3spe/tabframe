@@ -12,6 +12,8 @@ export interface CoreOptions {
   log: (event: string, fields?: Record<string, unknown>) => void;
   /** Test seam: skip the real sockets. */
   start?: boolean;
+  /** The sandbox worker entry; defaults to `TABFRAME_SANDBOX_WORKER` or the package's source. */
+  workerFile?: string;
 }
 
 /** Blob reads for the sandbox bridge, straight from the store base the session hands out. */
@@ -29,6 +31,7 @@ export function blobReaderFor(storeBase: string) {
 
 export function startCore(opts: CoreOptions): Orchestrator {
   const hostId = `core-${opts.microvmId ?? `unknown-${process.pid}`}`;
+  const workerFile = opts.workerFile ?? process.env.TABFRAME_SANDBOX_WORKER;
   const orchestrator = new Orchestrator({
     sessionUrl: opts.sessionUrl,
     hostId,
@@ -42,7 +45,13 @@ export function startCore(opts: CoreOptions): Orchestrator {
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout),
     },
-    createSandbox: (storeBase) => createNodeSandboxHost({ fetchBlob: blobReaderFor(storeBase) }),
+    createSandbox: (storeBase) =>
+      createNodeSandboxHost({
+        fetchBlob: blobReaderFor(storeBase),
+        // In the MicroVM image everything is one bundled file, so the worker entry is staged
+        // beside it and named by the environment; a checkout uses the package's own source.
+        ...(workerFile ? { workerFile } : {}),
+      }),
     onStatus: (status: Status) => {
       opts.log("core-status", { state: status.state, nodeId: status.nodeId, queue: status.queue });
     },

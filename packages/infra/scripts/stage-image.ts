@@ -20,6 +20,14 @@ mkdirSync(path.join(out, "programs"), { recursive: true });
 copyFileSync(path.join(src, "Dockerfile"), path.join(out, "Dockerfile"));
 writeFileSync(path.join(out, "package.json"), '{ "type": "module" }\n');
 copyFileSync(bundle, path.join(out, "main.js"));
+// The sandbox worker: a bundled process cannot spawn itself as a worker thread, so its entry is
+// staged beside the bundle and named to the process by TABFRAME_SANDBOX_WORKER (§4.2, §9.3).
+const worker = path.join(root, "packages/control-plane/dist/node-worker.js");
+if (!existsSync(worker)) {
+  console.error(`missing ${path.relative(root, worker)}; run the bundle step first`);
+  process.exit(1);
+}
+copyFileSync(worker, path.join(out, "node-worker.js"));
 writeFileSync(path.join(out, "programs", ".gitkeep"), "");
 // Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
 // inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as

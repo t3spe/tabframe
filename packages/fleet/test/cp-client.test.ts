@@ -84,3 +84,33 @@ describe("HttpControlPlaneClient", () => {
     expect(await cp.health(target)).toEqual({ role: "control-plane", generation: 9 });
   });
 });
+
+describe("retries", () => {
+  test("a 429 is retried and then succeeds", async () => {
+    let calls = 0;
+    const { cp } = client(() => {
+      calls++;
+      return calls < 3
+        ? { ok: false, status: 429, body: "slow down" }
+        : { ok: true, status: 200, body: '{"generation":7,"ledger":{"v":1}}' };
+    });
+    const r = await cp.handover(target);
+    expect(r.generation).toBe(7);
+    expect(calls).toBe(3);
+  }, 20_000);
+
+  test("a 403 is not retried", async () => {
+    let calls = 0;
+    const { cp } = client(() => {
+      calls++;
+      return { ok: false, status: 403, body: "no" };
+    });
+    await expect(cp.drain(target, 3)).rejects.toThrow("answered 403");
+    expect(calls).toBe(1);
+  });
+
+  test("giving up after the backoff schedule reports the last status", async () => {
+    const { cp } = client(() => ({ ok: false, status: 429, body: "slow down" }));
+    await expect(cp.health(target)).rejects.toThrow("answered 429");
+  }, 20_000);
+});

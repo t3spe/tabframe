@@ -44,7 +44,14 @@ const orchestrator = new Orchestrator({
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout),
   },
-  createSandbox: (storeBase) => createNodeSandboxHost({ fetchBlob: blobReaderFor(storeBase) }),
+  createSandbox: (storeBase) =>
+    createNodeSandboxHost({
+      fetchBlob: blobReaderFor(storeBase),
+      // A bundled deployment stages the worker beside the bundle and names it here.
+      ...(process.env.TABFRAME_SANDBOX_WORKER
+        ? { workerFile: process.env.TABFRAME_SANDBOX_WORKER }
+        : {}),
+    }),
   onStatus: (status: Status) => {
     emit("status", { ...status });
     if (status.state === "outdated") process.exit(3);

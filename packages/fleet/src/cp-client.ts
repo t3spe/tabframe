@@ -6,6 +6,12 @@ import type { MicrovmClient } from "./types.ts";
 export const PRIVATE_PORT = 8081;
 /** Tokens for a fleet call live as briefly as the API allows. */
 export const FLEET_TOKEN_MINUTES = 1;
+/**
+ * The MicroVM endpoint throttles requests, and a rotation happens exactly when a few hundred
+ * clients are reconnecting through it, so a fleet call can be answered 429. Retry a few times
+ * before giving up: losing a handover costs a stale ledger, and it is cheap to avoid.
+ */
+export const RETRY_BACKOFF_MS = [500, 1_500, 4_000];
 
 export interface ControlPlaneTarget {
   microvmId: string;
@@ -52,6 +58,22 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
   }
 
   private async call(target: ControlPlaneTarget, path: string, body?: unknown): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.callOnce(target, path, body);
+      } catch (err) {
+        const wait = RETRY_BACKOFF_MS[attempt];
+        if (wait === undefined || !isRetryable(err)) throw err;
+        await new Promise((r) => setTimeout(r, wait));
+      }
+    }
+  }
+
+  private async callOnce(
+    target: ControlPlaneTarget,
+    path: string,
+    body?: unknown,
+  ): Promise<string> {
     const token = await this.microvms.createAuthToken(target.microvmId, FLEET_TOKEN_MINUTES, [
       { port: PRIVATE_PORT },
     ]);
@@ -73,7 +95,15 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
         signal: controller.signal,
       });
       const text = await res.text();
-      if (!res.ok) throw new Error(`${path} on ${target.microvmId} answered ${res.status}`);
+      if (!res.ok) {
+        const error = new Error(
+          `${path} on ${target.microvmId} answered ${res.status}`,
+        ) as Error & {
+          status?: number;
+        };
+        error.status = res.status;
+        throw error;
+      }
       return text;
     } finally {
       clearTimeout(timer);
@@ -110,4 +140,11 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
       generation: typeof parsed.generation === "number" ? parsed.generation : 0,
     };
   }
+}
+
+/** Throttling and the transient 5xx family are worth another go; a 403 or a 409 is not. */
+function isRetryable(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  if (status === undefined) return true; // a network error or a timeout
+  return status === 429 || status >= 500;
 }
