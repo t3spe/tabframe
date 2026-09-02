@@ -45,6 +45,10 @@ run = "node packages/dev/src/rotate.ts"
 description = "Churn simulation (--seed N, --long)"
 run = "node packages/core/sim/run.ts"
 
+[tasks.transcripts]
+description = "Export the build's session transcripts as scrubbed Markdown into docs/transcripts (reviewed by hand before they are committed)"
+run = "node scripts/transcripts/export.ts"
+
 [tasks.goldens]
 description = "Regenerate program goldens from single-node runs"
 run = [

@@ -15,3 +15,5 @@ packages/sdk-as/dist-test/
 packages/node/dist-test/
 packages/control-plane/dist-test/
 packages/web/dist-test/
+# WP5.4: exported transcripts are reviewed by hand before this line goes and they are committed.
+docs/transcripts/
