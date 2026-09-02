@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { LIMITS } from "@tabframe/protocol";
+import { byteLength, canonicalStringify, encode, LIMITS, type StageSpec } from "@tabframe/protocol";
+import { executionTasks } from "./executions.ts";
 import { doneSpec, eventsOf, H, harness, renderSpec } from "./harness.ts";
+import { taskView } from "./ledger.ts";
 
 /** Bring up a program, an observer, n nodes, and an execution with a rendered stage of `tasks` tasks. */
 function machine(nodes: number, tasks: number, opts: { redundancy?: boolean } = {}) {
@@ -300,6 +302,33 @@ describe("verification", () => {
     expect(h.invariants()).toEqual([]);
   });
 
+  test("a stale result for a cancelled attempt is evidence but closes no newer attempt", () => {
+    // c1 holds t1@1 and t3; c2 holds t2. A late result from c2 settles t1 and cancels c1's attempt.
+    const { h, spec } = machine(3, 3);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    expect(a.connId).toBe("c1");
+    h.result("c2", a.taskId, 9, H("2"));
+    expect(h.ledger.tasks.get(a.taskId)?.status).toBe("done");
+    // c3 disagrees late: contested, and c1 (a free slot) gets t1 again as attempt 2.
+    const [again] = h.assigns(h.result("c3", a.taskId, 9, H("3")));
+    if (!again) throw new Error("no reassignment");
+    expect(again).toMatchObject({ connId: "c1", taskId: a.taskId, attempt: 2 });
+    // Now c1's result for the cancelled attempt 1 arrives. It settles round two (one result is
+    // enough with the toggle off), which cancels attempt 2 and tells c1 so; attempt 2 is never
+    // marked as reported, and c1's in-flight list agrees with what c1 holds.
+    const stale = h.result("c1", a.taskId, 1, H("1"));
+    const task = h.ledger.tasks.get(a.taskId);
+    expect(task?.status).toBe("done");
+    expect(task?.accepted?.output).toBe(H("1"));
+    expect(task?.attempts.find((x) => x.attempt === 2)?.outcome).toBe("cancelled");
+    expect(stale.some((e) => e.kind === "send" && e.connId === "c1" && e.msg.t === "cancel")).toBe(
+      true,
+    );
+    expect(h.ledger.nodes.get("n1")?.inFlight).not.toContain(a.taskId);
+    expect(h.invariants()).toEqual([]);
+  });
+
   test("a trap fails the task and the execution; the machine moves on", () => {
     const { h, spec } = machine(1, 2);
     const [a] = h.assigns(spec);
@@ -407,5 +436,51 @@ describe("queue and controls", () => {
     expect(
       second?.kind === "send" && second.msg.t === "snapshot" && second.msg.nodes,
     ).toBeUndefined();
+  });
+
+  test("snapshot pages stay under the message cap for a full frame of done tiles", () => {
+    // A done tile's row is about 250 bytes: 256 of them alone exceed the 64 KiB message cap.
+    const h = harness();
+    h.addProgram();
+    h.subscribe("o1");
+    for (let i = 1; i <= 24; i++) h.hello(`c${i}`, `h${i}`);
+    h.ledger.meta.taskCounter = 9000;
+    const [plan] = h.assigns(h.launch());
+    if (!plan) throw new Error("no plan task");
+    const frame: StageSpec = {
+      kind: "stage",
+      name: "render",
+      canvas: { w: 2048, h: 1280 },
+      tasks: Array.from({ length: 640 }, (_, i) => ({
+        input: new Uint8Array([i & 255]),
+        place: { x: (i % 32) * 64, y: Math.floor(i / 32) * 64, w: 64, h: 64 },
+      })),
+    };
+    let assigns = h.assigns(
+      h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("a")), frame),
+    );
+    while (assigns.length > 0) {
+      let next: typeof assigns = [];
+      for (const a of assigns)
+        next = [...next, ...h.assigns(h.result(a.connId, a.taskId, a.attempt, H("7")))];
+      assigns = next;
+    }
+    expect(h.ledger.executions.get("e1")?.counters.done).toBe(641);
+    const rows = executionTasks(h.ledger, "e1").map(taskView);
+    expect(byteLength(canonicalStringify(rows.slice(1, 257)))).toBeGreaterThan(
+      LIMITS.maxMessageBytes - 2048,
+    );
+    const pages = h.subscribe("o2").filter((e) => e.kind === "send" && e.msg.t === "snapshot");
+    expect(pages.length).toBeGreaterThanOrEqual(3);
+    let seen = 0;
+    for (const p of pages) {
+      if (p.kind !== "send" || p.msg.t !== "snapshot") throw new Error("unreachable");
+      expect(() => encode(p.msg)).not.toThrow();
+      expect(p.msg.pages).toBe(pages.length);
+      expect(p.msg.tasks.length).toBeLessThanOrEqual(LIMITS.snapshotPageTasks);
+      seen += p.msg.tasks.length;
+    }
+    // Every task of the execution appears exactly once across the pages, the plan task included.
+    expect(seen).toBe(641);
   });
 });

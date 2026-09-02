@@ -1,7 +1,9 @@
 import {
+  byteLength,
   CLOSE,
   type Control,
   type ControlPlaneToObserver,
+  canonicalStringify,
   decode,
   type Heartbeat,
   type Hello,
@@ -11,6 +13,7 @@ import {
   observerToControlPlane,
   PROTOCOL_VERSION,
   type Snapshot,
+  type TaskView,
 } from "@tabframe/protocol";
 import type { Effect, Event } from "./events.ts";
 import {
@@ -383,12 +386,17 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   return effects;
 }
 
-/** Page 0 carries the cluster; every page carries task rows (design §8.3). */
+/** Room left for task rows once the envelope and page fields are accounted for. */
+const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
+
+/**
+ * Page 0 carries the cluster; every page carries task rows (design §8.3). Pages are packed by
+ * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
+ * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
+ */
 export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
-  const pageSize = LIMITS.snapshotPageTasks;
-  const pages = Math.max(1, Math.ceil(tasks.length / pageSize));
   const machine: MachineView = {
     awake: true,
     reason: null,
@@ -396,36 +404,45 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
   };
+  const cluster = {
+    nodes: [...ledger.nodes.values()].map(nodeView),
+    execution: exec ? executionView(exec) : null,
+    queue: ledger.queue
+      .map((id) => ledger.executions.get(id))
+      .filter((e) => e !== undefined)
+      .map(queueEntry),
+    machine,
+  };
+  const pages: TaskView[][] = [];
+  let current: TaskView[] = [];
+  let used = byteLength(canonicalStringify(cluster));
+  for (const view of tasks) {
+    const size = byteLength(canonicalStringify(view)) + 1;
+    if (
+      current.length > 0 &&
+      (current.length >= LIMITS.snapshotPageTasks || used + size > SNAPSHOT_PAGE_BUDGET)
+    ) {
+      pages.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(view);
+    used += size;
+  }
+  pages.push(current);
   const effects: Effect[] = [];
-  for (let page = 0; page < pages; page++) {
-    const slice = tasks.slice(page * pageSize, (page + 1) * pageSize);
+  for (let page = 0; page < pages.length; page++) {
     const base: Snapshot = {
       t: "snapshot",
       v: PROTOCOL_VERSION,
       gen: ledger.meta.generation,
       seq: ledger.meta.seq,
       page,
-      pages,
-      tasks: slice,
+      pages: pages.length,
+      tasks: pages[page] ?? [],
       at: now,
     };
-    effects.push({
-      kind: "send",
-      connId,
-      msg:
-        page === 0
-          ? {
-              ...base,
-              nodes: [...ledger.nodes.values()].map(nodeView),
-              execution: exec ? executionView(exec) : null,
-              queue: ledger.queue
-                .map((id) => ledger.executions.get(id))
-                .filter((e) => e !== undefined)
-                .map(queueEntry),
-              machine,
-            }
-          : base,
-    });
+    effects.push({ kind: "send", connId, msg: page === 0 ? { ...base, ...cluster } : base });
   }
   return effects;
 }

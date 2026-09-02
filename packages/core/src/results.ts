@@ -37,9 +37,13 @@ export function onResult(
 ): { effects: Effect[]; settlement: Settlement } {
   const effects: Effect[] = [];
   const task = ledger.tasks.get(msg.taskId);
-  const attempt = task?.attempts.find((a) => a.nodeId === node.nodeId && a.outcome === "running");
-  // Bookkeeping on the node regardless of what the task says.
-  node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
+  // The result names its attempt. Only that attempt closes: a stale report for an attempt that was
+  // cancelled must not close a newer attempt of the same task on the same node, or the node ends
+  // up holding work the control plane thinks is finished. It still counts as evidence below.
+  const attempt = task?.attempts.find(
+    (a) => a.attempt === msg.attempt && a.nodeId === node.nodeId && a.outcome === "running",
+  );
+  if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   node.tasksDone += 1;
   node.lastTaskMs = msg.computeMs;
   node.ewmaMs =
