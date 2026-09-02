@@ -84,6 +84,7 @@ confirmed on the deployed machine by the parent from `/health`:
 | Before, synthetic (hashes repeat, so gzip flatters it) | 33 | 21 185 | 22.4 MB | 586 KB |
 | Before, deployed (real hashes) | 32 ended | 18 705 | — | **2.16 MB** |
 | After, synthetic | 33 | 1 925 | 3.9 MB | 195 KB |
+| After, deployed (generation 23, real hashes) | 32 ended | 1 925 | — | **917–967 KB** |
 
 Two megabytes gzipped, serialized and pushed to S3 every five seconds while the ledger changes, on
 a half-vCPU control plane, is not comfortable. The records were never the problem — an execution
@@ -96,10 +97,25 @@ running execution is never touched. The scan runs only when an ended execution b
 still has tasks, so ticks after the prune cost nothing. Expected on the deployed machine: about a
 tenth of the size, roughly 200 KB gzipped per write.
 
+*Deployed (parent, 2026-09-02):* `/health` on generation 23 after a verify-m1 run reported 33
+executions, 1 925 tasks and a 917 206-byte gzipped snapshot (966 962 bytes after the next frame) —
+less than half of before, but five times the synthetic estimate. The synthetic ledger's hashes
+repeat; the real one's do not, and what is left is the ended executions' *file maps*: 640 tile
+entries of hash and size per frame, 32 frames deep, some 21 000 entries that gzip cannot fold.
+Retiring those maps with the tasks (an ended execution beyond the two most recent keeps its root
+hash, from which the map is rebuilt on inheritance) is the follow-up, WP4.9.
+
 ### Resume latency
 
-_To be measured by the parent on AWS (a suspended control plane's first request after the idle
-policy fires; M0 measured resume under a second at 1 GB)._
+Measured by the parent with the M0 runbook (`mise run verify -- --only resume`, a throwaway
+MicroVM on the production image, suspended by the API and woken by the platform's auto-resume on
+the first proxied request): **4.1 s to the first 200** — the MicroVM read `SUSPENDED` until 4.1 s
+and `RUNNING` from then on, ten requests at 250 ms, the earlier ones answered 502 by the proxy
+while the VM was still asleep. M0 measured 0.7 s on the same path; one run this day answered 502
+for more than twenty seconds before waking, so the platform's resume varies and the session
+function's `retryAfterMs` loop (a tab waits and asks again) is what makes it invisible, not the
+number. The control plane never suspends while anyone watches (the idle policy fires after fifteen
+idle minutes), so this is the latency of the first visitor after a quiet spell.
 
 ## Tests
 
@@ -129,5 +145,6 @@ policy fires; M0 measured resume under a second at 1 GB)._
 
 ## Left for the parent
 
-- Resume latency on AWS.
-- The deployed snapshot size after this lands, for the record.
+- ~~Resume latency on AWS.~~ 4.1 s, above.
+- ~~The deployed snapshot size after this lands, for the record.~~ 917–967 KB gzipped; the file
+  maps are the remainder, WP4.9.
