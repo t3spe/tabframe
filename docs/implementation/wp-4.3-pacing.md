@@ -1,6 +1,6 @@
 # WP4.3 — Performance and pacing
 
-**Milestone:** M4 · **Branch:** `wp/4.3-pacing` · **Merged:** pending · **Packages:**
+**Milestone:** M4 · **Branch:** `wp/4.3-pacing` · **Merged:** 2026-09-02 · **Packages:**
 `programs/mandelbrot`, `packages/sdk-as` (the goldens tool), `packages/core` (pruning)
 
 ## What
