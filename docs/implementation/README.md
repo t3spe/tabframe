@@ -24,3 +24,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP1.5 | [wp-1.5-sdk-mandelbrot.md](wp-1.5-sdk-mandelbrot.md) | 2026-09-02 | AssemblyScript SDK mirroring the ABI, Mandelbrot program with presets and goldens, build and host scripts |
 | WP1.6 | [wp-1.6-node-v1.md](wp-1.6-node-v1.md) | 2026-09-02 | Node orchestrator: task loop, module and manifest caches, sandbox with grace deadline, uploads via presign, cancel and commands, `released` results |
 | WP1.7 | [wp-1.7-control-plane-v1.md](wp-1.7-control-plane-v1.md) | 2026-09-02 | Control plane: seeding of shipped programs, gzipped S3 snapshots with a latest pointer, adopt-from-snapshot in `/run`, the M1 pipeline end to end |
+| WP1.8 | [wp-1.8-dashboard-v1.md](wp-1.8-dashboard-v1.md) | 2026-09-02 | Dashboard: verified tiles on the canvas with state overlay, task grid, counters, throughput, controls over the socket, notices, demo mode |

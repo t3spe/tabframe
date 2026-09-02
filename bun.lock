@@ -123,6 +123,7 @@
         "@tabframe/node": "workspace:*",
         "@tabframe/protocol": "workspace:*",
         "@tabframe/sandbox": "workspace:*",
+        "@tabframe/store": "workspace:*",
       },
     },
     "programs/mandelbrot": {
