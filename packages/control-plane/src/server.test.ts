@@ -211,10 +211,10 @@ describe("process", () => {
 
   test("lifecycle hooks answer on the private port", async () => {
     const hook = (name: string, body?: unknown) =>
-      fetch(`${priv}/aws/lambda-microvms/runtime/v1/${name}`, {
-        method: "POST",
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      fetch(
+        `${priv}/aws/lambda-microvms/runtime/v1/${name}`,
+        body === undefined ? { method: "POST" } : { method: "POST", body: JSON.stringify(body) },
+      );
     expect((await hook("ready")).status).toBe(200);
     expect((await hook("validate")).status).toBe(200);
     for (const name of ["resume", "suspend", "terminate"])

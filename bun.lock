@@ -41,6 +41,13 @@
         "@aws-sdk/client-sts": "3.1124.0",
       },
     },
+    "packages/node": {
+      "name": "@tabframe/node",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/protocol": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@tabframe/protocol",
       "version": "0.0.0",
@@ -119,6 +126,8 @@
     "@tabframe/core": ["@tabframe/core@workspace:packages/core"],
 
     "@tabframe/infra": ["@tabframe/infra@workspace:packages/infra"],
+
+    "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
     "@tabframe/protocol": ["@tabframe/protocol@workspace:packages/protocol"],
 

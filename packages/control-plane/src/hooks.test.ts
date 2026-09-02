@@ -41,10 +41,10 @@ beforeAll(async () => {
 afterAll(() => server.close());
 
 const post = (name: string, body?: unknown) =>
-  fetch(`${base}${name}`, {
-    method: "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  fetch(
+    `${base}${name}`,
+    body === undefined ? { method: "POST" } : { method: "POST", body: JSON.stringify(body) },
+  );
 
 describe("handleHook", () => {
   test("ready reflects the listening state", async () => {

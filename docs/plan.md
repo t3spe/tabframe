@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 merged; WP0.3 merged; WP0.4 control plane on `wp/0.4-control-plane`; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
+**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 merged; WP0.3 merged; WP0.4 and WP0.12 merged; WP0.5 node on `wp/0.5-node`; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -60,7 +60,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
   *Acceptance:* unit tests with a fake clock; a node that stops heartbeating is gone at 4 s and its connection-close effect is emitted.
 - [x] **WP0.4 `control-plane` process, local mode.** Node `http` + `ws` with two listeners, public and private (8080/8081 in the image; 4080/4081 by default locally, since 8080 is taken on the dev machine; both env-configurable) — public for sockets and static, private for `/health`, `/diag`, the lifecycle hook routes at `/aws/lambda-microvms/runtime/v1/{ready,validate,run,resume,suspend,terminate}` (log and 200; `run` reads role and payload), and later the fleet endpoints; **neutral boot state** until `/run`; observer and node sockets wired to `core`; `presign` as a socket message returning URLs to itself; local store routes `GET /blob/<hash>` and `PUT /blob/<hash>` (hashes, refuses mismatch); emulated `GET /session` including the off state.
   *Acceptance:* process test opens a real socket, completes hello/welcome, heartbeats, and sees itself in a snapshot.
-- [ ] **WP0.5 `node` orchestrator, minimal.** `platform/web.ts` (Web Worker) and `platform/node.ts` (Node process): take a session, connect, hello, heartbeat, reconnect with backoff, post `status` to the host. No sandbox yet.
+- [x] **WP0.5 `node` orchestrator, minimal.** `platform/web.ts` (Web Worker) and `platform/node.ts` (Node process): take a session, connect, hello, heartbeat, reconnect with backoff, post `status` to the host. No sandbox yet.
   *Acceptance:* both platforms join the local control plane; killing the process shows `nodeLeft`.
 - [ ] **WP0.6 `web` minimal.** Host page: fetch session (handles waking, starting, and off), observer socket, node table with join/leave, spawn N, per-node close, `?observe` mode; `config.json` with the session URL.
   *Acceptance:* two tabs show each other's nodes live.
