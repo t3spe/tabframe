@@ -7,3 +7,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP | Document | Merged | Summary |
 |---|---|---|---|
 | WP0.1 | [wp-0.1-repo-scaffold.md](wp-0.1-repo-scaffold.md) | 2026-09-01 | Workspace, tooling, guard task, docs, license |
+| WP0.2 | [wp-0.2-protocol.md](wp-0.2-protocol.md) | 2026-09-01 | Envelope, M0 messages, close codes, limits, canonical codec |
