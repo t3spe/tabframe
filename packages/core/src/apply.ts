@@ -32,6 +32,7 @@ import {
   pruneExecutions,
   resumeAll,
 } from "./executions.ts";
+import { coreGone, coreLaunched, fleetTick, microvmIdOfHost } from "./fleet.ts";
 import {
   type ConnRole,
   type ConnState,
@@ -77,6 +78,10 @@ export function apply(
       return removeConnection(ledger, event.connId, "closed");
     case "tick":
       return tick(ledger, now);
+    case "coreLaunched":
+      return coreLaunched(ledger, event.microvmId, now);
+    case "coreGone":
+      return coreGone(ledger, event.microvmId);
     case "bundleRejected":
       return ledger.conns.has(event.connId)
         ? [
@@ -133,6 +138,7 @@ export function apply(
 function tick(ledger: Ledger, now: number): Effect[] {
   const effects = sweep(ledger, now);
   pruneExecutions(ledger);
+  effects.push(...fleetTick(ledger, now));
   effects.push(...relabelHealth(ledger));
   effects.push(...ensureDefaultLoop(ledger, now));
   effects.push(...fill(ledger, now));
@@ -377,6 +383,13 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
   };
   ledger.nodes.set(nodeId, node);
   ledger.nodeByConn.set(connId, nodeId);
+  // A cloud core names itself after its MicroVM, which is how the ledger links the two (§6.8).
+  const microvmId = microvmIdOfHost(msg.hostId);
+  if (microvmId) {
+    const core = ledger.cores.get(microvmId);
+    if (core) core.nodeId = nodeId;
+    else ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId });
+  }
 
   const effects: Effect[] = [
     {
@@ -449,8 +462,8 @@ const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
   const machine: MachineView = {
-    awake: true,
-    reason: null,
+    awake: ledger.meta.awake,
+    reason: ledger.meta.sleepReason,
     redundancy: ledger.meta.redundancy,
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
@@ -560,6 +573,11 @@ function refuse(ledger: Ledger, connId: string, code: number, reason: string): E
 }
 
 /** Forget a connection. A node's departure releases its work and is announced; an observer's is not. */
+/** A node has gone: if it was a cloud core, the core is free to be replaced. */
+function unlinkCore(ledger: Ledger, nodeId: string): void {
+  for (const core of ledger.cores.values()) if (core.nodeId === nodeId) core.nodeId = null;
+}
+
 export function removeConnection(
   ledger: Ledger,
   connId: string,
@@ -572,6 +590,7 @@ export function removeConnection(
     ledger.nodes.delete(nodeId);
     ledger.nodeByConn.delete(connId);
     ledger.conns.delete(connId);
+    unlinkCore(ledger, nodeId);
     effects.push(...broadcast(ledger, { t: "nodeLeft", nodeId, reason }));
     if (node) effects.push(...releaseNode(ledger, node));
     return effects;

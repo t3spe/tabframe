@@ -29,6 +29,7 @@ import {
 import { type WebSocket, WebSocketServer } from "ws";
 import { resolveBundle } from "./bundles.ts";
 import type { Config, Role } from "./config.ts";
+import { type CoreFleet, createCoreFleet } from "./cores.ts";
 import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
 import { log } from "./log.ts";
 import { type DiscoveredProgram, discoverPrograms, seedPrograms } from "./seed.ts";
@@ -79,6 +80,8 @@ export interface ControlPlaneDeps {
   store?: StoreDriver;
   snapshots?: SnapshotStore;
   programs?: DiscoveredProgram[];
+  /** Injected in tests; in the image it is built from the run payload. */
+  cores?: CoreFleet;
 }
 
 /**
@@ -95,6 +98,8 @@ export async function createControlPlane(
   let generation = config.generation;
   let ledger: Ledger | null = null;
   let fleetSecret: string | null = null;
+  let cores: CoreFleet | null = deps.cores ?? null;
+  let sessionUrl: string | null = config.sessionUrl;
   let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
 
@@ -129,6 +134,14 @@ export async function createControlPlane(
   const snapshotter = new Snapshotter(snapshots);
 
   /** Fresh or adopted, the ledger is ours from here: announce the role and seed the programs. */
+  /** Cloud cores need the image, the core role, and a session URL to point the cores at. */
+  function canRunCores(): boolean {
+    return Boolean(
+      deps.cores ??
+        (config.imageArn && config.coreRoleArn && sessionUrl && config.mode === "image"),
+    );
+  }
+
   function becomeControlPlane(gen: number, base: string, adopted: Ledger | null): void {
     generation = gen;
     if (adopted) {
@@ -136,7 +149,20 @@ export async function createControlPlane(
       adopted.meta.storeBase = base;
       ledger = adopted;
     } else {
-      ledger = createLedger(gen, { storeBase: base });
+      ledger = createLedger(gen, { storeBase: base, cloudCores: canRunCores() });
+    }
+    ledger.config.cloudCores = canRunCores();
+    if (canRunCores() && !cores) {
+      cores = createCoreFleet({
+        imageArn: config.imageArn as string,
+        imageVersion: config.imageVersion,
+        coreRoleArn: config.coreRoleArn as string,
+        region: config.region,
+        sessionUrl: sessionUrl as string,
+        storeBase: base,
+        generation: gen,
+        fleetSecret,
+      });
     }
     role = "control-plane";
     log("role", { role, generation, adopted: adopted !== null });
@@ -231,6 +257,26 @@ export async function createControlPlane(
               dispatch({ kind: "blobFetched", hash: e.hash, bytes: null, purpose: e.purpose });
             });
           break;
+        case "launchCore": {
+          if (!cores) break;
+          void cores
+            .launch()
+            .then((microvmId) => {
+              log("core-launched", { microvmId });
+              dispatch({ kind: "coreLaunched", microvmId });
+            })
+            .catch((err) => log("core-launch-failed", { error: String(err) }));
+          break;
+        }
+        case "terminateCore": {
+          const { microvmId } = e;
+          if (!cores) break;
+          void cores
+            .terminate(microvmId)
+            .then(() => log("core-terminated", { microvmId }))
+            .catch((err) => log("core-terminate-failed", { microvmId, error: String(err) }));
+          break;
+        }
         case "resolveBundle": {
           const { bundle, connId, params, inherit } = e;
           void resolveBundle(store, bundle, DEFAULT_TASK_LIMITS.memoryPagesMax)
@@ -367,6 +413,7 @@ export async function createControlPlane(
         return false;
       }
       fleetSecret = payload.fleetSecret;
+      sessionUrl = payload.sessionUrl ?? sessionUrl;
       log("run", {
         microvmId,
         role: payload.role,
@@ -392,7 +439,15 @@ export async function createControlPlane(
       }
       role = "core";
       generation = payload.generation;
-      log("role", { role, note: "core orchestrator arrives in WP3.3" });
+      if (!payload.sessionUrl) {
+        log("run-refused", { reason: "a core needs a session URL" });
+        return false;
+      }
+      // The node orchestrator is the same code a browser tab runs (design §4, §9.3). It is
+      // started here rather than as a separate process so the image stays one entry point.
+      const { startCore } = await import("./core-node.ts");
+      startCore({ sessionUrl: payload.sessionUrl, microvmId, log });
+      log("role", { role, generation, hostId: `core-${microvmId ?? "unknown"}` });
       return true;
     },
     async onSuspend() {

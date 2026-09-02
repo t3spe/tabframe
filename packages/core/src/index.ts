@@ -17,6 +17,18 @@ export {
   pruneExecutions,
 } from "./executions.ts";
 export {
+  CORE_LAUNCH_GAP_MS,
+  CORE_MAX_AGE_MS,
+  coreGone,
+  coreLaunched,
+  DESIRED_CORES,
+  fleetTick,
+  microvmIdOfHost,
+  SLEEP_AFTER_NO_INTERACTION_MS,
+  SLEEP_AFTER_NO_OBSERVER_MS,
+  sleepReason,
+} from "./fleet.ts";
+export {
   beginHandover,
   drain,
   JITTER_FLOOR_MS,
@@ -36,6 +48,7 @@ export {
   type AttemptRecord,
   type ConnRole,
   type ConnState,
+  type CoreRecord,
   createLedger,
   DEFAULT_TASK_LIMITS,
   type ExecutionRecord,

@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "@tabframe/core": "workspace:*",
+    "@tabframe/fleet": "workspace:*",
+    "@tabframe/node": "workspace:*",
     "@tabframe/protocol": "workspace:*",
     "@tabframe/sandbox": "workspace:*",
     "@tabframe/store": "workspace:*",

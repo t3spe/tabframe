@@ -759,3 +759,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
   free slot; a tie after two contested rounds is not a majority and starts another round, up to
   four, after which report order breaks it.
+- **2026-09-02 (WP3.3).** A cloud core names itself `core-<microvmId>`, which is how the ledger
+  links a node to the core it launched; no registration message (§6.8). Core records travel in the
+  ledger and are inherited at adopt with their node links cleared. Cores launch with **no ingress
+  connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
+  the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
+  but has no fleet (§6.8, §12).
+

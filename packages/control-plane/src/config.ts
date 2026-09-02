@@ -24,6 +24,12 @@ export interface Config {
   /** Image mode: the bucket the snapshotter writes to. */
   snapshotBucket: string | null;
   snapshotEveryMs: number;
+  /** Image mode: what the control plane needs to launch cloud cores (design §6.8). */
+  imageArn: string | null;
+  imageVersion: string | null;
+  coreRoleArn: string | null;
+  region: string;
+  sessionUrl: string | null;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
@@ -47,6 +53,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     defaultProgram: env.TABFRAME_DEFAULT_PROGRAM ?? "mandelbrot",
     snapshotBucket: env.TABFRAME_SNAPSHOT_BUCKET ?? null,
     snapshotEveryMs: intEnv(env.TABFRAME_SNAPSHOT_MS, 5_000),
+    imageArn: env.TABFRAME_IMAGE_ARN ?? null,
+    imageVersion: env.TABFRAME_IMAGE_VERSION ?? null,
+    coreRoleArn: env.TABFRAME_CORE_ROLE_ARN ?? null,
+    region: env.AWS_REGION ?? "us-west-2",
+    sessionUrl: env.TABFRAME_SESSION_URL ?? null,
   };
 }
 
