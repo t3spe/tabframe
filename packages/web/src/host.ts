@@ -1,9 +1,12 @@
 // The host page (design §3): one observer socket for the dashboard, zero or more node workers.
 // The canvas is the hero: finished tiles land on it as they are verified, and the scheduler's
 // state is drawn over the rectangles that are still open. Around it, the panels of dashboard v2:
-// programs, queue, the stage strip, the result of a bars or text program, files, task detail.
+// programs, queue, the stage strip, the result of a bars or text program, files, task detail, the
+// ledger; and the polish of WP4.1: flashes with a log of what just moved, a legend, the rotation
+// and sleep banners, a throughput chart, and a spawn hint sized to this browser's cores.
 import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
+import { connectionCopy, fmtCountdown, machineCopy, ROTATING_DETAIL } from "./banners.ts";
 import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
 import type { EditorHandle } from "./editor.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
@@ -15,12 +18,16 @@ import {
   hostCount,
   inFlightByNode,
   isFlashing,
+  machineBanner,
+  type Pulse,
   planTask,
   progress,
   stageTasks,
+  TASK_COLOR_LABELS,
   type TaskColor,
   taskColor,
   throughput,
+  throughputSeries,
   withRedundancy,
 } from "./state.ts";
 import {
@@ -48,22 +55,25 @@ export const COLORS: Record<TaskColor, string> = {
   pending: "#3a4250",
   assigned: "#56b4e9",
   speculated: "#cc79a7",
+  released: "#e69f00",
   done: "#009e73",
   verified: "#0072b2",
   mismatch: "#f0e442",
   failed: "#d55e00",
 };
+/** The legend: every task colour, then the two overlays the grid draws on top of them. */
 const LEGEND: [TaskColor | "flash" | "contested", string][] = [
-  ["pending", "pending"],
-  ["assigned", "assigned"],
-  ["speculated", "speculated twin"],
-  ["done", "done"],
-  ["verified", "verified"],
-  ["mismatch", "mismatch, recomputing"],
-  ["failed", "failed"],
-  ["flash", "taken back"],
-  ["contested", "contested"],
+  ...TASK_COLOR_LABELS,
+  ["flash", "flash: just taken back, twinned, verified, or retracted"],
+  ["contested", "contested: results disagreed"],
 ];
+/** What a flash says in the pulse list. */
+const PULSE_TEXT: Record<Pulse["kind"], (p: Pulse) => string> = {
+  released: (p) => `${p.taskId} taken back from ${p.nodeId}`,
+  speculated: (p) => `${p.taskId} twin on ${p.nodeId}`,
+  verified: (p) => `${p.taskId} verified by ${p.nodeId}`,
+  mismatch: (p) => `${p.taskId} results disagree, ${p.nodeId} retracted`,
+};
 const FLASH = "#ffffff";
 const SELECTED = "#6ea8ff";
 const BG = "#0b0d10";
@@ -88,8 +98,16 @@ const els = {
   seq: $<HTMLSpanElement>("#seq"),
   exec: $<HTMLSpanElement>("#exec"),
   rate: $<HTMLSpanElement>("#rate"),
+  nextRotation: $<HTMLSpanElement>("#nextRotation"),
   notice: $<HTMLDivElement>("#notice"),
+  machineBanner: $<HTMLDivElement>("#machineBanner"),
   banner: $<HTMLDivElement>("#banner"),
+  bannerTitle: $<HTMLElement>("#bannerTitle"),
+  bannerBody: $<HTMLSpanElement>("#bannerBody"),
+  bannerHint: $<HTMLSpanElement>("#bannerHint"),
+  chart: $<HTMLCanvasElement>("#throughputChart"),
+  figure: $<HTMLSpanElement>("#throughputFigure"),
+  pulses: $<HTMLUListElement>("#pulses"),
   stage: $<HTMLDivElement>("#stage"),
   execName: $<HTMLSpanElement>("#execName"),
   execDetail: $<HTMLSpanElement>("#execDetail"),
@@ -107,7 +125,7 @@ const els = {
   spawnN: $<HTMLButtonElement>("#spawnN"),
   spawnCount: $<HTMLSpanElement>("#spawnCount"),
   killMine: $<HTMLButtonElement>("#killMine"),
-  coresNote: $<HTMLParagraphElement>("#coresNote"),
+  spawnHint: $<HTMLParagraphElement>("#spawnHint"),
   redundancy: $<HTMLInputElement>("#redundancy"),
   tileStats: $<HTMLSpanElement>("#tileStats"),
   openEditor: $<HTMLButtonElement>("#openEditor"),
@@ -124,11 +142,15 @@ const controlButtons: [HTMLButtonElement, ControlRequest][] = [
 
 const spawnDefault = Math.max(1, cores - 1);
 els.spawnCount.textContent = String(spawnDefault);
-els.coresNote.textContent = `This machine reports ${cores} cores. Nodes in this tab share them, so more than ${spawnDefault} adds little.`;
+els.spawnHint.dataset.cores = String(cores);
+els.spawnHint.dataset.default = String(spawnDefault);
+els.spawnHint.textContent = `This browser reports ${cores} ${cores === 1 ? "core" : "cores"}; spawn ${spawnDefault} keeps one for the page. Nodes in this tab share those cores, so spawning more than ${spawnDefault} only slices them thinner — another tab on another device adds real ones.`;
+els.spawnN.title = `Spawn ${spawnDefault} nodes: one per core this browser reports, minus one for the page`;
 els.legend.replaceChildren(
   ...LEGEND.map(([key, label]) => {
     const item = document.createElement("span");
     item.className = "legend-item";
+    item.dataset.state = key;
     const swatch = document.createElement("i");
     swatch.className = `swatch swatch-${key}`;
     if (key !== "flash" && key !== "contested") swatch.style.background = COLORS[key];
@@ -341,22 +363,21 @@ function setMachine(state: MachineState, detail?: string): void {
   const label = detail ? `${state} · ${detail}` : state;
   els.machine.textContent = label;
   els.machine.className = `pill ${state === "live" ? "live" : state === "off" || state === "outdated" ? "off" : "wait"}`;
+  els.banner.dataset.state = state;
   if (state === "live") {
     els.banner.hidden = true;
     els.stage.hidden = false;
     els.table.hidden = false;
   } else {
-    els.stage.hidden = true;
-    els.table.hidden = true;
+    // A reconnect after a rotation keeps the picture: the render continues on the new generation.
+    const rotating = state === "connecting" && detail === ROTATING_DETAIL;
+    els.stage.hidden = !rotating;
+    els.table.hidden = !rotating;
     els.banner.hidden = false;
-    els.banner.innerHTML =
-      state === "off"
-        ? "<strong>The machine is off.</strong><br>An operator turns it back on with <code>mise run up</code>."
-        : state === "starting"
-          ? "<strong>Starting the control plane…</strong><br>A fresh MicroVM is booting from its snapshot."
-          : state === "outdated"
-            ? "<strong>This page is out of date.</strong><br>Reloading…"
-            : `<strong>Connecting…</strong><br>${detail ?? "Waking the machine if it is asleep."}`;
+    const copy = connectionCopy(state, detail);
+    els.bannerTitle.textContent = copy.title;
+    els.bannerBody.textContent = copy.body;
+    els.bannerHint.textContent = copy.hint;
     if (state === "outdated") setTimeout(() => location.reload(), 1_500);
   }
   for (const [button] of controlButtons) button.disabled = state !== "live";
@@ -386,20 +407,18 @@ function render(state: ClusterState): void {
     : "idle";
   els.exec.className = `pill ${exec?.phase === "failed" ? "off" : exec ? "live" : ""}`;
   els.rate.textContent = `${throughput(state, now).toFixed(1)} tasks/s`;
+  const due = state.machine?.nextRotationAt ?? null;
+  els.nextRotation.hidden = due === null;
+  if (due !== null) {
+    const minutes = Math.ceil((due - now) / 60_000);
+    els.nextRotation.textContent = minutes > 0 ? `rotation in ${minutes} min` : "rotation due";
+  }
 
-  // Notices: rotation, sleep, gaps in the story a visitor should hear about.
-  const notices: string[] = [];
-  if (state.rotation)
-    notices.push(
-      `Control plane rotating to generation ${state.rotation.next}; reconnecting in ${(state.rotation.reconnectAfterMs / 1000).toFixed(1)} s.`,
-    );
-  if (state.sleeping) notices.push(`The machine is going to sleep: ${state.sleeping}.`);
-  if (state.machine && !state.machine.awake)
-    notices.push(
-      `The machine is asleep${state.machine.reason ? `: ${state.machine.reason}` : ""}.`,
-    );
-  els.notice.hidden = notices.length === 0;
-  els.notice.textContent = notices.join(" ");
+  // The banner over the stage: a rotation with its countdown, the machine going to or being asleep.
+  renderMachineBanner(state, now);
+  renderChart(state, now);
+  els.notice.hidden = transientNotice === null;
+  els.notice.textContent = transientNotice ?? "";
 
   // Execution row.
   if (exec) {
@@ -462,6 +481,7 @@ function render(state: ClusterState): void {
     : "";
   if (tilesView) painter.present();
   drawGrid(state);
+  renderPulses(state, now);
 
   // Controls reflect the machine.
   els.redundancy.checked = state.machine?.redundancy ?? false;
@@ -489,6 +509,91 @@ function render(state: ClusterState): void {
     tableRenderedAt = now;
     renderTable(state, now);
   }
+}
+
+function renderMachineBanner(state: ClusterState, now: number): void {
+  const banner = machineBanner(state, now);
+  const box = els.machineBanner;
+  box.hidden = !banner;
+  if (!banner) {
+    box.replaceChildren();
+    delete box.dataset.kind;
+    delete box.dataset.next;
+    return;
+  }
+  const copy = machineCopy(banner);
+  box.dataset.kind = banner.kind;
+  const title = document.createElement("strong");
+  const body = document.createElement("span");
+  const hint = document.createElement("span");
+  hint.className = "muted";
+  if (banner.kind === "rotating") {
+    box.dataset.next = String(banner.next);
+    const gen = document.createElement("b");
+    gen.id = "rotationGeneration";
+    gen.textContent = String(banner.next);
+    title.append("Control plane rotating to generation ", gen, ".");
+    const countdown = document.createElement("b");
+    countdown.id = "rotationCountdown";
+    countdown.textContent = fmtCountdown(banner.msLeft);
+    body.append(" Reconnecting in ", countdown, `. ${copy.body}`);
+  } else {
+    delete box.dataset.next;
+    title.textContent = copy.title;
+    body.textContent = ` ${copy.body}`;
+  }
+  hint.textContent = ` ${copy.hint}`;
+  box.replaceChildren(title, body, hint);
+}
+
+/** Tasks done per second over the last minute as a strip of bars; the figure names the rate and the cluster. */
+function renderChart(state: ClusterState, now: number): void {
+  const series = throughputSeries(state, now);
+  const c = els.chart;
+  const g = c.getContext("2d") as CanvasRenderingContext2D;
+  const w = c.width;
+  const h = c.height;
+  g.fillStyle = BG;
+  g.fillRect(0, 0, w, h);
+  const top = Math.max(...series);
+  const scale = Math.max(1, top);
+  const bw = w / series.length;
+  series.forEach((v, i) => {
+    if (v === 0) return;
+    const bh = Math.max(1, Math.round(((h - 2) * v) / scale));
+    g.fillStyle = i === series.length - 1 ? SELECTED : "#2f4f7a";
+    g.fillRect(Math.floor(i * bw), h - bh, Math.max(1, Math.floor(bw) - 1), bh);
+  });
+  const unit = state.execution?.view === "tiles" ? "tiles" : "tasks";
+  const rate = throughput(state, now);
+  els.figure.textContent = `${rate.toFixed(1)} ${unit}/s · ${state.nodes.size} nodes`;
+  els.figure.dataset.rate = rate.toFixed(1);
+  els.figure.dataset.nodes = String(state.nodes.size);
+  els.figure.dataset.peak = String(top);
+  c.title = `${unit} done per second over the last minute; peak ${top}/s`;
+}
+
+let pulsesDrawn = "";
+/** The last flashes as words, newest first; a row that is still flashing is marked live. */
+function renderPulses(state: ClusterState, now: number): void {
+  const rows = state.pulses.slice(-6).reverse();
+  const sig = rows.map((p) => `${p.seq}:${p.taskId}:${isFlashing(p.at, now)}`).join(" ");
+  if (sig === pulsesDrawn) return;
+  pulsesDrawn = sig;
+  els.pulses.hidden = rows.length === 0;
+  els.pulses.replaceChildren(
+    ...rows.map((p) => {
+      const li = document.createElement("li");
+      li.className = `pulse pulse-${p.kind}${isFlashing(p.at, now) ? " pulse-live" : ""}`;
+      li.dataset.kind = p.kind;
+      li.dataset.task = p.taskId;
+      const time = document.createElement("span");
+      time.className = "muted";
+      time.textContent = fmtTime(p.at);
+      li.append(time, ` ${PULSE_TEXT[p.kind](p)}`);
+      return li;
+    }),
+  );
 }
 
 function renderTable(state: ClusterState, now: number): void {
@@ -627,6 +732,9 @@ document.addEventListener("visibilitychange", () => {
 
 let client: ObserverClient | null = null;
 let demo: DemoHandle | null = null;
+/** A short-lived line under the header: a control that could not be sent. */
+let transientNotice: string | null = null;
+let transientTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Send a control to whatever control plane this page is watching; false when there is none. */
 function issue(control: ControlRequest): boolean {
@@ -637,8 +745,13 @@ function issue(control: ControlRequest): boolean {
   }
   const sent = client?.send(control) ?? false;
   if (!sent) {
-    els.notice.hidden = false;
-    els.notice.textContent = "Not connected; the control was not sent.";
+    transientNotice = "Not connected; the control was not sent.";
+    if (transientTimer) clearTimeout(transientTimer);
+    transientTimer = setTimeout(() => {
+      transientNotice = null;
+      scheduleRender();
+    }, 4_000);
+    scheduleRender();
   }
   return sent;
 }
@@ -655,6 +768,7 @@ els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.c
 
 const panels: Panels = mountPanels(document, {
   blobs: () => blobSource,
+  storeBase: () => storeBase,
   send: issue,
   rerender: scheduleRender,
   now: clockNow,
