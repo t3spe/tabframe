@@ -13,6 +13,7 @@ import {
   sleepReason,
 } from "./fleet.ts";
 import { BUNDLE, harness } from "./harness.ts";
+import { adoptLedger } from "./snapshot.ts";
 
 const cloud = () => harness({ cloudCores: true });
 const kinds = (effects: Array<{ kind: string }>) => effects.map((e) => e.kind);
@@ -93,6 +94,30 @@ describe("the cloud-core fleet", () => {
     expect(h.ledger.cores.has("microvm-b")).toBe(true);
     h.advance(CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).toContain("launchCore");
+  });
+
+  test("an adopted ledger's cores get the grace from the adoption, not from their launch", () => {
+    const h = cloud();
+    h.subscribe("obs");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.hello("c1", "core-microvm-a", "core");
+    // Ten minutes of a live machine: the core heartbeats, the observer pings, the clocks follow.
+    for (let t = 0; t < CORE_LINK_TIMEOUT_MS * 5; t += 1_000) {
+      h.advance(1_000);
+      h.heartbeat("c1");
+      h.send("obs", { t: "ping" });
+      h.tick();
+    }
+    expect(h.ledger.cores.get("microvm-a")?.nodeId).toBe("n1");
+    // The successor adopts the ledger with the clock where it is; the core has not reconnected,
+    // and the dashboards come back a moment later.
+    adoptLedger(h.ledger, 9, h.now);
+    h.connect("obs2", "observer");
+    h.send("obs2", { t: "subscribe" });
+    expect(h.ledger.cores.get("microvm-a")?.nodeId).toBeNull();
+    expect(kinds(h.tick())).not.toContain("terminateCore");
+    h.advance(CORE_LINK_TIMEOUT_MS + 1);
+    expect(kinds(h.tick())).toContain("terminateCore");
   });
 
   test("a core whose node left gets the same grace to come back before it is replaced", () => {
