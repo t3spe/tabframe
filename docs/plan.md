@@ -158,7 +158,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 **Goal:** the five-minute demo script runs unattended in Playwright; the dashboard explains itself.
 
 - [ ] **WP4.1 Dashboard polish.** Reassignment flashes, state colors and legend, rotation banner with countdown and generation, throughput chart, core-count hint on spawn, waking states, files and ledger panels finished.
-- [ ] **WP4.2 Operations.** `/health` and `/diag` complete; log groups named; runbook `docs/runbook.md` (deploy, rotate, rollback, down, verify); budget confirmed firing on a test threshold.
+- [x] **WP4.2 Operations.** `/health` and `/diag` complete; log groups named; runbook `docs/runbook.md` (deploy, rotate, rollback, down, verify); budget confirmed firing on a test threshold.
 - [ ] **WP4.3 Performance and pacing.** Frame pacing about a minute per frame single-node; tile timing; reduce read batching if word count is slow; snapshot size and resume latency.
 - [ ] **WP4.4 Unattended demo.** Playwright runs the whole demo script; simulation long mode in CI nightly.
 - [x] **WP4.5 Endpoint capacity.** Why one client stops at 16 sockets: measured against fresh MicroVMs with one and three tokens, one and three processes, 512 MiB to 6 GB; explained by the non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota; the M0 "250 sockets" record corrected; design §9.7 written. Script: `packages/infra/scripts/socket-ceiling.ts`.

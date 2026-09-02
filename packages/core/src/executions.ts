@@ -159,7 +159,7 @@ export function onInheritRoot(
   now: number,
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
-  if (!exec || exec.status !== "running" || exec.root !== null) return [];
+  if (exec?.status !== "running" || exec.root !== null) return [];
   const program = ledger.programs.get(exec.bundle);
   if (bytes === null) {
     exec.files = { ...(program?.files ?? {}) };
@@ -231,7 +231,7 @@ function createPlanTask(
 /** A settled task may advance its execution: a plan spec to fetch, a stage to fold, a failure to raise. */
 export function afterTaskSettled(ledger: Ledger, task: TaskRecord, now: number): Effect[] {
   const exec = ledger.executions.get(task.executionId);
-  if (!exec || exec.status !== "running") return [];
+  if (exec?.status !== "running") return [];
   if (task.status === "failed")
     return failExecution(
       ledger,
@@ -269,7 +269,7 @@ export function onStageSpec(
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
   const planTask = ledger.tasks.get(taskId);
-  if (!exec || exec.status !== "running" || !planTask || exec.planTaskId !== taskId) return [];
+  if (exec?.status !== "running" || !planTask || exec.planTaskId !== taskId) return [];
   if (!bytes) return failExecution(ledger, exec, "stage spec blob missing", now);
   let spec: ReturnType<typeof decodeStageSpec>;
   try {
@@ -392,7 +392,7 @@ export function onManifestStored(
   now: number,
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
-  if (!exec || exec.status !== "running") return [];
+  if (exec?.status !== "running") return [];
   if (stage === -1) {
     // The initial filesystem of an execution that inherited one: plan can start now.
     if (exec.root !== null) return [];

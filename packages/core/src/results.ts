@@ -58,7 +58,7 @@ export function onResult(
   if (!task) return { effects, settlement: { kind: "none" } };
   if (attempt) attempt.outcome = msg.error === undefined ? "result" : "error";
   const exec = ledger.executions.get(task.executionId);
-  if (!exec || exec.status !== "running") return { effects, settlement: { kind: "none" } };
+  if (exec?.status !== "running") return { effects, settlement: { kind: "none" } };
   if (task.kind === "run") {
     exec.computeSamples.push(msg.computeMs);
     if (exec.computeSamples.length > 50) exec.computeSamples.shift();
@@ -145,7 +145,7 @@ export function onResult(
 function checkTileSize(ledger: Ledger, task: TaskRecord, msg: Result): Result {
   if (msg.error !== undefined || !task.place) return msg;
   const exec = ledger.executions.get(task.executionId);
-  if (!exec || exec.manifest.view !== "tiles") return msg;
+  if (exec?.manifest.view !== "tiles") return msg;
   const expected = task.place.w * task.place.h * 4;
   if (msg.outputSize === expected) return msg;
   const { output: _o, outputSize: _s, ...rest } = msg;

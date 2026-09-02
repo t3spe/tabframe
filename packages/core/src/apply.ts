@@ -335,7 +335,7 @@ function onControl(
       if (limited)
         return [{ kind: "send", connId, msg: errorMsg(ledger, "rate-limited", limited) }];
       const done = ledger.executions.get(msg.executionId);
-      if (!done || done.status !== "done" || !done.followUp)
+      if (done?.status !== "done" || !done.followUp)
         return [{ kind: "send", connId, msg: errorMsg(ledger, "no-follow-up", msg.executionId) }];
       const r = enqueue(
         ledger,

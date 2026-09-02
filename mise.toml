@@ -105,6 +105,11 @@ description = "M1 runbook: browser tabs render a frame on the deployed machine, 
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m1.ts"
 
+[tasks.rotate]
+description = "One rotation now, the same code the hourly rule runs (masked output)"
+depends = ["whoami"]
+run = "node packages/fleet/scripts/rotate.ts"
+
 [tasks.up]
 description = "Clear the off state and launch a control plane"
 depends = ["whoami"]
@@ -116,6 +121,16 @@ depends = ["whoami"]
 run = "node packages/fleet/scripts/down.ts"
 
 [tasks.logs]
-description = "Tail the MicroVM logs"
+description = "Tail the MicroVM logs (control planes and cores; one stream per MicroVM)"
 depends = ["whoami"]
-run = "aws logs tail /aws/lambda/microvms/tabframe --follow"
+run = "aws logs tail /aws/lambda/microvms/tabframe --follow --format short"
+
+[tasks."logs:fleet"]
+description = "Tail the session and rotate functions' logs"
+depends = ["whoami"]
+run = "aws logs tail /aws/lambda/tabframe-rotate --follow --format short & aws logs tail /aws/lambda/tabframe-session --follow --format short; wait"
+
+[tasks.health]
+description = "The control plane's /health through the proxy (fleet token, private port), masked"
+depends = ["whoami"]
+run = "node packages/infra/scripts/health.ts"

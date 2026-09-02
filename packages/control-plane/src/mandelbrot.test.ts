@@ -166,11 +166,11 @@ describe("Mandelbrot end to end", () => {
 
     // Snapshots were written while the ledger changed; health knows the counts.
     const health = (await (await fetch(`${priv}/health`)).json()) as {
-      programs: number;
+      programs: string[];
       nodes: number;
       snapshots: { writes: number; lastKey: string | null };
     };
-    expect(health.programs).toBe(1);
+    expect(health.programs).toEqual(["mandelbrot"]);
     expect(health.nodes).toBe(2);
     expect(health.snapshots.writes).toBeGreaterThan(0);
     expect(health.snapshots.lastKey?.startsWith("g1/")).toBe(true);

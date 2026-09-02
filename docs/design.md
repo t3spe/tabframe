@@ -846,4 +846,9 @@ Dated deviations discovered while building, recorded before the code landed (pla
   found: the policy counts records, and a dead MicroVM kept its record until the age ceiling
   (§6.8). A fresh ledger's clocks now start at the real time; with the zero default a new control
   plane believed nobody had watched it for decades and started asleep.
+- **2026-09-02 (WP4.2).** The MicroVM platform delivers only the first line a process writes to
+  CloudWatch (stdout and stderr alike); runtime observability is `/health`, `/diag`, the S3
+  snapshots, and the dashboard (§9.3, §11). The functions' log groups are kept fourteen days via
+  `logRetention`, because Lambda created them before any stack could. `/diag` performs a store
+  put-and-get round trip.
 
