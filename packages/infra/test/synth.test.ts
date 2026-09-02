@@ -195,7 +195,9 @@ describe("Fleet stack", () => {
   const { fleet } = synth();
 
   test("two Node 22 arm64 functions with the design's names and concurrency", () => {
-    fleet.resourceCountIs("AWS::Lambda::Function", 2);
+    // Ours, plus the retention provider CDK adds for `logRetention` on existing log groups.
+    fleet.resourceCountIs("AWS::Lambda::Function", 3);
+    fleet.resourceCountIs("Custom::LogRetention", 2);
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-session",
       Runtime: "nodejs22.x",

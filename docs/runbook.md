@@ -77,11 +77,12 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
   operator.
 - **CloudWatch.** The functions log JSON lines to their own groups, kept fourteen days. The MicroVM
   group `/aws/lambda/microvms/tabframe` (seven days) gets one stream per MicroVM; the image-build
-  streams carry the whole Docker build, and each run stream was observed to carry **only the first
-  line the process wrote** — the platform's runtime log delivery is not what the API's description
-  suggests. WP4.2 mirrors the control plane's log lines to stderr as well to find out which stream
-  the platform forwards; the result is recorded in `docs/implementation/wp-4.2-operations.md`.
-  Until then, `/health`, `/diag`, the snapshots in S3, and the dashboard are the truth.
+  streams carry the whole Docker build, but each *run* stream carries **only the first line the
+  process writes** — measured on 2026-09-02 with the same line written to stdout and stderr: both
+  copies arrive, nothing after. The platform forwards a process's output during boot and stops.
+  So for a running control plane the truth is `/health`, `/diag`, the snapshots in S3, and the
+  dashboard; the rotate function's log says what every rotation did. Raised as a limitation in
+  design §9.7's neighbourhood; not worked around.
 
 ## Cost and budget
 

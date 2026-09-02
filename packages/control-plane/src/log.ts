@@ -1,11 +1,9 @@
 /**
- * One JSON line per event. Stdout for a terminal and for the local runner; in the image the same
- * line also goes to stderr, because the MicroVM platform was observed to deliver only the first
- * stdout line of a run to CloudWatch (WP4.2) — whichever stream it forwards, the line is there.
+ * One JSON line per event on stdout; a terminal, the local runner, and CloudWatch all read it. In
+ * the MicroVM image the platform was observed (WP4.2) to forward only the first line a process
+ * writes — on stdout and on stderr alike — so runtime observability is `/health`, `/diag`, the
+ * snapshots in S3, and the dashboard, not the log group.
  */
-const mirror = process.env.TABFRAME_MODE === "image";
 export function log(event: string, fields: Record<string, unknown> = {}): void {
-  const line = `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`;
-  process.stdout.write(line);
-  if (mirror) process.stderr.write(line);
+  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`);
 }

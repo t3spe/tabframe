@@ -1,7 +1,7 @@
 // `mise run health`: the active control plane's /health and /diag through the MicroVM proxy on
 // the private port, the way the fleet reaches it — a fleet token for port 8081 plus the fleet
 // secret from Secrets Manager. Output is masked; nothing here reaches a browser.
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { GetFunctionConfigurationCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   CreateMicrovmAuthTokenCommand,
   LambdaMicrovmsClient,
@@ -11,11 +11,12 @@ import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { maskAccount } from "./mask.ts";
 
 const region = process.env.AWS_REGION ?? "us-west-2";
-const cfn = new CloudFormationClient({ region });
-const core = await cfn.send(new DescribeStacksCommand({ StackName: "TabframeCore" }));
-const secretArn = core.Stacks?.[0]?.Outputs?.find(
-  (o) => o.OutputKey === "FleetSecretArn",
-)?.OutputValue;
+// The secret's ARN is not a stack output; the rotate function carries it in its environment,
+// which is exactly what the control plane was handed in its run payload.
+const rotateConfig = await new LambdaClient({ region }).send(
+  new GetFunctionConfigurationCommand({ FunctionName: "tabframe-rotate" }),
+);
+const secretArn = rotateConfig.Environment?.Variables?.TABFRAME_FLEET_SECRET_ARN;
 const pointerRaw = (
   (await new SSMClient({ region }).send(
     new GetParameterCommand({ Name: "/tabframe/pointer" }),
