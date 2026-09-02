@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   describeToolUse,
   exportTranscript,
+  extraPatterns,
   PATTERNS,
   parseEvents,
   scrub,
@@ -247,5 +248,17 @@ describe("exportTranscript", () => {
     const empty = exportTranscript("");
     expect(empty.summary.events).toBe(0);
     expect(empty.markdown).toContain("# Session (unknown)");
+  });
+});
+
+describe("operator scrub words", () => {
+  test("words from TABFRAME_SCRUB_WORDS are redacted case-insensitively and escaped as literals", () => {
+    const extra = extraPatterns("acme, Widget.Co");
+    expect(extra).toHaveLength(2);
+    const { text, counts } = scrub("Acme sold widget.co to ACME; widgetXco stays", extra);
+    expect(text).toBe("<redacted> sold <redacted> to <redacted>; widgetXco stays");
+    expect(counts.word).toBe(3);
+    expect(extraPatterns(undefined)).toEqual([]);
+    expect(extraPatterns(" , ")).toEqual([]);
   });
 });
