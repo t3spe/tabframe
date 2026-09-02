@@ -148,6 +148,7 @@ function tick(ledger: Ledger, now: number): Effect[] {
   effects.push(...fleetTick(ledger, now));
   effects.push(...relabelHealth(ledger));
   effects.push(...ensureDefaultLoop(ledger, now));
+  effects.push(...maybeStart(ledger, now)); // a queued continuation whose hold just expired
   effects.push(...fill(ledger, now));
   return effects;
 }

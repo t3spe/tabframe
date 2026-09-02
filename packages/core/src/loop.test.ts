@@ -229,6 +229,52 @@ describe("pruning ended executions' tasks", () => {
 });
 
 describe("a person's result holds the stage", () => {
+  test("a continuation the previous frame left in the queue waits out the hold too", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles"); // the loop launches e1
+    h.tick();
+    const loopFrame = [...h.ledger.executions.values()][0];
+    if (!loopFrame || loopFrame.human) throw new Error("the loop did not launch");
+    h.launch({ preset: 5 }, true); // e2, a person's, queued ahead of continuations
+    // e1 ends offering a follow-up: e3 (automatic) joins the queue behind e2, and e2 starts.
+    const plan1 = planAssignOf(h, loopFrame.executionId);
+    h.planSpec(h.result(plan1.connId, plan1.taskId, plan1.attempt, H("e")), {
+      kind: "done",
+      next: { preset: 1 },
+    });
+    const byId = (id: string) => h.ledger.executions.get(id);
+    expect(byId("e1")?.status).toBe("done");
+    expect(byId("e2")?.status).toBe("running");
+    expect(byId("e3")?.human).toBe(false);
+    expect(h.ledger.queue).toEqual(["e3"]);
+    // e2 ends: e3 does not take the stage until the hold is over.
+    h.tick();
+    const plan2 = planAssignOf(h, "e2");
+    h.planSpec(h.result(plan2.connId, plan2.taskId, plan2.attempt, H("e")), {
+      kind: "done",
+      next: null,
+    });
+    expect(byId("e2")?.status).toBe("done");
+    expect(h.ledger.running).toBeNull();
+    const alive = () => {
+      h.heartbeat("a");
+      h.send("obs", { t: "ping" });
+    };
+    for (let t = 0; t < HUMAN_RESULT_HOLD_MS - 1_000; t += 1_000) {
+      h.advance(1_000);
+      alive();
+      h.tick();
+    }
+    expect(h.ledger.running).toBeNull();
+    expect(byId("e3")?.status).toBe("queued");
+    h.advance(1_000);
+    alive();
+    h.tick();
+    expect(h.ledger.running).toBe("e3");
+  });
+
   test("the loop waits HUMAN_RESULT_HOLD_MS after a human launch ends before it takes over", () => {
     const h = harness();
     h.subscribe("obs");

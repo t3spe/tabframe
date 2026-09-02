@@ -137,12 +137,28 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 5. freeze half: frozen workers fall silent and are declared gone ----------------------------
   beat("freeze half");
-  const beforeFreeze = (await counts(page)).nodes;
   await page.click("#freezeHalf");
   await expect(page.locator("#activity")).toContainText(/freezeHalf: \S+/, { timeout: 20_000 });
+  // The victims are named; each falls silent and is declared gone (a frozen core's MicroVM is
+  // terminated and replaced, so the node count alone says nothing).
+  const frozen =
+    /freezeHalf: ([^\n]*)/.exec((await page.locator("#activity").textContent()) ?? "")?.[1] ?? "";
+  const victims: string[] = [];
+  for (const token of frozen.split(/\s+/)) {
+    if (!/^n\d+$/.test(token)) break; // the note ends where the next activity line begins
+    victims.push(token);
+  }
+  beat(`frozen: ${victims.join(" ")}`);
+  expect(victims.length).toBeGreaterThan(0);
   await expect
-    .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
-    .toBeLessThan(beforeFreeze);
+    .poll(
+      async () => {
+        const ids = await page.locator("#nodes tbody tr td:first-child").allTextContents();
+        return victims.filter((v) => ids.some((t) => t.startsWith(v))).length;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(0);
 
   // ---- 6. throttle half: slow workers get twins, and the picture still completes ------------------
   beat("throttle half");
@@ -229,12 +245,36 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator('[data-launch="wordcount"]')).toBeVisible({ timeout: 30_000 });
   await page.click('[data-launch="wordcount"]');
   await page.click('[data-launch-go="wordcount"]');
-  await expect(page.locator("#exec")).toContainText("wordcount", { timeout: 300_000 });
-  await expect(page.locator("#strip .stage")).toHaveCount(3, { timeout: 180_000 });
-  // A person's result holds the stage for twenty seconds before the loop resumes (core,
-  // HUMAN_RESULT_HOLD_MS): the bars are read within that window.
-  await expect(page.locator("#exec")).toContainText("wordcount · done", { timeout: 180_000 });
-  await expect(page.locator("#result .bars .bar-row").first()).toBeVisible({ timeout: 15_000 });
+  // Word count waits for the running frame, then runs its three stages in seconds; a person's
+  // result then holds the stage for twenty seconds (core, HUMAN_RESULT_HOLD_MS). One poll follows
+  // the page through all of it and logs every change, so a miss says where it went.
+  const stageOf = () =>
+    page.evaluate(() => {
+      const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? "";
+      return {
+        exec: text("#exec"),
+        stages: document.querySelectorAll("#strip .stage").length,
+        bars: document.querySelectorAll("#result .bars .bar-row").length,
+      };
+    });
+  let last = "";
+  let seenStages = 0;
+  await expect
+    .poll(
+      async () => {
+        const s = await stageOf();
+        const line = `${s.exec} · stages ${s.stages} · bars ${s.bars}`;
+        if (line !== last) {
+          beat(`word count: ${line}`);
+          last = line;
+        }
+        if (s.exec.startsWith("wordcount")) seenStages = Math.max(seenStages, s.stages);
+        return s.exec.startsWith("wordcount · done") && s.bars > 0;
+      },
+      { timeout: 300_000, intervals: [500] },
+    )
+    .toBe(true);
+  expect(seenStages).toBe(3);
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", /\w+/);
   await expect(page.locator("#files")).toContainText("/in/corpus.txt", { timeout: 15_000 });
   beat("word count drew its bars");
