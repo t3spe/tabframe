@@ -1,0 +1,10 @@
+{
+  "name": "@tabframe/program-wordcount",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Tabframe demo program: three-stage word count over a public-domain corpus (AssemblyScript)",
+  "dependencies": {
+    "@tabframe/sdk-as": "workspace:*"
+  }
+}

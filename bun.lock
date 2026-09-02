@@ -135,6 +135,13 @@
         "@tabframe/sdk-as": "workspace:*",
       },
     },
+    "programs/wordcount": {
+      "name": "@tabframe/program-wordcount",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/sdk-as": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@aws-cdk/asset-awscli-v1": ["@aws-cdk/asset-awscli-v1@2.2.292", "", {}, "sha512-d4aMFsAFj19FtxVyw8IzlUKv5Zu4sIvgnEjI2IU6IWBJgVbJ4aFnadANqYa+6MwB1CQbGOg0jh8WE77M+Nb/9A=="],
@@ -306,6 +313,8 @@
     "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
     "@tabframe/program-mandelbrot": ["@tabframe/program-mandelbrot@workspace:programs/mandelbrot"],
+
+    "@tabframe/program-wordcount": ["@tabframe/program-wordcount@workspace:programs/wordcount"],
 
     "@tabframe/protocol": ["@tabframe/protocol@workspace:packages/protocol"],
 

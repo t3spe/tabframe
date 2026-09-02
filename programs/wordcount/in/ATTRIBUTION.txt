@@ -1,0 +1,9 @@
+corpus.txt is the text of "Moby-Dick; or, The Whale" by Herman Melville (1851), which is in the
+public domain. It was obtained from Project Gutenberg ebook #2701
+(https://www.gutenberg.org/ebooks/2701) with the Project Gutenberg header, footer, and license
+removed, line endings normalized, and typographic apostrophes, quotation marks, and dashes
+replaced by their ASCII forms. This copy is therefore not a Project Gutenberg ebook; the Project
+Gutenberg License applies to the ebook as distributed at gutenberg.org, not to this file.
+Reproduce it with:
+
+  node packages/sdk-as/scripts/corpus.ts

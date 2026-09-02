@@ -701,4 +701,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   to five minutes, reset by a success — so a broken program cannot spin the machine (§6.8). Ended
   executions beyond the most recent 32 are pruned with their tasks on every tick, keeping the
   ledger and its snapshots bounded (§9.4).
+- **2026-09-02 (WP2.2).** The `bars` view has a byte format:
+  `"TFBR" u32 version | u32 count | count × (str label | f64 value)`, values finite (§5.1, §5.3).
+  Word count's map tasks own the words that *start* inside their byte range — they skip a word
+  straddling the start and read past the end to finish one straddling the end — which is the
+  precise form of "extended to whitespace on both ends" (§5.6). The corpus is normalized at build
+  time beyond stripping the boilerplate: typographic apostrophes, quotation marks, dashes, and a
+  few accented letters become ASCII, and the edition's transcriber's notes go; the word rule is a
+  byte rule (ASCII letters and apostrophes) and non-ASCII bytes separate words. The attribution
+  file ships inside the bundle as `/in/ATTRIBUTION.txt`.
 

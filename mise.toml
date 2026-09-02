@@ -47,7 +47,14 @@ run = "node packages/core/sim/run.ts"
 
 [tasks.goldens]
 description = "Regenerate program goldens from single-node runs"
-run = "node packages/sdk-as/scripts/goldens.ts"
+run = [
+  "node packages/sdk-as/scripts/goldens.ts",
+  "node packages/sdk-as/scripts/goldens.ts --program wordcount",
+]
+
+[tasks.corpus]
+description = "Fetch and normalize the word-count corpus into programs/wordcount/in/corpus.txt"
+run = "node packages/sdk-as/scripts/corpus.ts"
 
 [tasks."build:programs"]
 description = "Compile the AssemblyScript demo programs"
