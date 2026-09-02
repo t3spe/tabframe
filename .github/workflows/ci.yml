@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "wp/**"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly, 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "1"
+  MISE_VERSION: 2026.4.11 # same version as the developer machine
+
+jobs:
+  test:
+    name: lint, unit, browser
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Assert no AWS credentials and no local secrets
+        run: |
+          test ! -f .env.local || { echo ".env.local must not exist in CI" >&2; exit 1; }
+          if env | grep -qE '^(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_PROFILE)='; then
+            echo "AWS credentials or profile present in the CI environment" >&2; exit 1
+          fi
+          if grep -rEn 'secrets\.AWS' .github/workflows/; then
+            echo "a workflow references AWS secrets" >&2; exit 1
+          fi
+          echo "ok: no AWS credentials, no .env.local"
+
+      - uses: jdx/mise-action@v4.3.0
+        with:
+          version: ${{ env.MISE_VERSION }}
+          install: true
+          cache: true
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('./package.json').devDependencies['@playwright/test']")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium
+        run: bunx playwright install chromium
+
+      - name: Lint and type check
+        run: mise run lint
+
+      - name: Unit tests with coverage threshold
+        run: bun test
+
+      - name: Browser tests
+        run: bunx playwright test --pass-with-no-tests
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: playwright-report-${{ github.sha }}
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-sim:
+    name: nightly long churn simulation
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: jdx/mise-action@v4.3.0
+        with:
+          version: ${{ env.MISE_VERSION }}
+          install: true
+          cache: true
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Long churn simulation
+        run: |
+          if [ ! -f packages/core/sim/run.ts ]; then
+            echo "::notice::simulation harness not present yet (arrives in WP1.9); nothing to run"
+            exit 0
+          fi
+          mise run sim -- --long

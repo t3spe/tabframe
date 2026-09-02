@@ -89,7 +89,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 | Account memory quota | Service Quotas read | ≥ 8 GB (known) | request increase |
 
   *Acceptance:* `docs/m0-verification.md` written; any triggered fallback recorded in `design.md` before M1 starts.
-- [ ] **WP0.12 CI.** GitHub Actions on the private repo: mise install, `bun install`, `mise run lint`, `bun test`, Playwright with cached Chromium. No AWS credentials in CI.
+- [x] **WP0.12 CI.** GitHub Actions on the private repo: mise install, `bun install`, `mise run lint`, `bun test`, Playwright with cached Chromium. No AWS credentials in CI.
   *Acceptance:* green on a push that touches every package.
 
 **M0 done when:** the public URL answers; dashboard shows real tabs joining across networks; `mise run dev` runs the local topology; verification results are in the docs; `mise run down` leaves nothing running.

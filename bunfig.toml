@@ -2,6 +2,8 @@
 root = "packages"
 coverage = true
 coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
 coverageThreshold = { lines = 0.85 }
 coveragePathIgnorePatterns = [
   "packages/web/**",
