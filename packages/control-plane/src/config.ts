@@ -17,6 +17,13 @@ export interface Config {
   /** Local mode only: serve `{off: true}` from the emulated session endpoint. */
   localOff: boolean;
   tickMs: number;
+  /** Where the demo programs live: `/app/programs` in the image, `programs/` in the repo locally. */
+  programsDir: string | null;
+  /** The program the machine runs on its own while someone watches (D4). */
+  defaultProgram: string;
+  /** Image mode: the bucket the snapshotter writes to. */
+  snapshotBucket: string | null;
+  snapshotEveryMs: number;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
@@ -33,6 +40,13 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     blobBucket: env.TABFRAME_BLOB_BUCKET ?? null,
     localOff: env.TABFRAME_LOCAL_OFF === "1",
     tickMs: intEnv(env.TABFRAME_TICK_MS, 500),
+    programsDir:
+      env.TABFRAME_PROGRAMS_DIR === ""
+        ? null
+        : (env.TABFRAME_PROGRAMS_DIR ?? (mode === "image" ? "/app/programs" : "programs")),
+    defaultProgram: env.TABFRAME_DEFAULT_PROGRAM ?? "mandelbrot",
+    snapshotBucket: env.TABFRAME_SNAPSHOT_BUCKET ?? null,
+    snapshotEveryMs: intEnv(env.TABFRAME_SNAPSHOT_MS, 5_000),
   };
 }
 

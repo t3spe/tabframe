@@ -21,6 +21,7 @@
       "dependencies": {
         "@tabframe/core": "workspace:*",
         "@tabframe/protocol": "workspace:*",
+        "@tabframe/sandbox": "workspace:*",
         "@tabframe/store": "workspace:*",
         "ws": "8.21.3",
       },

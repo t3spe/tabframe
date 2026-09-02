@@ -80,7 +80,8 @@ export class TaskRunner {
       const sandbox = this.sandbox;
       const started = this.deps.now();
       const result = await sandbox.run(module, request, a.deadlineMs + 1_000);
-      const computeMs = Math.max(0, this.deps.now() - started);
+      // The wire wants whole milliseconds; the sandbox measures with a high-resolution clock.
+      const computeMs = Math.max(0, Math.round(this.deps.now() - started));
       if (!result.ok) {
         if (result.error === "disposed") return { kind: "dropped", reason: "cancelled" };
         // A deadline kill is the node giving up, not a program fault; the control plane releases it.
@@ -124,7 +125,7 @@ export class TaskRunner {
           outputSize: output.size,
           writes,
           log,
-          computeMs: Math.max(result.computeMs, 1),
+          computeMs: Math.max(Math.round(result.computeMs), 1),
         },
       };
     } catch (err) {

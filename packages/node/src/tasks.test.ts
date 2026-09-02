@@ -184,16 +184,17 @@ describe("TaskRunner", () => {
     expect(w.blobs.get(m.output as string)).toEqual(output);
   });
 
-  test("a short log stays inline and an empty one is null; zero compute is reported as one", async () => {
+  test("a short log stays inline and an empty one is null; compute is whole milliseconds, at least one", async () => {
     const w = world([
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "note", computeMs: 0 },
-      { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 9 },
+      { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 9.6 },
     ]);
     const a = await w.runner.run(assign(), 1);
     const b = await w.runner.run(assign({ taskId: "t2" }), 1);
     if (a.kind !== "result" || b.kind !== "result") throw new Error("expected results");
     expect(a.msg.log).toEqual({ text: "note" });
     expect(a.msg.computeMs).toBe(1);
+    expect(b.msg.computeMs).toBe(10);
     expect(b.msg.log).toBeNull();
     expect(w.puts.length).toBe(1); // the second output was already in the store
   });

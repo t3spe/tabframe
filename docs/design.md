@@ -685,3 +685,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   credits no completed task, and sends an orphaned task back to the front as released work (§4.2,
   §6.4). Throttled nodes idle nine times each task's compute with a fifty-millisecond floor
   (§6.6). Over-capacity assignments are refused, not queued (§4.1).
+- **2026-09-02 (WP1.7).** The node message rate limit is 1000 per second, not 20: a node sends
+  two messages per task and a tile takes milliseconds (§8.4). Observer snapshots carry the
+  program list on page 0 so late observers learn what the machine can run (§8.3). Tiles must be
+  RGBA of their placed size or the task fails (§5.2). Snapshot keys are
+  `g<generation>/<time>.json.gz` plus a `latest.json.gz` pointer; the suspend and terminate hooks
+  write unconditionally (§9.4). Seeded bundles are manifest blobs over `/program.wasm`,
+  `/manifest.json`, and `/in/*` (§5.6). The private port gains `GET /snapshot` (§9.3).

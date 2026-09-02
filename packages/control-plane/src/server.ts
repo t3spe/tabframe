@@ -2,6 +2,7 @@ import { promises as dns } from "node:dns";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import {
+  adoptLedger,
   apply,
   type Clock,
   createLedger,
@@ -11,11 +12,22 @@ import {
   systemClock,
 } from "@tabframe/core";
 import { encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
-import { HASH_RE, LocalStore, parseRange, S3Store, type StoreDriver } from "@tabframe/store";
+import {
+  HASH_RE,
+  LocalStore,
+  MemorySnapshots,
+  parseRange,
+  S3Snapshots,
+  S3Store,
+  type SnapshotStore,
+  type StoreDriver,
+} from "@tabframe/store";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { Config, Role } from "./config.ts";
 import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
 import { log } from "./log.ts";
+import { type DiscoveredProgram, discoverPrograms, seedPrograms } from "./seed.ts";
+import { type SnapshotStatus, Snapshotter } from "./snapshotter.ts";
 import { readBody, send, sendJson, serveStatic } from "./static.ts";
 
 const MAX_BLOB_BYTES = 8 * 1024 * 1024;
@@ -33,7 +45,19 @@ export interface ControlPlane {
   /** Present once the process is a control plane. */
   readonly ledger: Ledger | null;
   readonly store: StoreDriver;
+  readonly snapshots: SnapshotStatus;
+  /** Resolves when seeding has run for the current ledger (tests wait on it). */
+  seeded(): Promise<void>;
+  /** Write a snapshot now if the ledger changed; the key written, or null. */
+  snapshot(force?: boolean): Promise<string | null>;
   close(): Promise<void>;
+}
+
+/** Seams the tests use: an injected store, snapshot store, or program list. */
+export interface ControlPlaneDeps {
+  store?: StoreDriver;
+  snapshots?: SnapshotStore;
+  programs?: DiscoveredProgram[];
 }
 
 /**
@@ -44,11 +68,13 @@ export interface ControlPlane {
 export async function createControlPlane(
   config: Config,
   clock: Clock = systemClock,
+  deps: ControlPlaneDeps = {},
 ): Promise<ControlPlane> {
   let role: Role = "neutral";
   let generation = config.generation;
   let ledger: Ledger | null = null;
   let fleetSecret: string | null = null;
+  let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
 
   const conns = new Map<string, WebSocket>();
@@ -69,22 +95,73 @@ export async function createControlPlane(
   const local = new LocalStore(storeBase);
   // Image mode writes to the blob bucket behind CloudFront; local mode serves blobs itself.
   const store: StoreDriver =
-    config.mode === "image" && config.blobBucket
+    deps.store ??
+    (config.mode === "image" && config.blobBucket
       ? new S3Store({ bucket: config.blobBucket, base: storeBase })
-      : local;
+      : local);
+  const snapshots: SnapshotStore =
+    deps.snapshots ??
+    (config.mode === "image" && config.snapshotBucket
+      ? new S3Snapshots({ bucket: config.snapshotBucket })
+      : new MemorySnapshots());
+  const snapshotter = new Snapshotter(snapshots);
 
-  function becomeControlPlane(gen: number, base: string): void {
+  /** Fresh or adopted, the ledger is ours from here: announce the role and seed the programs. */
+  function becomeControlPlane(gen: number, base: string, adopted: Ledger | null): void {
     generation = gen;
-    ledger = createLedger(gen, { storeBase: base });
+    if (adopted) {
+      execute(adoptLedger(adopted, gen, clock.now()));
+      adopted.meta.storeBase = base;
+      ledger = adopted;
+    } else {
+      ledger = createLedger(gen, { storeBase: base });
+    }
     role = "control-plane";
-    log("role", { role, generation });
+    log("role", { role, generation, adopted: adopted !== null });
+    const mine = ledger;
+    seeding = seed(mine).catch((err) => log("seed-failed", { error: String(err) }));
   }
 
-  if (config.mode === "local") becomeControlPlane(config.generation, storeBase);
+  /**
+   * Seeding (design §5.6): the demo programs go into the store as bundles on the first adopt of
+   * a ledger without programs; the configured default program becomes the machine's loop.
+   */
+  async function seed(target: Ledger): Promise<void> {
+    if (target.programs.size > 0) return;
+    const programs =
+      deps.programs ?? (config.programsDir ? discoverPrograms(config.programsDir) : []);
+    if (programs.length === 0) {
+      log("seed", { programs: [], note: "no programs found", dir: config.programsDir });
+      return;
+    }
+    const { seeded, rejected } = await seedPrograms(store, programs);
+    for (const r of rejected) log("seed-rejected", r);
+    if (ledger !== target) return; // the role changed under us
+    const loop = seeded.find((p) => p.name === config.defaultProgram) ?? seeded[0] ?? null;
+    if (loop && !target.config.defaultLoop) {
+      target.config.defaultLoop = { bundle: loop.bundle, params: loop.manifest.defaultParams };
+    }
+    for (const p of seeded) {
+      dispatch({ kind: "programAdded", bundle: p.bundle, module: p.module, manifest: p.manifest });
+    }
+    log("seed", {
+      programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
+      defaultLoop: loop?.name ?? null,
+    });
+  }
+
+  if (config.mode === "local") becomeControlPlane(config.generation, storeBase, null);
 
   const timer = setInterval(() => {
     if (ledger) dispatch({ kind: "tick" });
   }, config.tickMs);
+  const snapshotTimer = setInterval(() => {
+    if (ledger && role === "control-plane") {
+      void snapshotter
+        .write(ledger, clock.now())
+        .catch((err) => log("snapshot-failed", { error: String(err) }));
+    }
+  }, config.snapshotEveryMs);
 
   function dispatch(event: Event): void {
     if (!ledger) return;
@@ -230,7 +307,7 @@ export async function createControlPlane(
   const hookHost: HookHost = {
     isListening: () => publicServer.listening && privateServer.listening,
     onValidate: () => selfTest(),
-    onRun(payload: RunPayload, microvmId: string | null): boolean {
+    async onRun(payload: RunPayload, microvmId: string | null): Promise<boolean> {
       if (role !== "neutral") {
         log("run-refused", { reason: "role already assumed", role });
         return false;
@@ -240,10 +317,23 @@ export async function createControlPlane(
         microvmId,
         role: payload.role,
         generation: payload.generation,
+        snapshotKey: payload.snapshotKey,
         hasSecret: fleetSecret !== null,
       });
       if (payload.role === "control-plane") {
-        becomeControlPlane(payload.generation, payload.storeBase ?? storeBase);
+        // Adopt from a snapshot when the fleet names one (design §9.4); a missing or unreadable
+        // snapshot means a fresh ledger, which idempotency makes safe.
+        let adopted: Ledger | null = null;
+        if (payload.snapshotKey) {
+          try {
+            adopted = await snapshotter.read(payload.snapshotKey);
+            log(adopted ? "snapshot-adopted" : "snapshot-missing", { key: payload.snapshotKey });
+          } catch (err) {
+            log("snapshot-unreadable", { key: payload.snapshotKey, error: String(err) });
+          }
+        }
+        if (role !== "neutral") return false; // a second /run raced us while we read
+        becomeControlPlane(payload.generation, payload.storeBase ?? storeBase, adopted);
         return true;
       }
       role = "core";
@@ -253,14 +343,29 @@ export async function createControlPlane(
     },
     async onSuspend() {
       log("suspend", { nodes: ledger?.nodes.size ?? 0 });
+      await snapshotNow("suspend");
     },
     async onResume() {
       log("resume", {});
     },
     async onTerminate() {
       log("terminate", {});
+      await snapshotNow("terminate");
     },
   };
+
+  /** The lifecycle hooks write a snapshot whatever the change state; failures are logged. */
+  async function snapshotNow(reason: string): Promise<string | null> {
+    if (!ledger || role !== "control-plane") return null;
+    try {
+      const key = await snapshotter.write(ledger, clock.now(), true);
+      log("snapshot", { reason, key });
+      return key;
+    } catch (err) {
+      log("snapshot-failed", { reason, error: String(err) });
+      return null;
+    }
+  }
 
   async function handlePrivate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://x");
@@ -275,8 +380,17 @@ export async function createControlPlane(
         protocol: PROTOCOL_VERSION,
         nodes: ledger?.nodes.size ?? 0,
         observers: ledger?.observers.size ?? 0,
+        programs: ledger?.programs.size ?? 0,
+        running: ledger?.running ?? null,
+        queue: ledger?.queue.length ?? 0,
+        snapshots: snapshotter.status,
         uptimeMs: clock.now() - startedAt,
       });
+    }
+    if (url.pathname === "/snapshot" && req.method === "GET") {
+      // The ledger as it stands (design §9.4); the handover path of M3 reads the same shape.
+      if (!ledger) return sendJson(res, 503, { error: "no ledger" });
+      return send(res, 200, "application/json", snapshotter.current(ledger));
     }
     if (url.pathname === "/diag") {
       const t0 = Date.now();
@@ -316,8 +430,17 @@ export async function createControlPlane(
       return ledger;
     },
     store,
+    get snapshots() {
+      return snapshotter.status;
+    },
+    seeded: () => seeding,
+    snapshot: (force = false) =>
+      ledger && role === "control-plane"
+        ? snapshotter.write(ledger, clock.now(), force)
+        : Promise.resolve(null),
     async close() {
       clearInterval(timer);
+      clearInterval(snapshotTimer);
       for (const ws of conns.values()) ws.terminate();
       conns.clear();
       wss.close();

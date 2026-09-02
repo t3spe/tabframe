@@ -11,7 +11,7 @@ let validateOk = true;
 const host: HookHost = {
   isListening: () => listening,
   onValidate: () => validateOk,
-  onRun(payload) {
+  async onRun(payload) {
     runPayload = payload;
     calls.push("run");
     return payload.role === "control-plane";
