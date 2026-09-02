@@ -27,6 +27,8 @@ export interface NodeProfile {
   /** Compute-time multiplier: 1 is the reference machine, 3 is a slow one. */
   speed: number;
   liar: boolean;
+  /** A cloud core the control plane launched: the fleet owns its life, not the chaos generator. */
+  fleet?: boolean;
 }
 
 interface Blob {
@@ -207,6 +209,26 @@ export class VirtualNode implements Client {
     this.hidden = false;
     this.retime(before);
     this.unpause();
+  }
+
+  /**
+   * Its MicroVM was destroyed (design §6.8): the socket dies with no close frame and nothing comes
+   * back under this identity. The control plane finds out through silence, and the fleet through
+   * the process's reconciler.
+   */
+  kill(): void {
+    this.retired = true;
+    this.autoRejoin = false;
+    this.frozen = false;
+    if (this.rejoinTimer) {
+      this.world.cancel(this.rejoinTimer);
+      this.rejoinTimer = null;
+    }
+    if (this.sock) {
+      this.world.crash(this.sock);
+      this.dropConnection();
+    }
+    this.world.note(`${this.describe()} microvm destroyed`);
   }
 
   /** Leave for good. */

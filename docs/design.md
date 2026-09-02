@@ -794,4 +794,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   has no programs": a control plane that adopts a predecessor's ledger still adds programs the
   image ships that the ledger does not have, which is what lets a deploy-as-rotation deliver a new
   program (§5.6, §9.4).
+- **2026-09-03 (WP1.9 fleet).** The churn simulation now runs the cloud-core fleet: `launchCore`
+  becomes a MicroVM that boots and dials in as `core-<microvmId>`, `terminateCore` destroys one,
+  and a `--drill` ending destroys a core, empties the dashboard until the machine sleeps, and
+  brings a visitor back (§6.8, §12). §6.8 needed no change. **The process does:** nothing calls
+  `CoreFleet.gone()`, so a core whose MicroVM dies keeps its ledger record until the four-hour
+  ceiling and is never replaced; the simulation models the poller the process still needs.
+  `checkInvariants` gained one invariant: a core's node link names a live node of that core's own
+  host (§6.10).
 

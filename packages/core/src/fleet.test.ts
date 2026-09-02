@@ -47,6 +47,22 @@ describe("the cloud-core fleet", () => {
     expect(h.ledger.cores.size).toBe(1);
   });
 
+  test("the ledger's core links are an invariant: a link always names that core's own node", () => {
+    const h = cloud();
+    h.subscribe("obs");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.hello("c1", "core-microvm-a", "core");
+    expect(h.invariants()).toEqual([]);
+    // A link to a node that has gone, or to a node of another host, is a violation.
+    const core = h.ledger.cores.get("microvm-a");
+    if (!core) throw new Error("no core");
+    core.nodeId = "n404";
+    expect(h.invariants()).toEqual(["core microvm-a links to gone node n404"]);
+    h.hello("c2", "h-tab", "tab");
+    core.nodeId = "n2";
+    expect(h.invariants()).toEqual(["core microvm-a links to n2, whose host is h-tab"]);
+  });
+
   test("a core whose MicroVM is gone is replaced", () => {
     const h = cloud();
     h.subscribe("obs");

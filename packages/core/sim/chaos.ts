@@ -59,6 +59,10 @@ export interface ChaosWorld extends WorldApi {
   readonly observers: VirtualObserver[];
   spawnNode(profile: NodeProfile): VirtualNode;
   spawnObserver(): VirtualObserver;
+  /** MicroVM ids of the cloud cores serving right now (design §6.8). */
+  liveCores(): string[];
+  /** Destroy a cloud core's MicroVM: the fleet must notice and replace it. */
+  killCore(microvmId: string): void;
   runningExecution(): string | null;
   queuedExecutions(): string[];
   doneExecutions(): string[];
@@ -78,6 +82,7 @@ type Action =
   | "observerLeave"
   | "observerCrash"
   | "control"
+  | "killCore"
   | "idle";
 
 const WEIGHTS: Array<[Action, number]> = [
@@ -93,6 +98,7 @@ const WEIGHTS: Array<[Action, number]> = [
   ["observerLeave", 3],
   ["observerCrash", 1],
   ["control", 12],
+  ["killCore", 2],
   ["idle", 6],
 ];
 
@@ -164,7 +170,8 @@ export class Chaos {
     let live = this.world.nodes.filter((n) => !n.retired && (n.connected || n.autoRejoin)).length;
     for (const node of this.world.nodes) {
       if (live >= 2) break;
-      if (node.retired || node.connected || node.profile.liar) continue;
+      if (node.retired || node.connected || node.profile.liar || node.profile.fleet === true)
+        continue;
       node.rejoin();
       live += 1;
     }
@@ -231,8 +238,11 @@ export class Chaos {
 
   private act(): void {
     const nodes = this.world.nodes;
-    const connected = nodes.filter((n) => n.connected);
-    const parked = nodes.filter((n) => !n.connected && !n.retired && !n.frozen);
+    // Cloud cores answer to the fleet, not to a person closing a tab: the generator may destroy
+    // their MicroVMs (`killCore`) but never closes or freezes them from the client side (§6.8).
+    const churnable = nodes.filter((n) => n.profile.fleet !== true);
+    const connected = churnable.filter((n) => n.connected);
+    const parked = churnable.filter((n) => !n.connected && !n.retired && !n.frozen);
     switch (this.pick(WEIGHTS)) {
       case "join":
         if (connected.length < this.scenario.maxNodes) this.spawn().join();
@@ -274,6 +284,11 @@ export class Chaos {
       case "control":
         this.control();
         return;
+      case "killCore": {
+        const victim = this.one(this.world.liveCores());
+        if (victim) this.world.killCore(victim);
+        return;
+      }
       case "idle":
         return;
     }
