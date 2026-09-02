@@ -1,6 +1,6 @@
 # WP1.8 — Dashboard v1
 
-**Milestone:** M1 · **Branch:** `wp/1.8-dashboard-v1` · **Merged:** pending
+**Milestone:** M1 · **Branch:** `wp/1.8-dashboard-v1` · **Merged:** 2026-09-02
 
 ## What
 
