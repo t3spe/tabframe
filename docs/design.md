@@ -838,6 +838,16 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-02 (WP4.4, later the same day).** What the unattended runs kept finding, each fixed
+  in the core: agreement under redundancy is counted and announced as a verification (it never
+  was, so the toggle's counter never moved); a person's launch holds the stage for twenty seconds
+  before the loop — its new launches *and* its queued continuations — takes it back (§6.7, §6.8),
+  and the snapshot shows the execution that ended last when nothing runs (§8.3); an adopted core's
+  link grace runs from the adoption, not its launch (every rotation had been terminating every
+  core); a node whose host cannot instantiate the module reports *released*, not a program fault
+  (§4.2, D7). The dashboard holds controls issued between subscribes for the next live socket.
+  The demo is scoped to ten nodes across two dashboards for the sixteen-connection endpoint (§9.7).
+
 - **2026-09-02 (WP4.9).** The image owns the names it ships: seeding retires a record under a
   shipped name whose bundle is not the shipped one and moves the default loop to the shipped
   program when the loop's bundle is gone or retired (§6.8, §9.4). A retired program is hidden,

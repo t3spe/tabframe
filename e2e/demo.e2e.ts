@@ -65,6 +65,9 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   test.setTimeout(900_000);
 
   // ---- 1. one tab, and the cloud cores the machine launches for it ------------------------------
+  // Back-to-back repetitions: the previous run's dozen sockets are still closing at the endpoint,
+  // which counts connections per MicroVM (WP4.5); a person would not reopen the page that fast.
+  if (test.info().repeatEachIndex > 0) await page.waitForTimeout(15_000);
   beat("open the dashboard");
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
@@ -111,15 +114,17 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await page.click("#killHalf");
   // A click can still land in a reconnect the page hides; a person would click again, so does
   // the script, and says what the page said about the first one.
+  // The page holds a control for ten seconds across a reconnect; only after that is the click
+  // known to be lost (a second click before then once killed half of the half).
   const applied = await expect(page.locator("#activity"))
-    .toContainText(/killHalf: \S+/, { timeout: 12_000 })
+    .toContainText(/killHalf: \S+/, { timeout: 30_000 })
     .then(
       () => true,
       () => false,
     );
   if (!applied) {
     beat(
-      `kill half not applied in 12 s: notice "${await page.locator("#notice").textContent()}", machine "${await page.locator("#machine").textContent()}"; clicking again`,
+      `kill half not applied in 30 s: notice "${await page.locator("#notice").textContent()}", machine "${await page.locator("#machine").textContent()}"; clicking again`,
     );
     await page.click("#killHalf");
   }
@@ -141,13 +146,10 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#activity")).toContainText(/freezeHalf: \S+/, { timeout: 20_000 });
   // The victims are named; each falls silent and is declared gone (a frozen core's MicroVM is
   // terminated and replaced, so the node count alone says nothing).
+  // The activity text runs the notes together; the note ends where the next timestamp begins.
   const frozen =
     /freezeHalf: ([^\n]*)/.exec((await page.locator("#activity").textContent()) ?? "")?.[1] ?? "";
-  const victims: string[] = [];
-  for (const token of frozen.split(/\s+/)) {
-    if (!/^n\d+$/.test(token)) break; // the note ends where the next activity line begins
-    victims.push(token);
-  }
+  const victims = (frozen.split(/\d\d:\d\d:\d\d/)[0] ?? "").match(/n\d+/g) ?? [];
   beat(`frozen: ${victims.join(" ")}`);
   expect(victims.length).toBeGreaterThan(0);
   await expect
@@ -274,7 +276,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
       { timeout: 300_000, intervals: [500] },
     )
     .toBe(true);
-  expect(seenStages).toBe(3);
+  expect(seenStages).toBeGreaterThanOrEqual(3); // the strip shows a fold row while folding
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", /\w+/);
   await expect(page.locator("#files")).toContainText("/in/corpus.txt", { timeout: 15_000 });
   beat("word count drew its bars");

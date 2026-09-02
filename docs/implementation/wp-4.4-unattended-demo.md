@@ -53,9 +53,58 @@ the background, so the browser tests carry no AWS SDK.
   sixteen connections a MicroVM endpoint allows (WP4.5); the script spawns six, and says why on
   the page's own hint.
 
+- **The redundancy toggle's counter never moved.** A twin that agreed *after* a task was done was
+  counted as verified; the pair that settles a task together under redundancy — the toggle's own
+  case — was not. The core now counts and announces that agreement (the plan task's too).
+- **Word count's bars lasted one tick.** A person's launch ended and the loop's next frame took the
+  stage at once — first from `ensureDefaultLoop`, then, once that was held, from the follow-up the
+  previous loop frame had left in the queue. The loop's pause now holds new launches *and* queued
+  continuations for `HUMAN_RESULT_HOLD_MS` (twenty seconds) after a person's execution ends, the
+  tick starts a held continuation when the pause is over, and the snapshot shows the execution that
+  ended last when nothing runs, so a resubscribing dashboard (or a visitor arriving during the hold)
+  sees the result rather than "idle".
+- **Every rotation terminated every core.** The link timeout measured an adopted core's silence
+  from its launch, and adoption clears the links; the successor's first tick retired the fleet and
+  launched it again (`mise run health -- --cores` showed three six-second-old cores after each
+  rotation). Adoption now stamps the grace from the moment of adoption.
+- **A CI runner's host failure took a frame down.** Ten workers on the two-vCPU runner; one
+  instantiation failed with `WebAssembly.Instance(): Out of memory`, the node reported a program
+  error, and the execution failed — the money shot stalled at 215 and 315 of 640 that way. A host
+  that cannot instantiate the module now gives the task back (released), like a deadline kill.
+- **Assertions that raced the machine.** The rotating banner's countdown is under two seconds, so
+  the beat collects the banners it sees while the generation advances rather than asserting one at
+  an instant; word count is followed through one logged poll; the frozen victims are named and
+  watched out of the node table (a frozen core's MicroVM is replaced, so the count says nothing).
+
 ## Results
 
-_Filled by the runs below._
+`mise run demo -- --repeat 3` on 2026-09-02 at 21:43 UTC against generation 42 of the deployed
+machine: **three passes in a row** (2.4, 3.9, and 2.4 minutes; generations 42 → 43 → 44 → 45,
+one rotation per pass). Twelve runs of the suite preceded it, each failing on something the fixes
+above name. One pass's timeline, from the suite's own log:
+
+| Beat | When | What the page showed |
+|---|---|---|
+| open the dashboard | 0 s | live; 4 nodes on 4 hosts within 2 s (two cloud cores were already up) |
+| another tab, spawn four | 3–10 s | 9 nodes on 5 hosts |
+| kill half | 10–46 s | the first click was lost (see below); the second took 5 nodes, 8 tasks taken back |
+| freeze half | 46–47 s | two named victims left the node table |
+| throttle half | 51–58 s | twins seen within 7 s; resume |
+| redundancy on | 59 s | verified tiles within seconds, mismatches 0 |
+| editor | 70–89 s | compiled in the page, launched as `mandelbrot-palette`, rendering 19 s later |
+| word count | 89–97 s | map 32 → reduce 8 → merge 1 → done, 25 bars, corpus in the files panel |
+| rotation | 97–119 s | rotating banner ("Reconnecting in 0.9 s"), generation 43 in 22 s, 7 nodes back |
+| ledger and files | 119–144 s | hashes, sizes, and where the bytes live |
+
+Reported, not required, across the three passes: kill half took back 0–8 tasks (0 when the frame
+had just completed); twins were seen in every pass; the first `kill half` click of the first pass
+was not applied within 30 s and the script's second click was — the dashboard's own socket had
+been refused or was reconnecting for longer than the ten-second hold, which is the endpoint
+ceiling of WP4.5 showing itself under a fresh page plus four spawns (the later passes, which pause
+fifteen seconds before opening the page, applied the first click). That is the one soft spot left in
+the demo and it is the platform's, not the machine's; an EC2 control plane (WP4.6) would remove it.
+
+The demo runs against AWS only; CI runs the local suites and skips this one.
 
 ## Tests
 
