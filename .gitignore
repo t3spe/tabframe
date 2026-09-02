@@ -12,3 +12,5 @@ test-results/
 .claude/
 packages/infra/image-dist/
 packages/sdk-as/dist-test/
+packages/node/dist-test/
+packages/control-plane/dist-test/

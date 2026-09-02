@@ -39,13 +39,20 @@ export function deserializeLedger(json: string): Ledger {
   const s = JSON.parse(json) as SerializedLedger;
   if (s.version !== 1) throw new Error(`unsupported ledger version ${String(s.version)}`);
   return {
-    meta: s.meta,
+    // Fields added after a snapshot was written take their defaults.
+    meta: {
+      ...s.meta,
+      phase: "active",
+      loopBackoffMs: s.meta.loopBackoffMs ?? 0,
+      loopPausedUntil: s.meta.loopPausedUntil ?? 0,
+    },
     config: s.config,
     conns: new Map(),
     nodes: new Map(s.nodes.map((n) => [n.nodeId, n])),
     nodeByConn: new Map(),
     observers: new Map(),
-    programs: new Map(s.programs.map((p) => [p.bundle, p])),
+    // A snapshot written before bundles carried their files has none.
+    programs: new Map(s.programs.map((p) => [p.bundle, { ...p, files: p.files ?? {} }])),
     executions: new Map(s.executions.map((e) => [e.executionId, e])),
     queue: s.queue,
     running: s.running,
@@ -69,5 +76,7 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
   ledger.observers.clear();
   ledger.meta.generation = generation;
   ledger.meta.startedAt = now;
+  // Whatever the source ledger was doing, this one is the active control plane now.
+  ledger.meta.phase = "active";
   return effects;
 }

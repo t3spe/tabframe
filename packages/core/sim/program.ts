@@ -65,18 +65,16 @@ export function loadProgram(name = "mandelbrot"): LoadedProgram {
 export function seedProgram(
   store: FakeStore,
   program: LoadedProgram,
-): { bundle: string; module: string } {
+): { bundle: string; module: string; files: FsManifest["files"] } {
   const module = store.put(program.wasm);
   const manifestBytes = new TextEncoder().encode(JSON.stringify(program.manifest));
   const manifestHash = store.put(manifestBytes);
-  const bundleManifest: FsManifest = {
-    version: 1,
-    files: {
-      [BUNDLE_PATHS.module]: { hash: module, size: program.wasm.length },
-      [BUNDLE_PATHS.manifest]: { hash: manifestHash, size: manifestBytes.length },
-    },
+  const files: FsManifest["files"] = {
+    [BUNDLE_PATHS.module]: { hash: module, size: program.wasm.length },
+    [BUNDLE_PATHS.manifest]: { hash: manifestHash, size: manifestBytes.length },
   };
-  return { bundle: store.putJson(bundleManifest), module };
+  const bundleManifest: FsManifest = { version: 1, files };
+  return { bundle: store.putJson(bundleManifest), module, files };
 }
 
 export type Computed =

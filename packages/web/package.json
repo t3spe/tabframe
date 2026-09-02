@@ -6,6 +6,8 @@
   "description": "The host page: dashboard, controls, node spawner, editor",
   "dependencies": {
     "@tabframe/node": "workspace:*",
-    "@tabframe/protocol": "workspace:*"
+    "@tabframe/protocol": "workspace:*",
+    "@tabframe/store": "workspace:*",
+    "@tabframe/sandbox": "workspace:*"
   }
 }

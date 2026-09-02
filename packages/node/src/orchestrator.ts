@@ -1,5 +1,7 @@
 import {
+  type Assign,
   CLOSE,
+  type Command,
   type ControlPlaneToNode,
   controlPlaneToNode,
   decode,
@@ -11,8 +13,10 @@ import {
   PROTOCOL_VERSION,
   type RotatingReason,
 } from "@tabframe/protocol";
+import { StoreClient } from "@tabframe/store";
 import { Backoff } from "./backoff.ts";
 import { type FetchLike, fetchSession, type Session, socketProtocols } from "./session.ts";
+import { type SandboxRunner, SocketPresigner, TaskRunner } from "./tasks.ts";
 
 /** The WHATWG surface the orchestrator needs; browser and Node WebSockets both provide it. */
 export interface SocketLike {
@@ -48,6 +52,8 @@ export interface Status {
   tasksDone: number;
   lastTaskMs: number | null;
   attempts: number;
+  /** Tasks accepted and not yet finished, the running one included. */
+  queue: number;
   detail?: string;
 }
 
@@ -60,14 +66,27 @@ export interface OrchestratorDeps {
   fetch: FetchLike;
   connect: (url: string, protocols?: string[]) => SocketLike;
   timers: Timers;
+  /** The platform's sandbox for a store base (a Web Worker or a worker thread). */
+  createSandbox: (storeBase: string) => SandboxRunner;
+  /** Blob traffic: GET by hash and presigned PUT. Defaults to the global fetch. */
+  blobFetch?: (url: string, init?: RequestInit) => Promise<Response>;
+  compile?: (bytes: Uint8Array) => Promise<WebAssembly.Module>;
+  now?: () => number;
   rng?: () => number;
   onStatus: (status: Status) => void;
   log?: (event: string, fields?: Record<string, unknown>) => void;
 }
 
+/** How much slower a throttled node runs: it idles this many times its compute after each task. */
+export const THROTTLE_FACTOR = 9;
+/** A throttled node idles at least this long between tasks, so tiny tasks still slow down. */
+export const THROTTLE_MIN_MS = 50;
+
 /**
- * The orchestrator (design §4). This M0 version handshakes, heartbeats, reconnects through the
- * session function with backoff or the rotation delay, and reports status. Tasks arrive in M1.
+ * The orchestrator (design §4): handshake, heartbeat, reconnect through the session function with
+ * backoff or the rotation delay, and the task loop — accept up to `maxInFlight` assignments, run
+ * them one at a time through the sandbox, upload what they produced, report. Commands from the
+ * dashboard (close, freeze, throttle, resume) act on this loop.
  */
 export class Orchestrator {
   private socket: SocketLike | null = null;
@@ -76,6 +95,7 @@ export class Orchestrator {
   private heartbeatMs: number = LIMITS.heartbeatMs;
   private heartbeatHandle: unknown = null;
   private reconnectHandle: unknown = null;
+  private throttleHandle: unknown = null;
   private stopped = false;
   private visible = true;
   private attempts = 0;
@@ -83,6 +103,15 @@ export class Orchestrator {
   private readonly deps: OrchestratorDeps;
   private tasksDone = 0;
   private lastTaskMs: number | null = null;
+
+  private maxInFlight: number = LIMITS.maxInFlight;
+  private queue: Assign[] = [];
+  private running: Assign | null = null;
+  private frozen = false;
+  private throttled = false;
+  private runner: TaskRunner | null = null;
+  private runnerBase: string | null = null;
+  private readonly presigner = new SocketPresigner((text) => this.socket?.send(text));
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
@@ -103,6 +132,8 @@ export class Orchestrator {
   stop(): void {
     this.stopped = true;
     this.clearTimers();
+    this.dropWork();
+    this.presigner.reset();
     this.socket?.close(1000, "stop");
     this.socket = null;
     this.status("closed");
@@ -111,7 +142,7 @@ export class Orchestrator {
   /** The host tab reports its visibility; the next heartbeat carries it. */
   setVisible(visible: boolean): void {
     this.visible = visible;
-    if (this.socket && this.nodeId) this.status(visible ? "idle" : "throttled");
+    if (this.socket && this.nodeId) this.status(this.state());
   }
 
   private async connectOnce(): Promise<void> {
@@ -134,6 +165,7 @@ export class Orchestrator {
       return this.scheduleReconnect(session.retryAfterMs);
     }
     this.session = session;
+    this.presigner.setGeneration(session.generation);
     const url = `${session.endpoint.replace(/\/$/, "")}/node`;
     const socket = this.deps.connect(url, socketProtocols(session.token));
     this.socket = socket;
@@ -172,14 +204,138 @@ export class Orchestrator {
 
   private handle(msg: ControlPlaneToNode): void {
     switch (msg.t) {
-      case "welcome":
+      case "welcome": {
         this.nodeId = msg.nodeId;
         this.heartbeatMs = msg.heartbeatMs;
+        this.maxInFlight = msg.maxInFlight;
+        this.ensureRunner(resolveStoreBase(msg.storeBase, this.session?.endpoint ?? ""));
         this.backoff.reset();
-        this.status(this.visible ? "idle" : "throttled");
+        this.status(this.state());
         this.scheduleHeartbeat();
         return;
+      }
+      case "assign":
+        this.onAssign(msg);
+        return;
+      case "cancel":
+        this.queue = this.queue.filter((a) => a.taskId !== msg.taskId);
+        if (this.running?.taskId === msg.taskId) this.runner?.abort();
+        this.status(this.state());
+        return;
+      case "command":
+        this.onCommand(msg);
+        return;
+      case "presigned":
+        if (!this.presigner.deliver(msg.urls)) this.deps.log?.("stray-presigned");
+        return;
     }
+  }
+
+  private onAssign(a: Assign): void {
+    if (this.frozen) {
+      this.deps.log?.("assign-while-frozen", { taskId: a.taskId });
+      return;
+    }
+    const held = this.queue.length + (this.running ? 1 : 0);
+    if (held >= this.maxInFlight) {
+      this.deps.log?.("assign-over-capacity", { taskId: a.taskId, held });
+      return;
+    }
+    this.queue.push(a);
+    this.pump();
+    this.status(this.state());
+  }
+
+  private onCommand(msg: Command): void {
+    switch (msg.op) {
+      case "close":
+        this.stop();
+        return;
+      case "freeze":
+        // Looks dead to the control plane: no heartbeats, no results, socket left open.
+        this.frozen = true;
+        this.deps.timers.clearTimeout(this.heartbeatHandle);
+        this.dropWork();
+        this.status("frozen", "frozen by an operator");
+        return;
+      case "throttle":
+        this.throttled = true;
+        this.status(this.state(), "throttled by an operator");
+        return;
+      case "resume":
+        this.frozen = false;
+        this.throttled = false;
+        this.deps.timers.clearTimeout(this.throttleHandle);
+        this.throttleHandle = null;
+        this.scheduleHeartbeat();
+        this.pump();
+        this.status(this.state());
+        return;
+    }
+  }
+
+  private ensureRunner(storeBase: string): void {
+    if (this.runner && this.runnerBase === storeBase) return;
+    this.runner?.abort();
+    const blobFetch = this.deps.blobFetch ?? ((u, i) => fetch(u, i));
+    const store = new StoreClient(storeBase, this.presigner, blobFetch);
+    this.runner = new TaskRunner({
+      store,
+      createSandbox: () => this.deps.createSandbox(storeBase),
+      compile: this.deps.compile ?? ((bytes) => WebAssembly.compile(bytes as BufferSource)),
+      now: this.deps.now ?? (() => Date.now()),
+      log: this.deps.log,
+    });
+    this.runnerBase = storeBase;
+  }
+
+  /** Start the next queued task unless one is running, the node is paused, or nothing waits. */
+  private pump(): void {
+    if (this.running || this.frozen || this.throttleHandle || this.stopped) return;
+    const next = this.queue.shift();
+    if (!next || !this.runner) return;
+    this.running = next;
+    const socket = this.socket;
+    const gen = this.session?.generation ?? 0;
+    void this.runner.run(next, gen).then((outcome) => {
+      if (this.running !== next) return; // dropped meanwhile
+      this.running = null;
+      if (outcome.kind === "result") {
+        this.tasksDone += 1;
+        this.lastTaskMs = outcome.msg.computeMs;
+        // A result only has a path while the socket that assigned the task is still up.
+        if (socket && socket === this.socket && this.nodeId) {
+          socket.send(encode({ ...outcome.msg, v: PROTOCOL_VERSION, gen }));
+        }
+        if (this.throttled) {
+          const idle = Math.max(outcome.msg.computeMs * THROTTLE_FACTOR, THROTTLE_MIN_MS);
+          this.throttleHandle = this.deps.timers.setTimeout(() => {
+            this.throttleHandle = null;
+            this.pump();
+            this.status(this.state());
+          }, idle);
+          this.status(this.state());
+          return;
+        }
+      }
+      this.pump();
+      this.status(this.state());
+    });
+  }
+
+  /** Forget queued work and kill the running task; the control plane reassigns it. */
+  private dropWork(): void {
+    this.queue = [];
+    this.running = null;
+    this.runner?.abort();
+    this.deps.timers.clearTimeout(this.throttleHandle);
+    this.throttleHandle = null;
+  }
+
+  private state(): NodeState {
+    if (this.frozen) return "frozen";
+    if (this.throttled || !this.visible) return "throttled";
+    return this.running ? "busy" : "idle";
   }
 
   private scheduleHeartbeat(): void {
@@ -191,23 +347,32 @@ export class Orchestrator {
   }
 
   private sendHeartbeat(): void {
-    if (!this.socket || !this.session || !this.nodeId) return;
+    if (!this.socket || !this.session || !this.nodeId || this.frozen) return;
     const hb: Heartbeat = {
       t: "heartbeat",
       v: PROTOCOL_VERSION,
       gen: this.session.generation,
       visible: this.visible,
-      queue: 0,
+      queue: Math.min(this.held(), LIMITS.maxInFlight),
       lastTaskMs: this.lastTaskMs,
       tasksDone: this.tasksDone,
     };
     this.socket.send(encode(hb));
   }
 
+  private held(): number {
+    return this.queue.length + (this.running ? 1 : 0);
+  }
+
   private onClose(code: number, reason: string): void {
     this.deps.timers.clearTimeout(this.heartbeatHandle);
     this.socket = null;
     this.nodeId = null;
+    this.presigner.reset();
+    // Assignments belong to the connection; the control plane releases them when we vanish.
+    this.dropWork();
+    this.frozen = false;
+    this.throttled = false;
     if (this.stopped) return;
     if (code === CLOSE.versionMismatch) {
       this.status("outdated", "protocol version mismatch; reload");
@@ -219,6 +384,7 @@ export class Orchestrator {
       if (parsed) delay = parsed.reconnectAfterMs;
     }
     this.deps.log?.("closed", { code, reason, reconnectInMs: delay });
+    this.status("connecting", `reconnecting in ${Math.round(delay)} ms`);
     this.scheduleReconnect(delay);
   }
 
@@ -230,6 +396,8 @@ export class Orchestrator {
   private clearTimers(): void {
     this.deps.timers.clearTimeout(this.heartbeatHandle);
     this.deps.timers.clearTimeout(this.reconnectHandle);
+    this.deps.timers.clearTimeout(this.throttleHandle);
+    this.throttleHandle = null;
   }
 
   private status(state: NodeState, detail?: string): void {
@@ -241,6 +409,7 @@ export class Orchestrator {
       tasksDone: this.tasksDone,
       lastTaskMs: this.lastTaskMs,
       attempts: this.attempts,
+      queue: this.held(),
     };
     if (detail !== undefined) s.detail = detail;
     this.deps.onStatus(s);
@@ -257,4 +426,15 @@ export function parseRotating(reason: string): RotatingReason | null {
     /* not a rotating reason */
   }
   return null;
+}
+
+/**
+ * A relative store base (`/blob`, local mode) lives on the control plane's own HTTP origin, which
+ * the socket endpoint names; an absolute one (CloudFront) is used as is.
+ */
+export function resolveStoreBase(storeBase: string, endpoint: string): string {
+  if (!storeBase.startsWith("/")) return storeBase.replace(/\/$/, "");
+  const origin = endpoint.replace(/^ws/, "http").replace(/\/$/, "");
+  if (!origin) return storeBase.replace(/\/$/, "");
+  return new URL(storeBase, `${origin}/`).href.replace(/\/$/, "");
 }

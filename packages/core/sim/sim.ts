@@ -84,6 +84,7 @@ class World implements ChaosWorld {
   readonly store = new FakeStore();
   readonly bundle: string;
   readonly module: string;
+  readonly bundleFiles: FsManifest["files"];
   readonly limits: TaskLimits = DEFAULT_TASK_LIMITS;
   readonly stats: SimStats = emptyStats();
   readonly gen: number;
@@ -118,6 +119,7 @@ class World implements ChaosWorld {
     const seeded = seedProgram(this.store, program);
     this.bundle = seeded.bundle;
     this.module = seeded.module;
+    this.bundleFiles = seeded.files;
     this.gen = 1 + (opts.seed % 7);
     this.h = harness(
       {
@@ -273,6 +275,7 @@ class World implements ChaosWorld {
       bundle: this.bundle,
       module: this.module,
       manifest: this.program.manifest,
+      files: this.bundleFiles,
     });
     this.scheduleTick();
     this.chaos.start();
@@ -417,6 +420,15 @@ class World implements ChaosWorld {
             const hash = this.store.put(bytes);
             this.dispatch({ kind: "blobStored", hash, size: bytes.length, purpose });
           });
+          break;
+        }
+        case "resolveBundle": {
+          // Every launch in the simulation names the seeded bundle, so the ledger knows it.
+          this.violation(`resolveBundle for ${e.bundle.slice(0, 12)} asked by ${e.connId}`);
+          const { bundle, connId } = e;
+          this.timeline.after(this.storeLatency(), () =>
+            this.dispatch({ kind: "bundleRejected", bundle, connId, reason: "unknown bundle" }),
+          );
           break;
         }
         case "presign": {
@@ -626,15 +638,18 @@ class World implements ChaosWorld {
           this.stats.framesDone += 1;
           this.note(`${exec.executionId} done`);
           this.checkFrame(exec);
+          this.absorbCounters(exec);
           break;
         case "failed":
           this.stats.framesFailed += 1;
           count(this.stats.failures, exec.failure ?? "unknown");
           this.violation(`execution ${exec.executionId} failed: ${exec.failure}`);
+          this.absorbCounters(exec);
           break;
         case "cancelled":
           this.stats.framesCancelled += 1;
           count(this.stats.failures, exec.failure ?? "cancelled");
+          this.absorbCounters(exec);
           break;
         default:
           break;
@@ -711,16 +726,21 @@ class World implements ChaosWorld {
     return task.resolvedByVote ? wrong.size >= right.size : wrong.size >= 2;
   }
 
+  /** Ended executions are pruned from the ledger after a while, so their counters are taken now. */
+  private absorbCounters(exec: ExecutionRecord): void {
+    this.stats.done += exec.counters.done;
+    this.stats.reassigned += exec.counters.reassigned;
+    this.stats.speculated += exec.counters.speculated;
+    this.stats.verified += exec.counters.verified;
+    this.stats.mismatched += exec.counters.mismatched;
+    for (const t of this.tasksOf(exec.executionId)) this.stats.assigned += t.attempts.length;
+  }
+
   private finalChecks(): void {
     for (const v of checkInvariants(this.ledger)) this.violation(`final invariant: ${v}`);
     for (const e of this.ledger.executions.values()) {
-      this.stats.done += e.counters.done;
-      this.stats.reassigned += e.counters.reassigned;
-      this.stats.speculated += e.counters.speculated;
-      this.stats.verified += e.counters.verified;
-      this.stats.mismatched += e.counters.mismatched;
+      if (e.status === "running" || e.status === "queued") this.absorbCounters(e);
     }
-    for (const t of this.ledger.tasks.values()) this.stats.assigned += t.attempts.length;
     if (this.scenario.liars === 0 && this.stats.mismatched > 0)
       this.violation(`${this.stats.mismatched} mismatches without a liar around`);
   }
@@ -763,6 +783,8 @@ function describeEvent(event: Event): string {
       return `programAdded ${event.manifest.name}`;
     case "launch":
       return `launch ${event.human ? "human" : "auto"}`;
+    case "bundleRejected":
+      return `bundleRejected ${event.bundle.slice(0, 8)} ${event.reason}`;
   }
 }
 
@@ -782,5 +804,7 @@ function describeEffect(e: Effect): string {
       return `putBlob ${e.purpose.type} ${e.bytes.length}`;
     case "presign":
       return `presign ${e.connId} ${e.items.length}`;
+    case "resolveBundle":
+      return `resolveBundle ${e.connId} ${e.bundle.slice(0, 8)}`;
   }
 }

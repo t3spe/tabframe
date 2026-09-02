@@ -8,9 +8,21 @@ export {
   ensureDefaultLoop,
   executionTasks,
   failExecution,
+  KEEP_ENDED_EXECUTIONS,
   type LaunchRequest,
+  LOOP_BACKOFF_MAX_MS,
+  LOOP_BACKOFF_MIN_MS,
   maybeStart,
+  onInheritRoot,
+  pruneExecutions,
 } from "./executions.ts";
+export {
+  beginHandover,
+  drain,
+  JITTER_FLOOR_MS,
+  JITTER_MS_PER_CLIENT,
+  jitterWindowMs,
+} from "./handover.ts";
 export {
   type Clock,
   type Rng,
@@ -35,6 +47,7 @@ export {
   type NodeRecord,
   nodeView,
   type ObserverRecord,
+  type Phase,
   type ProgramRecord,
   queueEntry,
   type ResultRecord,

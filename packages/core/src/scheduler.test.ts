@@ -468,10 +468,18 @@ describe("queue and controls", () => {
     h.connect("o1", "observer");
     expect(h.send("o1", { t: "killHalf" })[0]).toMatchObject({ kind: "close" });
     h.subscribe("o2");
-    const refused = h.send("o2", { t: "launch", bundle: "c".repeat(64), params: {} });
-    expect(refused[0]?.kind === "send" && refused[0].msg.t === "error" && refused[0].msg.code).toBe(
-      "launch-refused",
-    );
+    // A bundle the ledger does not know is an upload: the process is asked to resolve it (WP2.3).
+    const unknown = h.send("o2", { t: "launch", bundle: "c".repeat(64), params: {} });
+    expect(unknown[0]).toMatchObject({ kind: "resolveBundle", bundle: "c".repeat(64) });
+    const rejected = h.event({
+      kind: "bundleRejected",
+      bundle: "c".repeat(64),
+      connId: "o2",
+      reason: "forbidden imports: env.now",
+    });
+    expect(
+      rejected[0]?.kind === "send" && rejected[0].msg.t === "error" && rejected[0].msg.code,
+    ).toBe("launch-refused");
     const none = h.send("o2", { t: "runFollowUp", executionId: "e99" });
     expect(none[0]?.kind === "send" && none[0].msg.t === "error").toBe(true);
   });
@@ -515,7 +523,10 @@ describe("queue and controls", () => {
     while (assigns.length > 0) {
       let next: typeof assigns = [];
       for (const a of assigns)
-        next = [...next, ...h.assigns(h.result(a.connId, a.taskId, a.attempt, H("7")))];
+        next = [
+          ...next,
+          ...h.assigns(h.result(a.connId, a.taskId, a.attempt, H("7"), { outputSize: 16384 })),
+        ];
       assigns = next;
     }
     expect(h.ledger.executions.get("e1")?.counters.done).toBe(641);

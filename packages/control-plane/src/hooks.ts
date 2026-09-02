@@ -16,7 +16,7 @@ export interface RunPayload {
 
 export interface HookHost {
   /** Called on /run with the parsed payload; returns false if the payload is unusable. */
-  onRun(payload: RunPayload, microvmId: string | null): boolean;
+  onRun(payload: RunPayload, microvmId: string | null): Promise<boolean>;
   /** Called on /validate; runs the in-process self-test and returns true when it passes. */
   onValidate(): boolean;
   onSuspend(): Promise<void>;
@@ -45,7 +45,7 @@ export async function handleHook(
       const body = await readBody(req, 64 * 1024);
       const parsed = parseRunBody(body);
       if (!parsed) return sendJson(res, 400, { error: "bad run payload" });
-      const ok = host.onRun(parsed.payload, parsed.microvmId);
+      const ok = await host.onRun(parsed.payload, parsed.microvmId);
       return sendJson(res, ok ? 200 : 400, { role: parsed.payload.role, ok });
     }
     case "resume":

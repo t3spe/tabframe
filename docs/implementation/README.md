@@ -22,4 +22,11 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP1.3 | [wp-1.3-store.md](wp-1.3-store.md) | 2026-09-02 | Store package: local and S3 drivers with pinned checksums, the shared client; control plane executes store effects |
 | WP1.4 | [wp-1.4-sandbox.md](wp-1.4-sandbox.md) | 2026-09-02 | WebAssembly sandbox: validation, the five tf imports, filesystem glue, deadline kill, Node and web adapters |
 | WP1.5 | [wp-1.5-sdk-mandelbrot.md](wp-1.5-sdk-mandelbrot.md) | 2026-09-02 | AssemblyScript SDK mirroring the ABI, Mandelbrot program with presets and goldens, build and host scripts |
+| WP1.6 | [wp-1.6-node-v1.md](wp-1.6-node-v1.md) | 2026-09-02 | Node orchestrator: task loop, module and manifest caches, sandbox with grace deadline, uploads via presign, cancel and commands, `released` results |
+| WP1.7 | [wp-1.7-control-plane-v1.md](wp-1.7-control-plane-v1.md) | 2026-09-02 | Control plane: seeding of shipped programs, gzipped S3 snapshots with a latest pointer, adopt-from-snapshot in `/run`, the M1 pipeline end to end |
+| WP1.8 | [wp-1.8-dashboard-v1.md](wp-1.8-dashboard-v1.md) | 2026-09-02 | Dashboard: verified tiles on the canvas with state overlay, task grid, counters, throughput, controls over the socket, notices, demo mode |
 | WP1.9 | [wp-1.9-churn-sim.md](wp-1.9-churn-sim.md) | 2026-09-03 | Churn simulation: virtual nodes running real WASM on a virtual timeline, seeded chaos, invariants after every event, goldens per frame; four control-plane fixes it found |
+| WP1.10 | [wp-1.10-deploy-m1.md](wp-1.10-deploy-m1.md) | 2026-09-02 | M1 on AWS: signed-checksum presigns, default-loop backoff, execution pruning, the M1 runbook — 640 of 640 golden tiles from browser tabs through a kill-half |
+| WP2.1 | [wp-2.1-filesystem.md](wp-2.1-filesystem.md) | 2026-09-02 | Execution filesystem: bundle files as the first root, persist inheritance, expired-root warning, per-execution size cap |
+| WP2.3 | [wp-2.3-launch-path.md](wp-2.3-launch-path.md) | 2026-09-02 | Launch path: uploaded bundles resolved and validated by the process, per-execution task budget, per-observer launch rate |
+| WP3.1 | [wp-3.1-cp-lifecycle.md](wp-3.1-cp-lifecycle.md) | 2026-09-02 | Rotation, control-plane side: phases, handover, generation-guarded adopt, jittered drain, fleet-secret gate |

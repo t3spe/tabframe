@@ -1,4 +1,4 @@
-import { canonicalStringify, PROTOCOL_VERSION, type Result } from "@tabframe/protocol";
+import { canonicalStringify, PROTOCOL_VERSION, RELEASED, type Result } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
 import type {
   ExecutionRecord,
@@ -43,7 +43,14 @@ export function onResult(
   const attempt = task?.attempts.find(
     (a) => a.attempt === msg.attempt && a.nodeId === node.nodeId && a.outcome === "running",
   );
+  if (task) msg = checkTileSize(ledger, task, msg);
   if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
+  if (msg.error === RELEASED) {
+    // The node gave up at its own deadline: the attempt is released, the task is not judged.
+    if (attempt) attempt.outcome = "released";
+    if (task) effects.push(...releaseIfOrphaned(ledger, task, node.nodeId));
+    return { effects, settlement: { kind: "none" } };
+  }
   node.tasksDone += 1;
   node.lastTaskMs = msg.computeMs;
   node.ewmaMs =
@@ -132,6 +139,36 @@ export function onResult(
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };
+}
+
+/** A tile is RGBA of its placed size (design §5.2); anything else is a program fault. */
+function checkTileSize(ledger: Ledger, task: TaskRecord, msg: Result): Result {
+  if (msg.error !== undefined || !task.place) return msg;
+  const exec = ledger.executions.get(task.executionId);
+  if (!exec || exec.manifest.view !== "tiles") return msg;
+  const expected = task.place.w * task.place.h * 4;
+  if (msg.outputSize === expected) return msg;
+  const { output: _o, outputSize: _s, ...rest } = msg;
+  return {
+    ...rest,
+    writes: [],
+    error: `tile output is ${msg.outputSize ?? 0} bytes, expected ${expected} (RGBA ${task.place.w}×${task.place.h})`,
+  };
+}
+
+/** With no attempt left running and nothing decided this round, the task goes back to the front. */
+function releaseIfOrphaned(ledger: Ledger, task: TaskRecord, fromNode: string): Effect[] {
+  if (task.status !== "assigned" || runningAttempts(task) > 0) return [];
+  if (task.results.some((r) => r.round === task.contestedRounds)) return [];
+  task.status = "pending";
+  task.released = true;
+  const exec = ledger.executions.get(task.executionId);
+  if (exec) {
+    exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
+    exec.counters.pending += 1;
+    exec.counters.reassigned += 1;
+  }
+  return broadcast(ledger, { t: "taskReassigned", taskId: task.taskId, fromNode });
 }
 
 /**

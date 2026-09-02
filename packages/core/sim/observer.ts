@@ -122,7 +122,7 @@ export class VirtualObserver implements Client {
     if (msg.page >= msg.pages)
       this.world.violation(`observer ${this.id}: snapshot page ${msg.page} of ${msg.pages}`);
     if (msg.page === 0) {
-      if (!msg.nodes || !msg.queue || !msg.machine || msg.execution === undefined)
+      if (!msg.nodes || !msg.queue || !msg.machine || !msg.programs || msg.execution === undefined)
         this.world.violation(`observer ${this.id}: snapshot page 0 lacks the cluster`);
       this.subscribed = true;
       this.lastSeq = msg.seq;

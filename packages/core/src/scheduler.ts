@@ -119,6 +119,8 @@ export function stageTasks(ledger: Ledger, exec: ExecutionRecord): TaskRecord[] 
 
 /** Give every node with a free slot its next task (design §6.3). Deterministic: nodes by id. */
 export function fill(ledger: Ledger, now: number): Effect[] {
+  // A control plane that has handed its ledger over must not assign anything (design §9.4).
+  if (ledger.meta.phase !== "active") return [];
   const effects: Effect[] = [];
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   if (!exec) return effects;

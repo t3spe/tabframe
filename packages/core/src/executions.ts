@@ -28,9 +28,10 @@ export function addProgram(
   bundle: string,
   module: string,
   manifest: ProgramManifest,
+  files: FsManifest["files"],
   now: number,
 ): Effect[] {
-  ledger.programs.set(bundle, { bundle, module, manifest, addedAt: now });
+  ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
   return broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
 }
 
@@ -49,7 +50,9 @@ export function enqueue(
 ): { effects: Effect[]; executionId: string | null; error?: string } {
   const program = ledger.programs.get(req.bundle);
   if (!program) return { effects: [], executionId: null, error: "unknown program" };
-  const inherited = resolveInherit(ledger, req);
+  // A `persist` program inherits the latest finished run of itself unless told otherwise (D5).
+  const inherit = req.inherit ?? (program.manifest.persist ? "latest" : null);
+  const inherited = resolveInherit(ledger, { ...req, inherit });
   if (req.inherit && !inherited)
     return { effects: [], executionId: null, error: "nothing to inherit" };
   const executionId = `e${++ledger.meta.executionCounter}`;
@@ -68,12 +71,15 @@ export function enqueue(
     canvas: null,
     stageTaskIds: [],
     planTaskId: null,
-    root: inherited?.root ?? null,
-    files: inherited ? { ...inherited.files } : {},
+    // The filesystem starts from the bundle's own files, overlaid on whatever it inherits, so a
+    // relaunched bundle's inputs and module always win over stale copies (design §5.4).
+    root: inherited ? null : program.bundle,
+    files: { ...(inherited?.files ?? {}), ...program.files },
     sealedStage: -1,
     computeSamples: [],
     computeMsUsed: 0,
     computeMsCap: ledger.config.computeMsCap,
+    tasksCreated: 0,
     followUp: null,
     inheritedFrom: inherited?.executionId ?? null,
     failure: null,
@@ -123,9 +129,59 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   exec.startedAt = now;
   ledger.running = exec.executionId;
   const effects = broadcast(ledger, { t: "executionStarted", execution: executionView(exec) });
+  const inheritedRoot = exec.inheritedFrom
+    ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
+    : null;
+  if (inheritedRoot) {
+    // Blobs expire (a year, §5.4). Check the inherited root is still there before planning;
+    // the plan task waits for the answer.
+    effects.push({
+      kind: "fetchBlob",
+      hash: inheritedRoot,
+      purpose: { type: "inheritRoot", executionId: exec.executionId },
+    });
+    return effects;
+  }
   effects.push(...createPlanTask(ledger, exec, 0, now));
   effects.push(...fill(ledger, now));
   return effects;
+}
+
+/**
+ * The answer about an inherited root (design §5.4). Present: merge the filesystems and store the
+ * merged manifest, which becomes this execution's initial root. Gone: say so and start from the
+ * bundle alone — a warning, not a failure, because the program can still run.
+ */
+export function onInheritRoot(
+  ledger: Ledger,
+  executionId: string,
+  bytes: Uint8Array | null,
+  now: number,
+): Effect[] {
+  const exec = ledger.executions.get(executionId);
+  if (!exec || exec.status !== "running" || exec.root !== null) return [];
+  const program = ledger.programs.get(exec.bundle);
+  if (bytes === null) {
+    exec.files = { ...(program?.files ?? {}) };
+    exec.root = exec.bundle;
+    const effects = broadcast(ledger, {
+      t: "executionWarning",
+      executionId,
+      code: "expired-root",
+      message: `the filesystem inherited from ${exec.inheritedFrom} is gone; starting from the bundle`,
+    });
+    effects.push(...createPlanTask(ledger, exec, 0, now));
+    effects.push(...fill(ledger, now));
+    return effects;
+  }
+  const manifest: FsManifest = { version: 1, files: exec.files };
+  return [
+    {
+      kind: "putBlob",
+      bytes: encoder.encode(canonicalStringify(manifest)),
+      purpose: { type: "manifest", executionId, stage: -1 },
+    },
+  ];
 }
 
 /** The planner runs on a core like any task (D6); its input is frozen here. */
@@ -168,6 +224,7 @@ function createPlanTask(
   ledger.tasks.set(taskId, task);
   exec.planTaskId = taskId;
   exec.counters.pending += 1;
+  exec.tasksCreated += 1;
   return [];
 }
 
@@ -230,6 +287,14 @@ export function onStageSpec(
     exec.followUp = spec.next;
     return finishExecution(ledger, exec, now);
   }
+  if (exec.tasksCreated + spec.tasks.length > ledger.config.taskCap) {
+    return failExecution(
+      ledger,
+      exec,
+      `stage ${planTask.stage} would make ${exec.tasksCreated + spec.tasks.length} tasks, cap is ${ledger.config.taskCap}`,
+      now,
+    );
+  }
   const stage = planTask.stage;
   exec.stage = stage;
   exec.stageName = spec.name;
@@ -265,6 +330,7 @@ export function onStageSpec(
     views.push(taskView(task));
   }
   exec.counters.pending += spec.tasks.length;
+  exec.tasksCreated += spec.tasks.length;
   const effects = broadcast(ledger, {
     t: "stageStarted",
     executionId: exec.executionId,
@@ -297,6 +363,15 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
       files[w.path] = { hash: w.hash, size: w.size };
     }
   }
+  const bytes = Object.values(files).reduce((n, f) => n + f.size, 0);
+  if (bytes > ledger.config.fsBytesCap) {
+    return failExecution(
+      ledger,
+      exec,
+      `filesystem is ${bytes} bytes, cap is ${ledger.config.fsBytesCap}`,
+      now,
+    );
+  }
   const manifest: FsManifest = { version: 1, files };
   exec.sealedStage = exec.stage;
   return [
@@ -317,7 +392,14 @@ export function onManifestStored(
   now: number,
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
-  if (!exec || exec.status !== "running" || exec.stage !== stage || exec.planTaskId) return [];
+  if (!exec || exec.status !== "running") return [];
+  if (stage === -1) {
+    // The initial filesystem of an execution that inherited one: plan can start now.
+    if (exec.root !== null) return [];
+    exec.root = hash;
+    return [...createPlanTask(ledger, exec, 0, now), ...fill(ledger, now)];
+  }
+  if (exec.stage !== stage || exec.planTaskId) return [];
   const files: FsManifest["files"] = { ...exec.files };
   for (const id of exec.stageTaskIds) {
     const task = ledger.tasks.get(id);
@@ -336,6 +418,16 @@ export function onManifestStored(
   return effects;
 }
 
+/** How long the default loop waits after a failed execution: doubling from five seconds to five minutes. */
+export const LOOP_BACKOFF_MIN_MS = 5_000;
+export const LOOP_BACKOFF_MAX_MS = 300_000;
+/** Ended executions kept in the ledger (and the snapshot); older ones and their tasks are pruned. */
+export const KEEP_ENDED_EXECUTIONS = 32;
+
+function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
+  return !exec.human && ledger.config.defaultLoop?.bundle === exec.bundle;
+}
+
 function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
   const effects: Effect[] = [];
   // Nothing should be open by now; whatever is gets cancelled so no node holds finished work.
@@ -343,6 +435,7 @@ function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Ef
   exec.status = "done";
   exec.endedAt = now;
   ledger.running = null;
+  if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
   effects.push(
     ...broadcast(ledger, {
       t: "executionDone",
@@ -402,6 +495,15 @@ export function failExecution(
   exec.failure = reason;
   exec.endedAt = now;
   if (ledger.running === exec.executionId) ledger.running = null;
+  if (isDefaultLoop(ledger, exec)) {
+    // A failing loop must not spin: back off, doubling, before the next automatic launch.
+    const delay = Math.min(
+      Math.max(ledger.meta.loopBackoffMs * 2, LOOP_BACKOFF_MIN_MS),
+      LOOP_BACKOFF_MAX_MS,
+    );
+    ledger.meta.loopBackoffMs = delay;
+    ledger.meta.loopPausedUntil = now + delay;
+  }
   effects.push(
     ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
   );
@@ -453,6 +555,7 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   const loop = ledger.config.defaultLoop;
   if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
+  if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
   return enqueue(
     ledger,
@@ -502,4 +605,24 @@ export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[
     });
   }
   return { effects, victims };
+}
+
+/**
+ * Keep the ledger small: ended executions beyond the most recent `keep` are dropped with their
+ * tasks. Results live in the store by hash, and a continuation copies what it inherits at
+ * enqueue, so nothing live points at what is pruned.
+ */
+export function pruneExecutions(ledger: Ledger, keep = KEEP_ENDED_EXECUTIONS): string[] {
+  const ended = [...ledger.executions.values()]
+    .filter((e) => e.status === "done" || e.status === "failed" || e.status === "cancelled")
+    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
+  const pruned: string[] = [];
+  for (const exec of ended.slice(keep)) {
+    for (const [taskId, task] of ledger.tasks) {
+      if (task.executionId === exec.executionId) ledger.tasks.delete(taskId);
+    }
+    ledger.executions.delete(exec.executionId);
+    pruned.push(exec.executionId);
+  }
+  return pruned;
 }

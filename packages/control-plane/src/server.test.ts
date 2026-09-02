@@ -23,6 +23,9 @@ function startProcess(): Promise<void> {
         TABFRAME_PUBLIC_PORT: "0",
         TABFRAME_PRIVATE_PORT: "0",
         TABFRAME_TICK_MS: "50",
+        // No seeding: this suite is about the process, and a built programs/ directory would
+        // launch the default loop under the test's node.
+        TABFRAME_PROGRAMS_DIR: "",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

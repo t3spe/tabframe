@@ -1,6 +1,7 @@
 import type {
   ControlPlaneToNode,
   ControlPlaneToObserver,
+  FsManifest,
   ProgramManifest,
 } from "@tabframe/protocol";
 import type { ConnRole } from "./ledger.ts";
@@ -8,7 +9,10 @@ import type { ConnRole } from "./ledger.ts";
 /** Why the process fetched or stored a blob on the core's behalf. */
 export type BlobPurpose =
   | { type: "stageSpec"; executionId: string; taskId: string }
-  | { type: "manifest"; executionId: string; stage: number };
+  /** `stage` is -1 for an execution's initial filesystem (bundle plus what it inherits). */
+  | { type: "manifest"; executionId: string; stage: number }
+  /** Does the root an execution inherits still exist? (design §5.4, expired-root fallback) */
+  | { type: "inheritRoot"; executionId: string };
 
 /** Inbound events. The process turns socket activity, timers, and store I/O into these. */
 export type Event =
@@ -18,14 +22,25 @@ export type Event =
   | { kind: "tick" }
   | { kind: "blobFetched"; hash: string; bytes: Uint8Array | null; purpose: BlobPurpose }
   | { kind: "blobStored"; hash: string; size: number; purpose: BlobPurpose }
-  | { kind: "programAdded"; bundle: string; module: string; manifest: ProgramManifest }
+  | {
+      kind: "programAdded";
+      bundle: string;
+      module: string;
+      manifest: ProgramManifest;
+      /** The bundle's files; an execution's filesystem starts here (design §5.4). */
+      files?: FsManifest["files"];
+    }
   | {
       kind: "launch";
       bundle: string;
       params: Record<string, unknown>;
       human: boolean;
       inherit: string | "latest" | null;
-    };
+      /** The observer that asked, so a refusal can be told to it. */
+      connId?: string;
+    }
+  /** The process finished checking an uploaded bundle (design §5.2, §5.5). */
+  | { kind: "bundleRejected"; bundle: string; connId: string; reason: string };
 
 /** Outbound effects. The process executes them; the core never touches a socket or the store. */
 export type Effect =
@@ -33,4 +48,16 @@ export type Effect =
   | { kind: "close"; connId: string; code: number; reason: string }
   | { kind: "fetchBlob"; hash: string; purpose: BlobPurpose }
   | { kind: "putBlob"; bytes: Uint8Array; purpose: BlobPurpose }
-  | { kind: "presign"; connId: string; items: Array<{ hash: string; size: number }> };
+  | { kind: "presign"; connId: string; items: Array<{ hash: string; size: number }> }
+  /**
+   * An observer launched a bundle the ledger does not know. The process fetches its manifest and
+   * module, validates them (imports, exports, size, declared memory), and answers with a
+   * `programAdded` event followed by the same launch, or with `bundleRejected` (design §5.2).
+   */
+  | {
+      kind: "resolveBundle";
+      bundle: string;
+      connId: string;
+      params: Record<string, unknown>;
+      inherit: string | "latest" | null;
+    };

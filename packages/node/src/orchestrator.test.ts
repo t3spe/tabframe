@@ -1,14 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
+import {
+  CLOSE,
+  decodeRunInput,
+  encodePlanInput,
+  LIMITS,
+  PROTOCOL_VERSION,
+  RELEASED,
+} from "@tabframe/protocol";
+import type { HostRequest, TaskResult } from "@tabframe/sandbox";
+import { sha256Hex } from "@tabframe/store";
 import { Backoff } from "./backoff.ts";
 import {
   Orchestrator,
   parseRotating,
+  resolveStoreBase,
   type SocketLike,
   type Status,
+  THROTTLE_MIN_MS,
   type Timers,
 } from "./orchestrator.ts";
 import { fetchSession, socketProtocols } from "./session.ts";
+import type { SandboxRunner } from "./tasks.ts";
 
 /** Manually advanced timers. */
 class FakeTimers implements Timers {
@@ -92,6 +104,9 @@ function harness(sessionBody: unknown = sessionOn) {
   const statuses: Status[] = [];
   let body: unknown = sessionBody;
   const fetches: string[] = [];
+  const sandbox = new FakeSandbox();
+  const server = blobServer("http://cp.test/blob");
+  let now = 0;
   const o = new Orchestrator({
     sessionUrl: "http://session.test/session",
     hostId: "host-1",
@@ -109,6 +124,10 @@ function harness(sessionBody: unknown = sessionOn) {
     },
     timers,
     rng: () => 0.5,
+    createSandbox: () => sandbox,
+    blobFetch: server.fetchImpl,
+    compile: async () => ({}) as WebAssembly.Module,
+    now: () => now,
     onStatus: (s) => statuses.push(s),
   });
   return {
@@ -117,6 +136,11 @@ function harness(sessionBody: unknown = sessionOn) {
     sockets,
     statuses,
     fetches,
+    sandbox,
+    server,
+    tick(ms: number) {
+      now += ms;
+    },
     setSession(b: unknown) {
       body = b;
     },
@@ -138,6 +162,49 @@ function harness(sessionBody: unknown = sessionOn) {
 }
 
 const parseSent = (s: FakeSocket) => s.sent.map((x) => JSON.parse(x) as Record<string, unknown>);
+
+/** A sandbox the test settles by hand: every run is recorded and resolved through `finish`. */
+class FakeSandbox implements SandboxRunner {
+  runs: Array<{ request: HostRequest; deadlineMs: number; settle: (r: TaskResult) => void }> = [];
+  disposed = 0;
+  run(_module: WebAssembly.Module, request: HostRequest, deadlineMs: number): Promise<TaskResult> {
+    return new Promise((settle) => {
+      this.runs.push({ request, deadlineMs, settle });
+    });
+  }
+  dispose(): void {
+    this.disposed += 1;
+    for (const r of this.runs.splice(0)) r.settle({ ok: false, error: "disposed", log: "" });
+  }
+  finish(result: TaskResult): void {
+    const r = this.runs.shift();
+    if (!r) throw new Error("no run to finish");
+    r.settle(result);
+  }
+}
+
+/** An in-memory blob server behind fetch: GET by hash, PUT by hash. */
+function blobServer(base: string) {
+  const blobs = new Map<string, Uint8Array>();
+  const puts: string[] = [];
+  const gets: string[] = [];
+  const fetchImpl = async (url: string, init?: RequestInit): Promise<Response> => {
+    const hash = url.slice(base.length + 1);
+    if (init?.method === "PUT") {
+      puts.push(hash);
+      blobs.set(hash, new Uint8Array(init.body as ArrayBuffer));
+      return new Response(null, { status: 200 });
+    }
+    gets.push(hash);
+    const bytes = blobs.get(hash);
+    return bytes
+      ? new Response(bytes as unknown as BodyInit, { status: 200 })
+      : new Response(null, { status: 404 });
+  };
+  return { blobs, puts, gets, fetchImpl };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("orchestrator", () => {
   test("fetches a session, connects to /node with the token subprotocols, says hello, becomes idle on welcome", async () => {
@@ -254,6 +321,7 @@ describe("orchestrator", () => {
       },
       timers,
       rng: () => 0,
+      createSandbox: () => new FakeSandbox(),
       onStatus: () => {},
     });
     await o.start();
@@ -343,5 +411,333 @@ describe("helpers", () => {
     });
     expect(parseRotating("silent")).toBeNull();
     expect(parseRotating(JSON.stringify({ reconnectAfterMs: -1 }))).toBeNull();
+  });
+});
+
+const PROGRAM = "a".repeat(64);
+const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+const limits = {
+  maxOutputBytes: 1 << 20,
+  maxWriteBytes: 1 << 20,
+  maxWriteFiles: 16,
+  maxLogBytes: 1 << 16,
+  memoryPagesMax: 256,
+};
+
+function assignMsg(taskId: string, extra: Record<string, unknown> = {}) {
+  return {
+    t: "assign",
+    v: PROTOCOL_VERSION,
+    gen: GEN,
+    taskId,
+    attempt: 1,
+    executionId: "e1",
+    program: PROGRAM,
+    kind: "run",
+    stage: 2,
+    index: 7,
+    count: 640,
+    input: b64(new Uint8Array([1, 2, 3])),
+    fsRoot: null,
+    deadlineMs: 3_000,
+    limits,
+    ...extra,
+  };
+}
+
+/** Connect, welcome, and seed the blob server with the program module. */
+async function connected() {
+  const h = harness();
+  h.server.blobs.set(PROGRAM, new Uint8Array([0, 97, 115, 109]));
+  await h.o.start();
+  h.welcome();
+  return h;
+}
+
+/** Let the runner reach the sandbox: module fetch and compile are promises. */
+async function untilRunning(h: ReturnType<typeof harness>, runs = 1) {
+  for (let i = 0; i < 20 && h.sandbox.runs.length < runs; i++) await settle();
+  expect(h.sandbox.runs.length).toBe(runs);
+}
+
+describe("task loop", () => {
+  test("assign → module fetched once and compiled → sandbox runs the ABI-framed input → uploads → result", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    expect(h.statuses.at(-1)?.state).toBe("busy");
+    await untilRunning(h);
+    const run = h.sandbox.runs[0] as { request: HostRequest; deadlineMs: number };
+    expect(run.deadlineMs).toBe(4_000); // the control plane's deadline plus a grace second
+    expect(run.request.kind).toBe("run");
+    expect(run.request.manifest).toEqual({ version: 1, files: {} });
+    expect(run.request.limits).toEqual(limits);
+    const framed = decodeRunInput(run.request.input);
+    expect(framed).toEqual({
+      stage: 2,
+      taskIndex: 7,
+      taskCount: 640,
+      input: new Uint8Array([1, 2, 3]),
+    });
+    expect(h.server.gets).toEqual([PROGRAM]);
+
+    h.tick(250);
+    const output = new Uint8Array([9, 9, 9, 9]);
+    const written = new Uint8Array([5, 5]);
+    h.sandbox.finish({
+      ok: true,
+      output,
+      writes: new Map([["/out/a", written]]),
+      log: "hi",
+      computeMs: 250,
+    });
+    await settle();
+    // The presign round trip goes over the socket; the store has neither blob.
+    const presign = parseSent(h.last()).find((m) => m.t === "presign") as {
+      items: Array<{ hash: string; size: number }>;
+      gen: number;
+    };
+    expect(presign.gen).toBe(GEN);
+    expect(presign.items.map((i) => i.size)).toEqual([4, 2]);
+    h.last().deliver({
+      t: "presigned",
+      v: PROTOCOL_VERSION,
+      gen: GEN,
+      urls: presign.items.map((i) => ({
+        hash: i.hash,
+        url: `http://cp.test/blob/${i.hash}`,
+        headers: { "x-amz-checksum-sha256": "x" },
+      })),
+    });
+    for (let i = 0; i < 20 && !parseSent(h.last()).some((m) => m.t === "result"); i++)
+      await settle();
+    const result = parseSent(h.last()).find((m) => m.t === "result") as Record<string, unknown>;
+    expect(result.taskId).toBe("t1");
+    expect(result.attempt).toBe(1);
+    expect(result.output).toBe(await sha256Hex(output));
+    expect(result.outputSize).toBe(4);
+    expect(result.writes).toEqual([{ path: "/out/a", hash: await sha256Hex(written), size: 2 }]);
+    expect(result.log).toEqual({ text: "hi" });
+    expect(result.computeMs).toBe(250);
+    expect(h.server.puts.sort()).toEqual(
+      [await sha256Hex(output), await sha256Hex(written)].sort(),
+    );
+    expect(h.statuses.at(-1)?.state).toBe("idle");
+    expect(h.statuses.at(-1)?.tasksDone).toBe(1);
+    expect(h.statuses.at(-1)?.lastTaskMs).toBe(250);
+
+    // The module is cached: a second task fetches nothing new.
+    h.last().deliver(
+      assignMsg("t2", {
+        kind: "plan",
+        input: b64(encodePlanInput({ stage: 0, params: { a: 1 }, hints: {} })),
+      }),
+    );
+    await untilRunning(h);
+    expect(h.server.gets).toEqual([PROGRAM]);
+    const plan = h.sandbox.runs[0] as { request: HostRequest };
+    expect(plan.request.kind).toBe("plan");
+    expect(plan.request.input).toEqual(encodePlanInput({ stage: 0, params: { a: 1 }, hints: {} }));
+  });
+
+  test("blobs the store already has are not uploaded again (url null)", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    h.sandbox.finish({
+      ok: true,
+      output: new Uint8Array([1]),
+      writes: new Map(),
+      log: "",
+      computeMs: 3,
+    });
+    await settle();
+    const presign = parseSent(h.last()).find((m) => m.t === "presign") as {
+      items: Array<{ hash: string }>;
+    };
+    h.last().deliver({
+      t: "presigned",
+      v: PROTOCOL_VERSION,
+      gen: GEN,
+      urls: presign.items.map((i) => ({ hash: i.hash, url: null, headers: {} })),
+    });
+    for (let i = 0; i < 20 && !parseSent(h.last()).some((m) => m.t === "result"); i++)
+      await settle();
+    expect(h.server.puts).toEqual([]);
+    const result = parseSent(h.last()).find((m) => m.t === "result") as Record<string, unknown>;
+    expect(result.log).toBeNull();
+    expect(result.writes).toEqual([]);
+  });
+
+  test("the queue holds maxInFlight tasks, one running; extras are dropped; heartbeat carries the count", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    h.last().deliver(assignMsg("t2"));
+    h.last().deliver(assignMsg("t3"));
+    await untilRunning(h);
+    expect(h.statuses.at(-1)?.queue).toBe(2);
+    await h.timers.advance(LIMITS.heartbeatMs);
+    const hb = parseSent(h.last())
+      .filter((m) => m.t === "heartbeat")
+      .at(-1) as Record<string, unknown>;
+    expect(hb.queue).toBe(2);
+    h.sandbox.finish({ ok: false, error: "trap: boom", log: "partial" });
+    await settle();
+    await settle();
+    const results = parseSent(h.last()).filter((m) => m.t === "result");
+    expect(results.length).toBe(1);
+    expect(results[0]?.error).toBe("trap: boom");
+    expect(results[0]?.log).toEqual({ text: "partial" });
+    // t2 runs next; t3 was refused.
+    await untilRunning(h);
+    expect(h.statuses.at(-1)?.queue).toBe(1);
+  });
+
+  test("a deadline kill is reported as released, not as a fault", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    h.sandbox.finish({ ok: false, error: "deadline", log: "" });
+    await settle();
+    await settle();
+    const result = parseSent(h.last()).find((m) => m.t === "result") as Record<string, unknown>;
+    expect(result.error).toBe(RELEASED);
+  });
+
+  test("cancel drops a queued task and kills a running one without a result", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    h.last().deliver(assignMsg("t2"));
+    await untilRunning(h);
+    h.last().deliver({ t: "cancel", v: PROTOCOL_VERSION, gen: GEN, taskId: "t2" });
+    expect(h.statuses.at(-1)?.queue).toBe(1);
+    h.last().deliver({ t: "cancel", v: PROTOCOL_VERSION, gen: GEN, taskId: "t1" });
+    expect(h.sandbox.disposed).toBe(1);
+    await settle();
+    await settle();
+    expect(parseSent(h.last()).filter((m) => m.t === "result")).toEqual([]);
+    expect(h.statuses.at(-1)?.state).toBe("idle");
+    expect(h.statuses.at(-1)?.tasksDone).toBe(0);
+    // The next task gets a fresh sandbox from the platform.
+    h.last().deliver(assignMsg("t3"));
+    await untilRunning(h);
+  });
+
+  test("freeze stops heartbeats and work but keeps the socket; resume brings both back", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "freeze" });
+    expect(h.statuses.at(-1)?.state).toBe("frozen");
+    expect(h.sandbox.disposed).toBe(1);
+    expect(h.last().closedWith).toBeNull();
+    const before = h.last().sent.length;
+    await h.timers.advance(LIMITS.heartbeatMs * 5);
+    expect(h.last().sent.length).toBe(before); // silent
+    h.last().deliver(assignMsg("t2"));
+    expect(h.sandbox.runs.length).toBe(0); // ignored while frozen
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "resume" });
+    expect(h.statuses.at(-1)?.state).toBe("idle");
+    await h.timers.advance(LIMITS.heartbeatMs);
+    expect(h.last().sent.length).toBe(before + 1);
+  });
+
+  test("throttle idles nine times the compute after each task; resume clears it", async () => {
+    const h = await connected();
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "throttle" });
+    expect(h.statuses.at(-1)?.state).toBe("throttled");
+    h.last().deliver(assignMsg("t1"));
+    h.last().deliver(assignMsg("t2"));
+    await untilRunning(h);
+    h.sandbox.finish({ ok: false, error: "trap", log: "" });
+    await settle();
+    await settle();
+    expect(h.sandbox.runs.length).toBe(0); // t2 waits out the throttle floor
+    await h.timers.advance(THROTTLE_MIN_MS - 1);
+    expect(h.sandbox.runs.length).toBe(0);
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "resume" });
+    await untilRunning(h);
+    expect(h.statuses.at(-1)?.state).toBe("busy");
+  });
+
+  test("throttle waits computeMs × 9 exactly", async () => {
+    const h = await connected();
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "throttle" });
+    h.last().deliver(assignMsg("t1"));
+    h.last().deliver(assignMsg("t2"));
+    await untilRunning(h);
+    h.tick(100);
+    h.sandbox.finish({ ok: false, error: "trap", log: "" });
+    await settle();
+    await settle();
+    await h.timers.advance(899);
+    expect(h.sandbox.runs.length).toBe(0);
+    await h.timers.advance(1);
+    await untilRunning(h);
+  });
+
+  test("close ends the node for good", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    h.last().deliver({ t: "command", v: PROTOCOL_VERSION, gen: GEN, op: "close" });
+    expect(h.statuses.at(-1)?.state).toBe("closed");
+    expect(h.last().closedWith?.code).toBe(1000);
+    expect(h.sandbox.disposed).toBe(1);
+    await h.timers.advance(60_000);
+    expect(h.sockets.length).toBe(1);
+  });
+
+  test("a socket that drops mid-task drops the task; the result goes nowhere", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    const first = h.last();
+    first.serverClose(1006, "");
+    expect(h.sandbox.disposed).toBe(1);
+    await settle();
+    await settle();
+    expect(parseSent(first).filter((m) => m.t === "result")).toEqual([]);
+    await h.timers.advance(LIMITS.reconnectMaxMs);
+    expect(h.sockets.length).toBe(2);
+    expect(h.statuses.at(-1)?.queue).toBe(0);
+  });
+
+  test("a stray presigned message is ignored; a socket close fails a pending upload", async () => {
+    const h = await connected();
+    h.last().deliver({ t: "presigned", v: PROTOCOL_VERSION, gen: GEN, urls: [] });
+    h.last().deliver(assignMsg("t1"));
+    await untilRunning(h);
+    h.sandbox.finish({
+      ok: true,
+      output: new Uint8Array([1]),
+      writes: new Map(),
+      log: "",
+      computeMs: 3,
+    });
+    await settle();
+    expect(parseSent(h.last()).some((m) => m.t === "presign")).toBe(true);
+    h.last().serverClose(1006, "");
+    await settle();
+    await settle();
+    expect(parseSent(h.last()).filter((m) => m.t === "result")).toEqual([]);
+    expect(h.statuses.at(-1)?.state).toBe("connecting");
+  });
+
+  test("a missing program fails the task with a node error", async () => {
+    const h = await connected();
+    h.last().deliver(assignMsg("t1", { program: "b".repeat(64) }));
+    for (let i = 0; i < 20 && !parseSent(h.last()).some((m) => m.t === "result"); i++)
+      await settle();
+    const result = parseSent(h.last()).find((m) => m.t === "result") as Record<string, unknown>;
+    expect(String(result.error)).toContain("not in the store");
+  });
+
+  test("resolveStoreBase: relative bases live on the control plane's HTTP origin", () => {
+    expect(resolveStoreBase("/blob", "ws://localhost:4080")).toBe("http://localhost:4080/blob");
+    expect(resolveStoreBase("/blob/", "wss://vm.example")).toBe("https://vm.example/blob");
+    expect(resolveStoreBase("https://cdn.example/blob/", "wss://vm.example")).toBe(
+      "https://cdn.example/blob",
+    );
+    expect(resolveStoreBase("/blob", "")).toBe("/blob");
   });
 });

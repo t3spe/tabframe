@@ -39,6 +39,8 @@ export interface ObserverRecord {
   connId: string;
   subscribedAt: number;
   lastSeen: number;
+  /** When this observer launched executions, for the per-observer rate limit (design §5.5). */
+  launchedAt: number[];
 }
 
 export type ConnRole = "node" | "observer";
@@ -143,6 +145,8 @@ export interface ExecutionRecord {
   computeSamples: number[];
   computeMsUsed: number;
   computeMsCap: number;
+  /** Tasks created across every stage so far, against `config.taskCap`. */
+  tasksCreated: number;
   followUp: Record<string, unknown> | null;
   inheritedFrom: string | null;
   failure: string | null;
@@ -153,11 +157,20 @@ export interface ProgramRecord {
   bundle: string;
   module: string;
   manifest: ProgramManifest;
+  /** The bundle's own files (design §5.1): the module, the manifest, and anything under `/in/`. */
+  files: FsManifest["files"];
   addedAt: number;
 }
 
+/**
+ * Where a control plane is in its life (design §9.4). Only an `active` one assigns work; a
+ * `handing-over` one has given its ledger away and is waiting to be drained.
+ */
+export type Phase = "active" | "handing-over" | "drained";
+
 export interface Meta {
   generation: number;
+  phase: Phase;
   /** Base URL nodes and observers fetch blobs from; handed out in welcome. */
   storeBase: string;
   /** Monotonic event sequence, incremented for every event emitted to observers. */
@@ -169,6 +182,9 @@ export interface Meta {
   startedAt: number;
   /** Last human interaction, for the sleep policy (design §6.8). */
   lastInteractionAt: number;
+  /** The default loop backs off after a failed execution: current delay and when it may relaunch. */
+  loopBackoffMs: number;
+  loopPausedUntil: number;
 }
 
 export interface LedgerConfig {
@@ -178,6 +194,12 @@ export interface LedgerConfig {
   /** Compute budget per execution in milliseconds of task time. */
   computeMsCap?: number;
   taskLimits?: TaskLimits;
+  /** Cap on the total size of an execution's filesystem (design §5.5). */
+  fsBytesCap?: number;
+  /** Cap on the tasks one execution may create across all its stages (design §5.5). */
+  taskCap?: number;
+  /** Launches one observer may start per minute (design §5.5). */
+  launchesPerMinute?: number;
   /** Deadline floor and multiplier (design §6.4). */
   deadlineFloorMs?: number;
   deadlineFactor?: number;
@@ -186,7 +208,16 @@ export interface LedgerConfig {
 export interface Ledger {
   meta: Meta;
   config: Required<
-    Pick<LedgerConfig, "computeMsCap" | "taskLimits" | "deadlineFloorMs" | "deadlineFactor">
+    Pick<
+      LedgerConfig,
+      | "computeMsCap"
+      | "taskLimits"
+      | "deadlineFloorMs"
+      | "deadlineFactor"
+      | "fsBytesCap"
+      | "taskCap"
+      | "launchesPerMinute"
+    >
   > & {
     defaultLoop: { bundle: string; params: Record<string, unknown> } | null;
   };
@@ -222,11 +253,17 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       redundancy: false,
       startedAt: now,
       lastInteractionAt: now,
+      phase: "active",
+      loopBackoffMs: 0,
+      loopPausedUntil: 0,
     },
     config: {
       defaultLoop: config.defaultLoop ?? null,
       computeMsCap: config.computeMsCap ?? 60 * 60 * 1000,
       taskLimits: config.taskLimits ?? DEFAULT_TASK_LIMITS,
+      fsBytesCap: config.fsBytesCap ?? 256 * 1024 * 1024,
+      taskCap: config.taskCap ?? 20_000,
+      launchesPerMinute: config.launchesPerMinute ?? 6,
       deadlineFloorMs: config.deadlineFloorMs ?? 2_000,
       deadlineFactor: config.deadlineFactor ?? 3,
     },

@@ -10,8 +10,9 @@
   "dependencies": {
     "@tabframe/core": "workspace:*",
     "@tabframe/protocol": "workspace:*",
-    "ws": "8.21.3",
-    "@tabframe/store": "workspace:*"
+    "@tabframe/sandbox": "workspace:*",
+    "@tabframe/store": "workspace:*",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/ws": "8.18.1"

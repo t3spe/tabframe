@@ -12,6 +12,7 @@ import {
   nodeToControlPlane,
   observerToControlPlane,
   PROTOCOL_VERSION,
+  type ProgramView,
   type Snapshot,
   type TaskView,
 } from "@tabframe/protocol";
@@ -25,8 +26,10 @@ import {
   ensureDefaultLoop,
   executionTasks,
   maybeStart,
+  onInheritRoot,
   onManifestStored,
   onStageSpec,
+  pruneExecutions,
   resumeAll,
 } from "./executions.ts";
 import {
@@ -36,6 +39,7 @@ import {
   type Ledger,
   type NodeRecord,
   nodeView,
+  type ProgramRecord,
   queueEntry,
   taskView,
 } from "./ledger.ts";
@@ -73,17 +77,34 @@ export function apply(
       return removeConnection(ledger, event.connId, "closed");
     case "tick":
       return tick(ledger, now);
+    case "bundleRejected":
+      return ledger.conns.has(event.connId)
+        ? [
+            {
+              kind: "send",
+              connId: event.connId,
+              msg: errorMsg(ledger, "launch-refused", event.reason),
+            },
+          ]
+        : [];
     case "programAdded":
       return [
-        ...addProgram(ledger, event.bundle, event.module, event.manifest, now),
+        ...addProgram(ledger, event.bundle, event.module, event.manifest, event.files ?? {}, now),
         ...ensureDefaultLoop(ledger, now),
       ];
-    case "launch":
-      return enqueue(
+    case "launch": {
+      const r = enqueue(
         ledger,
         { bundle: event.bundle, params: event.params, human: event.human, inherit: event.inherit },
         now,
-      ).effects;
+      );
+      if (r.error && event.connId) {
+        return [
+          { kind: "send", connId: event.connId, msg: errorMsg(ledger, "launch-refused", r.error) },
+        ];
+      }
+      return [...r.effects, ...fill(ledger, now)];
+    }
     case "blobFetched":
       if (event.purpose.type === "stageSpec")
         return onStageSpec(
@@ -93,6 +114,8 @@ export function apply(
           event.bytes,
           now,
         );
+      if (event.purpose.type === "inheritRoot")
+        return onInheritRoot(ledger, event.purpose.executionId, event.bytes, now);
       return [];
     case "blobStored":
       if (event.purpose.type === "manifest")
@@ -109,6 +132,7 @@ export function apply(
 
 function tick(ledger: Ledger, now: number): Effect[] {
   const effects = sweep(ledger, now);
+  pruneExecutions(ledger);
   effects.push(...relabelHealth(ledger));
   effects.push(...ensureDefaultLoop(ledger, now));
   effects.push(...fill(ledger, now));
@@ -276,6 +300,21 @@ function onControl(
       return effects;
     }
     case "launch": {
+      const limited = launchRateExceeded(ledger, connId, now);
+      if (limited)
+        return [{ kind: "send", connId, msg: errorMsg(ledger, "rate-limited", limited) }];
+      if (!ledger.programs.has(msg.bundle)) {
+        // An uploaded bundle: the process fetches and validates it, then launches (design §5.2).
+        return [
+          {
+            kind: "resolveBundle",
+            bundle: msg.bundle,
+            connId,
+            params: msg.params,
+            inherit: msg.inherit,
+          },
+        ];
+      }
       const r = enqueue(
         ledger,
         { bundle: msg.bundle, params: msg.params, human: true, inherit: msg.inherit },
@@ -286,6 +325,9 @@ function onControl(
       return [...r.effects, ...fill(ledger, now)];
     }
     case "runFollowUp": {
+      const limited = launchRateExceeded(ledger, connId, now);
+      if (limited)
+        return [{ kind: "send", connId, msg: errorMsg(ledger, "rate-limited", limited) }];
       const done = ledger.executions.get(msg.executionId);
       if (!done || done.status !== "done" || !done.followUp)
         return [{ kind: "send", connId, msg: errorMsg(ledger, "no-follow-up", msg.executionId) }];
@@ -378,7 +420,7 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
     return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate subscribe");
   if (ledger.observers.size >= LIMITS.observerCap)
     return refuse(ledger, connId, CLOSE.observerCap, "observer cap reached");
-  ledger.observers.set(connId, { connId, subscribedAt: now, lastSeen: now });
+  ledger.observers.set(connId, { connId, subscribedAt: now, lastSeen: now, launchedAt: [] });
   ledger.meta.lastInteractionAt = now;
   const effects = snapshotPages(ledger, connId, now);
   effects.push(...ensureDefaultLoop(ledger, now));
@@ -386,6 +428,16 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   return effects;
 }
 
+export function programView(p: ProgramRecord): ProgramView {
+  return {
+    bundle: p.bundle,
+    name: p.manifest.name,
+    view: p.manifest.view,
+    description: p.manifest.description ?? null,
+    defaultParams: p.manifest.defaultParams,
+    addedAt: p.addedAt,
+  };
+}
 /** Room left for task rows once the envelope and page fields are accounted for. */
 const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
 
@@ -393,8 +445,7 @@ const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
  * Page 0 carries the cluster; every page carries task rows (design §8.3). Pages are packed by
  * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
  * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
- */
-export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
+ */ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
   const machine: MachineView = {
@@ -406,6 +457,7 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
   };
   const cluster = {
     nodes: [...ledger.nodes.values()].map(nodeView),
+    programs: [...ledger.programs.values()].map(programView),
     execution: exec ? executionView(exec) : null,
     queue: ledger.queue
       .map((id) => ledger.executions.get(id))
@@ -532,4 +584,19 @@ export function removeConnection(
 function nodeOf(ledger: Ledger, connId: string): NodeRecord | undefined {
   const nodeId = ledger.nodeByConn.get(connId);
   return nodeId === undefined ? undefined : ledger.nodes.get(nodeId);
+}
+
+/**
+ * The per-observer launch rate (design §5.5): a launch or a follow-up costs one token a minute.
+ * Returns a message when the observer is over, null when it may proceed.
+ */
+function launchRateExceeded(ledger: Ledger, connId: string, now: number): string | null {
+  const observer = ledger.observers.get(connId);
+  if (!observer) return null;
+  observer.launchedAt = observer.launchedAt.filter((at) => now - at < 60_000);
+  if (observer.launchedAt.length >= ledger.config.launchesPerMinute) {
+    return `at most ${ledger.config.launchesPerMinute} launches a minute`;
+  }
+  observer.launchedAt.push(now);
+  return null;
 }
