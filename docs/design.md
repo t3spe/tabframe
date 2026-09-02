@@ -748,4 +748,6 @@ Dated deviations discovered while building, recorded before the code landed (pla
   the same task is evidence only, so a stale report never closes a newer attempt (§6.5). D7's
   "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
   free slot; a tie after two contested rounds is not a majority and starts another round, up to
-  four, after which report order breaks it.
+  four, after which report order breaks it. Freeze is terminal on the node **record** too: a later
+  `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a
+  worker that computes nothing until the silence window declares it gone (§4, §6.7).

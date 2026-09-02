@@ -141,16 +141,45 @@ Each item is a control-plane fix in this branch with a focused test in `packages
    four rounds. And "recompute from scratch" (D7) now means by nodes that have not reported on
    the task, whenever one has a free slot, so a fast liar cannot keep answering its own contest;
    with nobody fresh, anyone free takes it and a cluster of two still makes progress.
+10. **`throttleHalf` un-froze a frozen node's record.** `commandHalf` overwrote `commanded` with
+   `"throttle"` whatever it was, so a node the control plane had frozen a moment earlier stopped
+   being skipped by `fill` and was handed work it can never do — a frozen worker computes nothing
+   until the silence window declares it gone, so every such attempt could only expire on its
+   deadline. Freeze is terminal on the record too now: a later throttle leaves it frozen, and
+   `resumeAll` already woke throttled workers only.
+
+## What the simulation got wrong
+
+Worth recording, because the fix is in the model rather than the machine, and because it is what
+the stall diagnostics were built for. Long seed 381 stalled: the calm phase completed no frame in
+264 s of virtual time while 24 nodes heartbeated and 4 observers watched. The stall message now
+prints every gate the default loop checks and, for a stage that cannot finish, each open task with
+its holders and what those virtual nodes think they are doing — which said it at once:
+
+    stalled: no frame completed within 264000 ms of calm (running e56 stage 0 1 open, queue 1,
+    nodes 24, observers 4, programs 1, loop ready, [t3635 run assigned want 0 need 2 round 0
+    released false reports none holders n178/v79:connected speed 1.21 | t3635:computing no-timer
+    n185/v82:connected speed 2.12 | t3635:computing no-timer])
+
+Both holders were *computing with no timer*: the node had stopped its computation and never
+restarted it. The cause was a command sequence the chaos generator produced — freeze, then
+throttle, then resume, thirteen seconds apart. `onCommand("throttle")` overwrote
+`commanded = "freeze"` with `"throttle"`, which made the node's `paused` false without restarting
+the timers it had cancelled, so it heartbeated forever (never declared gone) holding two attempts
+it would never report. With two attempts open, tier-three speculation cannot fire either — the
+task was stuck for good. Freeze is terminal in the model now (design §4), `unpause` refuses to
+run while paused and is called from every path that stops being paused, and chasing this is what
+turned up the `commandHalf` bug above, which is a real one.
 
 ## Evidence
 
-- `bun test packages/core`: 84 tests after the merge with main (77 core, 7 simulation), among
+- `bun test packages/core`: 85 tests after the merge with main (78 core, 7 simulation), among
   them the new ones: solicited
   messages under the rate limit; the second attempt never goes to the node that answered; a node
   cannot agree with itself; the vote counts nodes; the vote's outcome reaches nodes and observers;
   a mismatch after the fold withdraws nothing; snapshot pages of a full frame of done tiles stay
   under the cap; a stale result closes no newer attempt; a contested task goes to a node that has
-  not reported; a tie starts another round. Full workspace: 351 tests
+  not reported; a tie starts another round; a frozen node stays frozen. Full workspace: 390 tests
   pass; all three `tsc` projects clean; Biome clean.
 - `node packages/core/sim/run.ts`: normal scenario, seeds 1–120 on 32- and 64-tile subsets, all
   pass (about a minute in total); long scenario, seeds 1–25 on the 64-tile subset (180 s);
@@ -158,11 +187,12 @@ Each item is a control-plane fix in this branch with a focused test in `packages
 - Long scenario over whole frames, seeds 1–3: pass (733 s wall; 12–16 frames and 17–19 thousand
   attempts per seed, 26 nodes at peak). The default `mise run sim` (seeds 1–3, whole frames):
   pass, 243 s.
-- Long scenario, seeds 1–1000 on the 64-tile subset, six shards in parallel on the final core
-  before the merge with main: 441 seeds passed and 0 failed when this branch was pushed
-  (the run was still going; about eight seconds a seed per shard). After the merge, seeds 1–40 of
-  the normal scenario and the six long seeds that had failed at some point (9, 23, 144, 403, 612,
-  845) were rerun and pass.
+- **The acceptance line — 1 000 seeds in long mode:** seeds 1–1000 of the long scenario on the
+  64-tile subset, six parallel shards, **1 000 passed, 0 failed**, on the merged core with every
+  fix above (about 33 minutes per shard; 18–28 thousand real task computations each). The matrix
+  was run three times: on the branch's own core before the merge with main (1 000 passed), on the
+  merged core (999 passed, seed 381 stalled — the model bug and the `commandHalf` bug above), and
+  again after fixing both, which is the run quoted here.
 - A typical line: `seed 24 ok frames 48 done, 4 cancelled, 0 failed nodes 216 joins (peak 28), 34
   leaves, 54 crashes, 37 freezes tasks 5015 attempts, 3360 done, 44 reassigned, 155 speculated,
   6 verified, 0 mismatched closes declaredGone 109 lies 6 told, 5 accepted virtual 5.0 min, wall
@@ -196,6 +226,9 @@ Recorded in design §17 (2026-09-03, WP1.9):
 - D7: a contested task is recomputed by nodes that have not reported on it when one has a free
   slot; after two contested rounds a strict majority of nodes settles it, a tie starts another
   round, and the fourth round's tie is broken by report order.
+- §4, §6.7: freeze is terminal on the control plane's node record as well as on the node. A
+  later `throttleHalf` does not downgrade a frozen node to throttled, so `fill` keeps skipping it
+  until the silence window declares it gone.
 
 Simulation simplifications, stated so nobody mistakes them for the machine's behaviour: the
 default loop's follow-up is pinned to the frame's own params (preset 0), `--tiles` trims the plan,

@@ -112,6 +112,23 @@ export class VirtualNode implements Client {
     return this.nodeId ? `${this.id}/${this.nodeId}` : this.id;
   }
 
+  /** A one-line dump for stall reports: the modes and what each held task is waiting on. */
+  state(): string {
+    const flags = [
+      this.connected ? "connected" : "disconnected",
+      this.frozen ? "frozen" : null,
+      this.commanded ? `commanded-${this.commanded}` : null,
+      this.hidden ? "hidden" : null,
+      this.retired ? "retired" : null,
+      `speed ${this.profile.speed}`,
+    ].filter((f) => f !== null);
+    const work = [...this.work.values()].map(
+      (w) =>
+        `${w.msg.taskId}:${w.phase}${w.timer ? "" : " no-timer"}${w.awaiting.size > 0 ? ` awaiting ${w.awaiting.size}` : ""}`,
+    );
+    return `${flags.join(" ")}${work.length > 0 ? ` | ${work.join(" ")}` : " | idle"}`;
+  }
+
   // --- lifecycle driven by the chaos generator ---
 
   join(): void {
@@ -189,6 +206,7 @@ export class VirtualNode implements Client {
     const before = this.multiplier();
     this.hidden = false;
     this.retime(before);
+    this.unpause();
   }
 
   /** Leave for good. */
@@ -312,15 +330,20 @@ export class VirtualNode implements Client {
         this.pause();
         return;
       case "throttle": {
+        // A frozen worker runs no loop to slow down: freeze is terminal until the socket drops.
+        if (this.commanded === "freeze") return;
         const before = this.multiplier();
         this.commanded = "throttle";
         this.retime(before);
         return;
       }
       case "resume": {
+        // Likewise: only a throttled worker resumes. `resumeAll` never revives a frozen one.
+        if (this.commanded !== "throttle") return;
         const before = this.multiplier();
-        if (this.commanded === "throttle") this.commanded = null;
+        this.commanded = null;
         this.retime(before);
+        this.unpause();
         return;
       }
     }
@@ -375,7 +398,9 @@ export class VirtualNode implements Client {
     }
   }
 
+  /** Restart every computation the node stopped: safe to call whenever it stops being paused. */
   private unpause(): void {
+    if (this.paused || !this.sock) return;
     for (const work of this.work.values()) {
       if (work.phase === "computing" && !work.timer) this.startTimer(work);
     }

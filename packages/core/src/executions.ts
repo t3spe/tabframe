@@ -580,7 +580,10 @@ export function commandHalf(
   const victims = nodes.slice(0, Math.ceil(nodes.length / 2));
   const effects: Effect[] = [];
   for (const v of victims) {
-    if (op === "throttle") v.commanded = "throttle";
+    // Freeze is terminal (design §4, §6.7): a frozen worker computes nothing and is declared gone
+    // within the silence window. Downgrading its record to `throttle` would make `fill` hand it
+    // work it can never do, so a later throttle leaves a frozen node frozen.
+    if (op === "throttle" && v.commanded !== "freeze") v.commanded = "throttle";
     if (op === "freeze") v.commanded = "freeze";
     effects.push({
       kind: "send",

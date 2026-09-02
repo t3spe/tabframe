@@ -305,7 +305,9 @@ class World implements ChaosWorld {
       } else if (this.stats.framesDone > framesAtCalm) {
         break;
       } else if (this.now > settleAt) {
-        this.violation(`stalled: no frame completed within ${settleWindow} ms of calm`);
+        this.violation(
+          `stalled: no frame completed within ${settleWindow} ms of calm (${this.machineState()})`,
+        );
         break;
       }
     }
@@ -321,6 +323,48 @@ class World implements ChaosWorld {
       wallMs: Math.round(performance.now() - wall),
       trace: this.trace.digest("hex"),
     };
+  }
+
+  /** Why the machine is idle, for a stall report: every gate the default loop checks (§6.8). */
+  private machineState(): string {
+    const l = this.ledger;
+    const exec = l.running ? l.executions.get(l.running) : undefined;
+    const open = exec
+      ? stageTasks(l, exec).filter((t) => t.status === "pending" || t.status === "assigned").length
+      : 0;
+    const paused = (l.meta.loopPausedUntil ?? 0) - this.now;
+    return [
+      `running ${l.running ?? "none"}${exec ? ` stage ${exec.stage} ${open} open` : ""}`,
+      `queue ${l.queue.length}`,
+      `nodes ${l.nodes.size}`,
+      `observers ${l.observers.size}`,
+      `programs ${l.programs.size}`,
+      paused > 0 ? `loop paused ${Math.round(paused)} ms` : "loop ready",
+      ...(exec ? this.describeOpen(exec) : []),
+    ].join(", ");
+  }
+
+  /** The virtual node behind an open attempt: what it thinks it is doing (a stall is usually here). */
+  private describeHolder(nodeId: string): string {
+    const node = this.nodes.find((n) => n.nodeId === nodeId);
+    if (!node) return `${nodeId}:absent`;
+    return `${nodeId}/${node.id}:${node.state()}`;
+  }
+
+  /** The open tasks of a stalled stage, with everything that decides whether they can be filled. */
+  private describeOpen(exec: ExecutionRecord): string[] {
+    const out: string[] = [];
+    for (const t of stageTasks(this.ledger, exec)) {
+      if (t.status !== "pending" && t.status !== "assigned") continue;
+      const running = t.attempts.filter((a) => a.outcome === "running");
+      const reports = t.results.map((r) => `${r.nodeId}@r${r.round}`).join("/") || "none";
+      const holders = running.map((a) => this.describeHolder(a.nodeId)).join(" ") || "none";
+      out.push(
+        `[${t.taskId} ${t.kind} ${t.status} want ${wanted(t)} need ${t.requiredAgreement} round ${t.contestedRounds} released ${t.released} reports ${reports} holders ${holders}]`,
+      );
+      if (out.length >= 4) break;
+    }
+    return out;
   }
 
   /** How long the calm phase may take to finish a frame: generous, so a trip means a real stall. */
