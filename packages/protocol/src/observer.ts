@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { LIMITS } from "./limits.ts";
 import { envelope, hash, health, millis, nodeId, nodeView, seq } from "./shared.ts";
-import { executionView, params, place, queueEntry, taskView } from "./task.ts";
+import { executionView, params, place, queueEntry, taskLog, taskView } from "./task.ts";
 
 const executionId = z.string().min(1).max(64);
 const taskId = z.string().min(1).max(64);
@@ -208,6 +208,8 @@ export const taskDone = z.object({
   output: hash,
   place: place.nullable(),
   computeMs: millis,
+  /** Present once the control plane forwards the accepted result's log (dashboard v2). */
+  log: taskLog.optional(),
 });
 export const taskReassigned = z.object({
   t: z.literal("taskReassigned"),

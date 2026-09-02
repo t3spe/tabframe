@@ -39,8 +39,19 @@ mkdirSync(path.dirname(out), { recursive: true });
 if (demo) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await ctx.newPage();
-  await page.goto(`http://127.0.0.1:${port}/?demo=1&speed=6&pause=${pause}`);
+  // `--program <name>` starts the demo's cycle at that program and holds once it has ended, so
+  // the word count's bars and files, or the broken program's banner, are what gets captured.
+  const program = arg("--program");
+  const query = program ? `program=${program}&hold=1` : `pause=${pause}`;
+  await page.goto(`http://127.0.0.1:${port}/?demo=1&speed=6&${query}`);
   await page.waitForSelector("body[data-demo-paused]", { timeout: 120_000 });
+  if (program === "wordcount") {
+    await page.waitForSelector("#result .bars .bar-row", { timeout: 30_000 });
+    await page.click('#files li[data-path="/out/2/0"]');
+    await page.waitForSelector("#filePreview .bars", { timeout: 30_000 });
+    await page.locator("#grid").click({ position: { x: 4, y: 4 } });
+    await page.waitForSelector("#taskDetail .task-log .text-view", { timeout: 30_000 });
+  }
   await page.waitForFunction(
     () =>
       (window as unknown as { tabframe: { tiles: { stats: { inFlight: number } } } }).tabframe.tiles

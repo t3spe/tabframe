@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LIMITS } from "./limits.ts";
 import { hash, millis, nodeId } from "./shared.ts";
 
 export const taskKind = z.enum(["run", "plan"]);
@@ -16,6 +17,12 @@ export type PlaceView = z.infer<typeof place>;
 
 export const params = z.record(z.string(), z.unknown());
 
+/** A task's log as the node reported it: inline up to the cap, a blob beyond (design §8.2). */
+export const taskLog = z
+  .union([z.object({ hash }), z.object({ text: z.string().max(LIMITS.maxInlineLogBytes) })])
+  .nullable();
+export type TaskLog = z.infer<typeof taskLog>;
+
 /** What observers see about a task (design §6.2, §8.3). */
 export const taskView = z.object({
   taskId: z.string().min(1).max(64),
@@ -30,6 +37,8 @@ export const taskView = z.object({
   output: hash.nullable(),
   place: place.nullable(),
   contested: z.boolean(),
+  /** The accepted result's log, once the control plane carries it (dashboard v2). */
+  log: taskLog.optional(),
 });
 export type TaskView = z.infer<typeof taskView>;
 

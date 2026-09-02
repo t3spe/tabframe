@@ -4,6 +4,7 @@ import { fsManifest, programManifest } from "./fs.ts";
 import { LIMITS, PROTOCOL_VERSION } from "./limits.ts";
 import { assign, controlPlaneToNode, nodeToControlPlane, presigned, result } from "./node.ts";
 import { controlPlaneToObserver, observerToControlPlane } from "./observer.ts";
+import { taskView } from "./task.ts";
 
 const base = { v: PROTOCOL_VERSION, gen: 2 } as const;
 const H = "a".repeat(64);
@@ -228,8 +229,43 @@ describe("v1 observer messages", () => {
       { t: "controlPlaneRotating", ...ev, next: 3, reconnectAfterMs: 2500 },
       { t: "machineSleeping", ...ev, reason: "no observers for 10 minutes" },
       { t: "budget", ...ev, executionId: "e1", computeMsUsed: 10, computeMsCap: 100 },
+      { t: "executionWarning", ...ev, executionId: "e1", code: "expired-root", message: "gone" },
     ];
     for (const s of samples) expect(decode(controlPlaneToObserver, encode(s)).ok).toBe(true);
+  });
+  test("a task's log rides along optionally: inline text, a blob hash, null, or absent", () => {
+    const ev = { ...base, seq: 5 };
+    const done = {
+      t: "taskDone",
+      ...ev,
+      taskId: "t1",
+      nodeId: "n1",
+      output: H,
+      place: null,
+      computeMs: 5,
+    };
+    for (const log of [undefined, null, { text: "ran 64 rows" }, { hash: H }]) {
+      const msg = log === undefined ? done : { ...done, log };
+      expect(decode(controlPlaneToObserver, encode(msg)).ok).toBe(true);
+    }
+    const tooLong = { ...done, log: { text: "x".repeat(LIMITS.maxInlineLogBytes + 1) } };
+    expect(decode(controlPlaneToObserver, encode(tooLong)).ok).toBe(false);
+    const view = {
+      taskId: "t1",
+      executionId: "e1",
+      stage: 0,
+      index: 0,
+      kind: "run",
+      status: "done",
+      holders: [],
+      attempts: 1,
+      output: H,
+      place: null,
+      contested: false,
+      log: { hash: H },
+    };
+    expect(taskView.safeParse(view).success).toBe(true);
+    expect(taskView.safeParse({ ...view, log: { text: 5 } }).success).toBe(false);
   });
 });
 

@@ -1,11 +1,13 @@
 // The host page (design §3): one observer socket for the dashboard, zero or more node workers.
 // The canvas is the hero: finished tiles land on it as they are verified, and the scheduler's
-// state is drawn over the rectangles that are still open.
+// state is drawn over the rectangles that are still open. Around it, the panels of dashboard v2:
+// programs, queue, the stage strip, the result of a bars or text program, files, task detail.
 import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
-import { type DemoHandle, startDemo } from "./demo.ts";
+import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
 import type { EditorHandle } from "./editor.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
+import { gridIndexAt, gridLayout, mountPanels, type Panels } from "./panels.ts";
 import {
   applyMessage,
   type ClusterState,
@@ -63,6 +65,7 @@ const LEGEND: [TaskColor | "flash" | "contested", string][] = [
   ["contested", "contested"],
 ];
 const FLASH = "#ffffff";
+const SELECTED = "#6ea8ff";
 const BG = "#0b0d10";
 
 const params = new URLSearchParams(location.search);
@@ -93,13 +96,11 @@ const els = {
   progressFill: $<HTMLDivElement>("#progressFill"),
   progressText: $<HTMLSpanElement>("#progressText"),
   tiles: $<HTMLCanvasElement>("#tiles"),
-  viewNote: $<HTMLDivElement>("#viewNote"),
   grid: $<HTMLCanvasElement>("#grid"),
   legend: $<HTMLDivElement>("#legend"),
   counters: $<HTMLDivElement>("#counters"),
   table: $<HTMLTableElement>("#nodes"),
   tbody: $<HTMLTableSectionElement>("#nodes tbody"),
-  queue: $<HTMLUListElement>("#queue"),
   activity: $<HTMLUListElement>("#activity"),
   mine: $<HTMLDivElement>("#mine"),
   spawn1: $<HTMLButtonElement>("#spawn1"),
@@ -220,6 +221,11 @@ class CanvasPainter implements TilePainter {
         d.lineWidth = 2;
         d.strokeRect(x * s + 1, y * s + 1, w * s - 2, h * s - 2);
       }
+      if (t.taskId === panels.selectedTask) {
+        d.strokeStyle = SELECTED;
+        d.lineWidth = 3;
+        d.strokeRect(x * s + 1.5, y * s + 1.5, w * s - 3, h * s - 3);
+      }
     }
     for (const { place, flag } of this.flagged.values()) {
       d.strokeStyle = flag === "missing" ? "#8a94a3" : COLORS.failed;
@@ -252,9 +258,7 @@ function drawGrid(state: ClusterState): void {
     return;
   }
   c.hidden = false;
-  const cell = Math.max(3, Math.min(14, Math.floor(Math.sqrt((width * 96) / n))));
-  const cols = Math.max(1, Math.floor(width / cell));
-  const lines = Math.ceil(n / cols);
+  const { cell, cols, lines } = gridLayout(n, width);
   const height = lines * cell;
   if (c.width !== width || c.height !== height) {
     c.width = width;
@@ -275,8 +279,42 @@ function drawGrid(state: ClusterState): void {
       g.lineWidth = 1;
       g.strokeRect(x + 0.5, y + 0.5, cell - 2, cell - 2);
     }
+    if (t.taskId === panels.selectedTask) {
+      g.strokeStyle = SELECTED;
+      g.lineWidth = 2;
+      g.strokeRect(x + 1, y + 1, cell - 3, cell - 3);
+    }
   });
 }
+
+/** A click on the grid selects the task under it; a second click on the same cell clears it. */
+els.grid.addEventListener("click", (ev) => {
+  const rows = stageTasks(latest);
+  const rect = els.grid.getBoundingClientRect();
+  const scale = els.grid.width / Math.max(1, rect.width);
+  const x = (ev.clientX - rect.left) * scale;
+  const y = (ev.clientY - rect.top) * scale;
+  const index = gridIndexAt(rows.length, els.grid.width, x, y);
+  const task = index >= 0 ? rows[index] : undefined;
+  panels.selectTask(task && task.taskId !== panels.selectedTask ? task.taskId : null);
+});
+/** A click on the canvas selects the tile under it. */
+els.tiles.addEventListener("click", (ev) => {
+  const exec = latest.execution;
+  if (!exec?.canvas) return;
+  const rect = els.tiles.getBoundingClientRect();
+  const x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * exec.canvas.w;
+  const y = ((ev.clientY - rect.top) / Math.max(1, rect.height)) * exec.canvas.h;
+  const task = stageTasks(latest).find(
+    (t) =>
+      t.place &&
+      x >= t.place.x &&
+      x < t.place.x + t.place.w &&
+      y >= t.place.y &&
+      y < t.place.y + t.place.h,
+  );
+  panels.selectTask(task && task.taskId !== panels.selectedTask ? task.taskId : null);
+});
 
 // ---- rendering -------------------------------------------------------------------------------
 
@@ -419,10 +457,6 @@ function render(state: ClusterState): void {
   }
   const tilesView = exec?.view === "tiles";
   els.tiles.hidden = !tilesView;
-  els.viewNote.hidden = tilesView || !exec;
-  if (exec && !tilesView) {
-    els.viewNote.textContent = `${exec.view} view: ${exec.root ? `result ${exec.root.slice(0, 16)}… is in the store` : "no result yet"}; the ${exec.view} renderer arrives with dashboard v2.`;
-  }
   els.tileStats.textContent = tilesView
     ? `${tiles.paintedCount} painted · ${tiles.flags.size} refused · ${tiles.stats.inFlight} fetching`
     : "";
@@ -432,20 +466,9 @@ function render(state: ClusterState): void {
   // Controls reflect the machine.
   els.redundancy.checked = state.machine?.redundancy ?? false;
 
-  // Queue and activity.
-  els.queue.replaceChildren(
-    ...state.queue.map((q) => {
-      const li = document.createElement("li");
-      li.textContent = `${q.programName} ${q.executionId}${q.human ? " · person" : ""}`;
-      return li;
-    }),
-  );
-  if (state.queue.length === 0) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "empty";
-    els.queue.appendChild(li);
-  }
+  // The panels: programs, queue, strip, failure, result, files, task detail.
+  panels.render(state);
+
   els.activity.replaceChildren(
     ...state.activity
       .slice(-14)
@@ -605,16 +628,19 @@ document.addEventListener("visibilitychange", () => {
 let client: ObserverClient | null = null;
 let demo: DemoHandle | null = null;
 
-function issue(control: ControlRequest): void {
+/** Send a control to whatever control plane this page is watching; false when there is none. */
+function issue(control: ControlRequest): boolean {
   if (demo) {
     if (control.t === "setRedundancy") onCluster(withRedundancy(latest, control.on));
     demo.control(control);
-    return;
+    return true;
   }
-  if (!client?.send(control)) {
+  const sent = client?.send(control) ?? false;
+  if (!sent) {
     els.notice.hidden = false;
     els.notice.textContent = "Not connected; the control was not sent.";
   }
+  return sent;
 }
 for (const [button, control] of controlButtons) {
   button.onclick = () => {
@@ -626,6 +652,13 @@ for (const [button, control] of controlButtons) {
   };
 }
 els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.checked });
+
+const panels: Panels = mountPanels(document, {
+  blobs: () => blobSource,
+  send: issue,
+  rerender: scheduleRender,
+  now: clockNow,
+});
 
 // ---- the editor (design §5.6), loaded only when asked for ------------------------------------
 
@@ -688,6 +721,10 @@ async function main(): Promise<void> {
       onPause: () => {
         document.body.dataset.demoPaused = "1";
       },
+      ...(isDemoProgram(params.get("program"))
+        ? { startWith: params.get("program") as DemoProgram }
+        : {}),
+      holdAfterFirst: params.has("hold"),
     });
     expose();
     return;
@@ -713,6 +750,9 @@ async function main(): Promise<void> {
   await client.start();
 }
 
+const isDemoProgram = (name: string | null): boolean =>
+  name !== null && (DEMO_CYCLE as readonly string[]).includes(name);
+
 // The demo drives the reducer directly with the page's clock.
 function applyDemo(state: ClusterState, msg: Parameters<typeof applyMessage>[1]): ClusterState {
   return applyMessage(state, msg, clockNow());
@@ -725,6 +765,7 @@ function expose(): void {
     hostId,
     tiles,
     demo,
+    panels,
     get state() {
       return latest;
     },

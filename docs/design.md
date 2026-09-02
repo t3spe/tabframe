@@ -778,4 +778,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint —
   so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1;
   `docs/m3-verification.md`). A rotation with a render in flight costs about 8.4 s of churn.
+- **2026-09-02 (WP2.5).** The `taskDone` observer event and the task view carry an optional
+  `log` (inline text or a blob hash), the shape the node already reports to the control plane; the
+  dashboard renders it when present and says plainly when the wire did not carry one (§8.3). The
+  `bars` view draws the single output of the last stage; a last stage with several outputs is
+  listed in the files panel instead (§5.1). The files panel browses any root the execution has had,
+  not only the current one; roots are the stage strip's links (§5.4). The browser suites run on one
+  Playwright worker: they share a local control plane and, since WP2.3, an upload really launches
+  (§12).
 

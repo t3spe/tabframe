@@ -137,14 +137,15 @@ describe("adopt from snapshot on /run", () => {
     expect(await cp.store.exists(program?.module as string)).toBe(true);
     expect(await cp.store.exists(program?.bundle as string)).toBe(true);
 
-    // Nothing written yet; the suspend hook forces one, gzipped, plus the latest pointer.
-    expect(cp.snapshots.writes).toBe(0);
+    // The suspend hook forces a write, gzipped, plus the latest pointer. (The periodic writer is
+    // set to a minute here, so this counts a delta rather than assuming none has fired.)
+    const writesBefore = cp.snapshots.writes;
     const res = await fetch(
       `http://127.0.0.1:${cp.privateAddress.port}/aws/lambda-microvms/runtime/v1/suspend`,
       { method: "POST" },
     );
     expect(res.status).toBe(200);
-    expect(cp.snapshots.writes).toBe(1);
+    expect(cp.snapshots.writes).toBe(writesBefore + 1);
     expect(cp.snapshots.lastKey?.startsWith("g2/")).toBe(true);
     const latest = await snapshots.read(LATEST_KEY);
     expect(latest).not.toBeNull();
@@ -157,7 +158,7 @@ describe("adopt from snapshot on /run", () => {
     // Unchanged ledger: the periodic write is a no-op; forced writes always go through.
     expect(await cp.snapshot()).toBeNull();
     expect(await cp.snapshot(true)).not.toBeNull();
-    expect(cp.snapshots.writes).toBe(2);
+    expect(cp.snapshots.writes).toBe(writesBefore + 2);
     // The private route serves the current ledger as JSON.
     const snap = await fetch(`http://127.0.0.1:${cp.privateAddress.port}/snapshot`);
     expect(snap.status).toBe(200);
@@ -167,7 +168,7 @@ describe("adopt from snapshot on /run", () => {
       await fetch(`http://127.0.0.1:${cp.privateAddress.port}/health`)
     ).json()) as Record<string, unknown>;
     expect(health.programs).toBe(1);
-    expect((health.snapshots as { writes: number }).writes).toBe(2);
+    expect((health.snapshots as { writes: number }).writes).toBe(writesBefore + 2);
   });
 
   test("an unreadable snapshot also starts fresh", async () => {

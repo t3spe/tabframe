@@ -4,8 +4,10 @@ import type {
   ExecutionView,
   MachineView,
   NodeView,
+  ProgramView,
   QueueEntry,
   Snapshot,
+  TaskLog,
   TaskView,
 } from "@tabframe/protocol";
 
@@ -15,6 +17,31 @@ export const THROUGHPUT_WINDOW_MS = 5_000;
 export const FLASH_MS = 1_500;
 /** Notable events kept for the activity list. */
 export const ACTIVITY_CAP = 60;
+/** Attempt records kept per task; a task that churns more than this keeps the latest. */
+export const HISTORY_CAP = 16;
+
+/** What became of one attempt at a task, as the event stream told it (design §6.4, §6.5). */
+export type AttemptOutcome =
+  | "running"
+  | "done"
+  | "verified"
+  | "released"
+  | "mismatch"
+  | "retracted"
+  | "cancelled"
+  | "failed";
+
+export interface AttemptRecord {
+  attempt: number;
+  nodeId: string;
+  speculative: boolean;
+  outcome: AttemptOutcome;
+  /** Dashboard clock when the attempt started (or when the snapshot reported it). */
+  at: number;
+  computeMs: number | null;
+  /** Reconstructed from a snapshot's holders rather than seen as an event. */
+  fromSnapshot: boolean;
+}
 
 /** A task as the dashboard knows it: the wire view plus what the event history added. */
 export interface TaskState extends TaskView {
@@ -24,6 +51,10 @@ export interface TaskState extends TaskView {
   flashAt: number | null;
   computeMs: number | null;
   failure: string | null;
+  /** Every attempt the dashboard saw, oldest first, capped at HISTORY_CAP. */
+  history: AttemptRecord[];
+  /** The accepted result's log when the wire carried one; null until the core forwards it. */
+  log: TaskLog;
 }
 
 /** The seven task colors of the grid, in the order a task normally passes through them. */
@@ -38,6 +69,23 @@ export type TaskColor =
 
 export type Phase = "planning" | "running" | "folding" | "done" | "failed";
 
+export type StageStatus = "running" | "folding" | "done" | "failed";
+
+/** One stage of the current execution for the strip: what it was called, how it went, its root. */
+export interface StageState {
+  stage: number;
+  name: string;
+  taskCount: number;
+  /** Run tasks done by the time the stage folded (or so far, for the current stage). */
+  done: number;
+  failed: number;
+  /** The filesystem root the fold produced. */
+  root: string | null;
+  status: StageStatus;
+  /** False for a stage the dashboard did not watch (it joined later); the name is then blank. */
+  known: boolean;
+}
+
 export interface ExecutionState extends ExecutionView {
   phase: Phase;
   failure: string | null;
@@ -48,6 +96,28 @@ export interface ExecutionState extends ExecutionView {
    * at most 256 task rows; later rows are placed on the grid from their id until the next snapshot.
    */
   idBase: number | null;
+  /** Non-fatal things the control plane said about this execution (design §5.4). */
+  warnings: string[];
+  /** Stages in order; the last one is the current or final stage. */
+  stages: StageState[];
+}
+
+/** A program the machine can launch, from the snapshot or a `programAdded` event. */
+export interface ProgramInfo {
+  bundle: string;
+  name: string;
+  /** Null until a snapshot describes the program; `programAdded` carries only the name. */
+  view: ProgramView["view"] | null;
+  description: string | null;
+  defaultParams: Record<string, unknown>;
+}
+
+/** The last execution that failed, kept until one succeeds so the reader sees what went wrong. */
+export interface Failure {
+  executionId: string;
+  programName: string;
+  reason: string;
+  at: number;
 }
 
 export type ActivityKind = "control" | "execution" | "task" | "node" | "system" | "error";
@@ -86,8 +156,9 @@ export interface ClusterState {
   victims: { op: string; nodeIds: string[]; at: number } | null;
   rotation: { next: number; reconnectAfterMs: number; at: number } | null;
   sleeping: string | null;
-  /** Programs announced since the page loaded: bundle hash → name. */
-  programs: Map<string, string>;
+  /** Programs the machine can launch: bundle hash → program. */
+  programs: Map<string, ProgramInfo>;
+  lastFailure: Failure | null;
 }
 
 export function emptyState(): ClusterState {
@@ -108,6 +179,7 @@ export function emptyState(): ClusterState {
     rotation: null,
     sleeping: null,
     programs: new Map(),
+    lastFailure: null,
   };
 }
 
@@ -174,8 +246,19 @@ export function applyMessage(
       const exec = next.execution;
       if (!exec || exec.executionId !== msg.executionId) return next;
       const tasks = new Map<string, TaskState>();
-      for (const t of msg.tasks) tasks.set(t.taskId, toTaskState(t));
+      for (const t of msg.tasks) tasks.set(t.taskId, toTaskState(t, now));
       next.tasks = tasks;
+      const stages = stagesUpTo(exec.stages, msg.stage);
+      stages[msg.stage] = {
+        stage: msg.stage,
+        name: msg.name,
+        taskCount: msg.taskCount,
+        done: 0,
+        failed: 0,
+        root: null,
+        status: "running",
+        known: true,
+      };
       next.execution = {
         ...exec,
         phase: "running",
@@ -185,6 +268,7 @@ export function applyMessage(
         canvas: msg.canvas,
         counters: { ...exec.counters, pending: exec.counters.pending + msg.taskCount },
         idBase: inferIdBase(msg.tasks),
+        stages,
       };
       return note(
         next,
@@ -197,7 +281,15 @@ export function applyMessage(
       const next = advance(state, msg.seq);
       const exec = next.execution;
       if (!exec || exec.executionId !== msg.executionId) return next;
-      next.execution = { ...exec, phase: "folding", root: msg.root };
+      const stages = stagesUpTo(exec.stages, msg.stage);
+      const current = stages[msg.stage] ?? unknownStage(msg.stage);
+      stages[msg.stage] = {
+        ...current,
+        done: current.known ? Math.max(current.done, doneRunTasks(next, msg.stage)) : current.done,
+        root: msg.root,
+        status: "done",
+      };
+      next.execution = { ...exec, phase: "folding", root: msg.root, stages };
       return next;
     }
     case "executionDone": {
@@ -210,8 +302,15 @@ export function applyMessage(
           status: "done",
           root: msg.root,
           followUp: msg.followUp,
+          stages: exec.stages.map((s) =>
+            s.status === "running" || s.status === "folding"
+              ? { ...s, status: "done", root: s.root ?? msg.root }
+              : s,
+          ),
         };
       }
+      // A success clears the failure banner: the machine has moved on and it worked.
+      next.lastFailure = null;
       return note(
         next,
         now,
@@ -222,15 +321,41 @@ export function applyMessage(
     case "executionFailed": {
       const next = advance(state, msg.seq);
       const exec = next.execution;
+      const queued = next.queue.find((q) => q.executionId === msg.executionId);
+      // A queued execution that ends (dropped by an operator) leaves the queue; only the running
+      // one gets the banner — a deliberate drop is not something to warn about.
+      next.queue = next.queue.filter((q) => q.executionId !== msg.executionId);
       if (exec && exec.executionId === msg.executionId) {
-        next.execution = { ...exec, phase: "failed", status: "failed", failure: msg.reason };
+        next.execution = {
+          ...exec,
+          phase: "failed",
+          status: "failed",
+          failure: msg.reason,
+          stages: exec.stages.map((s) =>
+            s.status === "running" || s.status === "folding" ? { ...s, status: "failed" } : s,
+          ),
+        };
+        next.lastFailure = {
+          executionId: msg.executionId,
+          programName: exec.programName,
+          reason: msg.reason,
+          at: now,
+        };
       }
-      return note(
-        next,
-        now,
-        "execution",
-        `${exec?.programName ?? msg.executionId} failed: ${msg.reason}`,
-      );
+      const name =
+        exec?.executionId === msg.executionId
+          ? exec.programName
+          : (queued?.programName ?? msg.executionId);
+      return note(next, now, "execution", `${name} failed: ${msg.reason}`);
+    }
+    case "executionWarning": {
+      // Visible, not fatal (design §5.4): the run continues with whatever it could start from.
+      const next = advance(state, msg.seq);
+      const exec = next.execution;
+      if (exec && exec.executionId === msg.executionId) {
+        next.execution = { ...exec, warnings: [...exec.warnings, msg.message] };
+      }
+      return note(next, now, "execution", `warning: ${msg.message}`);
     }
     case "budget": {
       const next = advance(state, msg.seq);
@@ -249,6 +374,15 @@ export function applyMessage(
         status: task.status === "pending" ? "assigned" : task.status,
         holders: [...task.holders.filter((h) => h !== msg.nodeId), msg.nodeId],
         attempts: Math.max(task.attempts + 1, msg.attempt),
+        history: pushAttempt(task.history, {
+          attempt: msg.attempt,
+          nodeId: msg.nodeId,
+          speculative: false,
+          outcome: "running",
+          at: now,
+          computeMs: null,
+          fromSnapshot: false,
+        }),
       });
       return next;
     }
@@ -262,6 +396,15 @@ export function applyMessage(
         status: task.status === "pending" ? "assigned" : task.status,
         holders: [...task.holders.filter((h) => h !== msg.nodeId), msg.nodeId],
         attempts: task.attempts + 1,
+        history: pushAttempt(task.history, {
+          attempt: task.attempts + 1,
+          nodeId: msg.nodeId,
+          speculative: true,
+          outcome: "running",
+          at: now,
+          computeMs: null,
+          fromSnapshot: false,
+        }),
       });
       return next;
     }
@@ -270,6 +413,10 @@ export function applyMessage(
       const task = ensureTask(next, msg.taskId, now);
       if (task.status === "assigned") bump(next, { assigned: -1, done: 1 });
       else if (task.status === "pending") bump(next, { pending: -1, done: 1 });
+      // The winner's attempt is done; any twin still running is cancelled by the core (§6.5).
+      const history = settle(task.history, msg.nodeId, "done", msg.computeMs).map((a) =>
+        a.outcome === "running" ? { ...a, outcome: "cancelled" as const } : a,
+      );
       setTask(next, {
         ...task,
         status: "done",
@@ -277,9 +424,12 @@ export function applyMessage(
         place: msg.place ?? task.place,
         holders: [],
         computeMs: msg.computeMs,
+        log: msg.log ?? task.log,
+        history,
       });
       next.doneAt = [...prune(next.doneAt, now), now];
       resultFrom(next, msg.nodeId, msg.computeMs);
+      if (task.kind === "run") bumpStage(next, task.stage, { done: 1 });
       return next;
     }
     case "taskReassigned": {
@@ -293,6 +443,7 @@ export function applyMessage(
         status: released ? "pending" : task.status,
         holders,
         flashAt: now,
+        history: settle(task.history, msg.fromNode, "released", null),
       });
       return note(next, now, "task", `${msg.taskId} taken back from ${msg.fromNode}`);
     }
@@ -300,7 +451,12 @@ export function applyMessage(
       const next = advance(state, msg.seq);
       bump(next, { verified: 1 });
       const task = next.tasks.get(msg.taskId);
-      if (task) setTask(next, { ...task, verified: true });
+      if (task)
+        setTask(next, {
+          ...task,
+          verified: true,
+          history: settleOrRecord(task.history, msg.nodeId, "verified", now),
+        });
       resultFrom(next, msg.nodeId, null);
       return next;
     }
@@ -311,6 +467,13 @@ export function applyMessage(
       if (task.status === "done") bump(next, { done: -1, pending: 1 });
       else if (task.status === "assigned") bump(next, { assigned: -1, pending: 1 });
       else if (task.status === "failed") bump(next, { pending: 1 });
+      if (task.status === "done" && task.kind === "run") bumpStage(next, task.stage, { done: -1 });
+      // The accepted result is withdrawn along with the disagreeing one: both are suspect now.
+      const history = settleOrRecord(task.history, msg.nodeId, "mismatch", now).map((a) =>
+        a.outcome === "done" || a.outcome === "verified" || a.outcome === "running"
+          ? { ...a, outcome: "retracted" as const }
+          : a,
+      );
       setTask(next, {
         ...task,
         status: "pending",
@@ -319,6 +482,7 @@ export function applyMessage(
         contested: true,
         verified: false,
         flashAt: now,
+        history,
       });
       resultFrom(next, msg.nodeId, null);
       return note(next, now, "task", `${msg.taskId} results disagree (${msg.nodeId}); recomputing`);
@@ -328,7 +492,16 @@ export function applyMessage(
       const task = ensureTask(next, msg.taskId, now);
       if (task.status === "assigned") bump(next, { assigned: -1, failed: 1 });
       else if (task.status === "pending") bump(next, { pending: -1, failed: 1 });
-      setTask(next, { ...task, status: "failed", holders: [], failure: msg.reason });
+      setTask(next, {
+        ...task,
+        status: "failed",
+        holders: [],
+        failure: msg.reason,
+        history: task.history.map((a) =>
+          a.outcome === "running" ? { ...a, outcome: "failed" as const } : a,
+        ),
+      });
+      if (task.kind === "run") bumpStage(next, task.stage, { failed: 1 });
       return note(next, now, "task", `${msg.taskId} failed: ${msg.reason}`);
     }
     case "controlApplied": {
@@ -340,13 +513,15 @@ export function applyMessage(
     }
     case "programAdded": {
       const next = advance(state, msg.seq);
-      next.programs = new Map(next.programs).set(msg.program, msg.name);
+      const known = next.programs.get(msg.program);
+      next.programs = new Map(next.programs).set(msg.program, {
+        bundle: msg.program,
+        name: msg.name,
+        view: known?.view ?? null,
+        description: known?.description ?? null,
+        defaultParams: known?.defaultParams ?? {},
+      });
       return note(next, now, "system", `program ${msg.name} added (${msg.program.slice(0, 8)}…)`);
-    }
-    case "executionWarning": {
-      // Visible, not fatal (design §5.4): the run continues with whatever it could start from.
-      const next = advance(state, msg.seq);
-      return note(next, now, "execution", `warning: ${msg.message}`);
     }
     case "controlPlaneRotating": {
       const next = advance(state, msg.seq);
@@ -377,7 +552,7 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
   const nodes = first ? new Map<string, NodeView>() : new Map(state.nodes);
   for (const n of snap.nodes ?? []) nodes.set(n.nodeId, n);
   const tasks = first ? new Map<string, TaskState>() : new Map(state.tasks);
-  for (const t of snap.tasks) tasks.set(t.taskId, toTaskState(t));
+  for (const t of snap.tasks) tasks.set(t.taskId, toTaskState(t, now, true));
   let execution = first
     ? snap.execution
       ? toExecutionState(snap.execution)
@@ -387,7 +562,27 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
     const rows = [...tasks.values()].filter(
       (t) => t.stage === execution?.stage && t.kind === "run",
     );
+    const current = execution.stages[execution.stage];
+    if (current) {
+      current.done = rows.filter((t) => t.status === "done").length;
+      current.failed = rows.filter((t) => t.status === "failed").length;
+    }
     execution = { ...execution, idBase: inferIdBase(rows) };
+  }
+  let programs = state.programs;
+  if (first && snap.programs) {
+    programs = new Map(
+      snap.programs.map((p) => [
+        p.bundle,
+        {
+          bundle: p.bundle,
+          name: p.name,
+          view: p.view,
+          description: p.description,
+          defaultParams: p.defaultParams,
+        },
+      ]),
+    );
   }
   return {
     ...state,
@@ -404,6 +599,7 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
     doneAt: prune(state.doneAt, now),
     rotation: first ? null : state.rotation,
     sleeping: first ? null : state.sleeping,
+    programs,
   };
 }
 
@@ -429,11 +625,74 @@ function toExecutionState(view: ExecutionView): ExecutionState {
         : view.taskCount > 0
           ? "running"
           : "planning";
-  return { ...view, phase, failure: null, followUp: null, budget: null, idBase: null };
+  // A snapshot says which stage is current but not what came before: earlier stages are folded
+  // and unnamed; the current one is known only if its tasks exist.
+  const stages: StageState[] = [];
+  for (let i = 0; i < view.stage; i++) stages.push(unknownStage(i));
+  if (view.taskCount > 0) {
+    stages[view.stage] = {
+      stage: view.stage,
+      name: view.stageName,
+      taskCount: view.taskCount,
+      done: 0,
+      failed: 0,
+      root: phase === "done" ? view.root : null,
+      status: phase === "done" ? "done" : phase === "failed" ? "failed" : "running",
+      known: true,
+    };
+  }
+  return {
+    ...view,
+    phase,
+    failure: null,
+    followUp: null,
+    budget: null,
+    idBase: null,
+    warnings: [],
+    stages,
+  };
 }
 
-function toTaskState(view: TaskView): TaskState {
-  return { ...view, verified: false, flashAt: null, computeMs: null, failure: null };
+function unknownStage(stage: number): StageState {
+  return {
+    stage,
+    name: "",
+    taskCount: 0,
+    done: 0,
+    failed: 0,
+    root: null,
+    status: "done",
+    known: false,
+  };
+}
+
+/** A copy of the stage list with every index below `stage` present (unknown ones synthesized). */
+function stagesUpTo(stages: readonly StageState[], stage: number): StageState[] {
+  const out = [...stages];
+  for (let i = 0; i <= stage; i++) if (!out[i]) out[i] = unknownStage(i);
+  return out;
+}
+
+function toTaskState(view: TaskView, now: number, fromSnapshot = false): TaskState {
+  // A snapshot row names its holders but not the attempts they run; reconstruct what it can.
+  const history: AttemptRecord[] = view.holders.map((nodeId, i) => ({
+    attempt: Math.max(1, view.attempts - view.holders.length + i + 1),
+    nodeId,
+    speculative: i > 0,
+    outcome: "running",
+    at: now,
+    computeMs: null,
+    fromSnapshot,
+  }));
+  return {
+    ...view,
+    verified: false,
+    flashAt: null,
+    computeMs: null,
+    failure: null,
+    history,
+    log: view.log ?? null,
+  };
 }
 
 /** `t<n>` ids are handed out consecutively inside a stage; the base lets later rows find their index. */
@@ -485,6 +744,8 @@ function ensureTask(next: ClusterState, taskId: string, _now: number): TaskState
     flashAt: null,
     computeMs: null,
     failure: null,
+    history: [],
+    log: null,
   };
   setTask(next, placeholder);
   return placeholder;
@@ -507,6 +768,76 @@ function bump(next: ClusterState, delta: Partial<Counters>): void {
     counters[k] = Math.max(0, counters[k] + v);
   }
   next.execution = { ...exec, counters };
+}
+
+/** Per-stage tallies for the strip; only the current stage's tasks are in the map. */
+function bumpStage(
+  next: ClusterState,
+  stage: number,
+  delta: { done?: number; failed?: number },
+): void {
+  const exec = next.execution;
+  const current = exec?.stages[stage];
+  if (!exec || !current) return;
+  const stages = [...exec.stages];
+  stages[stage] = {
+    ...current,
+    done: Math.max(0, current.done + (delta.done ?? 0)),
+    failed: Math.max(0, current.failed + (delta.failed ?? 0)),
+  };
+  next.execution = { ...exec, stages };
+}
+
+function doneRunTasks(state: ClusterState, stage: number): number {
+  let n = 0;
+  for (const t of state.tasks.values())
+    if (t.stage === stage && t.kind === "run" && t.status === "done") n++;
+  return n;
+}
+
+function pushAttempt(history: readonly AttemptRecord[], record: AttemptRecord): AttemptRecord[] {
+  const out = [...history, record];
+  if (out.length > HISTORY_CAP) out.splice(0, out.length - HISTORY_CAP);
+  return out;
+}
+
+/** Close the running attempt a node holds with an outcome; other attempts are untouched. */
+function settle(
+  history: readonly AttemptRecord[],
+  nodeId: string,
+  outcome: AttemptOutcome,
+  computeMs: number | null,
+): AttemptRecord[] {
+  let found = false;
+  const out = history.map((a) => {
+    if (found || a.nodeId !== nodeId || a.outcome !== "running") return a;
+    found = true;
+    return { ...a, outcome, computeMs: computeMs ?? a.computeMs };
+  });
+  return out;
+}
+
+/**
+ * Like `settle`, but a node the dashboard never saw take the task (a twin whose assignment was in a
+ * page it missed, or a late duplicate) is recorded so the story has every participant.
+ */
+function settleOrRecord(
+  history: readonly AttemptRecord[],
+  nodeId: string,
+  outcome: AttemptOutcome,
+  now: number,
+): AttemptRecord[] {
+  if (history.some((a) => a.nodeId === nodeId && a.outcome === "running"))
+    return settle(history, nodeId, outcome, null);
+  return pushAttempt(history, {
+    attempt: history.length + 1,
+    nodeId,
+    speculative: true,
+    outcome,
+    at: now,
+    computeMs: null,
+    fromSnapshot: false,
+  });
 }
 
 /** A node handed in a result: the core counts every result, duplicates included. */
@@ -601,4 +932,36 @@ export function progress(state: ClusterState): { done: number; total: number } {
     if (t.status === "done") done++;
   }
   return { done, total: Math.max(exec.taskCount, seen) };
+}
+
+/** Programs sorted by name, for the panel. */
+export function programList(state: ClusterState): ProgramInfo[] {
+  return [...state.programs.values()].sort((a, b) => a.name.localeCompare(b.name, "en"));
+}
+
+/**
+ * The stage strip's rows: every stage seen so far, plus the planning step the execution is in
+ * when no stage is running (a plan task ahead of the next stage, or the very first one).
+ */
+export type StripEntry =
+  | { kind: "stage"; stage: StageState; current: boolean }
+  | { kind: "plan"; stage: number; holders: string[] };
+
+export function stageStrip(state: ClusterState): StripEntry[] {
+  const exec = state.execution;
+  if (!exec) return [];
+  const entries: StripEntry[] = exec.stages.map((s, i) => ({
+    kind: "stage",
+    stage: s,
+    current: i === exec.stage && exec.phase === "running",
+  }));
+  if (exec.phase === "planning" || exec.phase === "folding") {
+    const plan = planTask(state);
+    entries.push({
+      kind: "plan",
+      stage: exec.phase === "folding" ? exec.stage + 1 : exec.stage,
+      holders: plan?.holders ?? [],
+    });
+  }
+  return entries;
 }

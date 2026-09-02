@@ -122,6 +122,15 @@ test("launch uploads the bundle through the observer socket and the control plan
     timeout: 30_000,
   });
   console.log(`[editor.e2e] ${await page.locator("#launchInfo").textContent()}`);
+  // Since WP2.3 the launch is real: the execution would plan forever here (no nodes in observe
+  // mode) and then run on the next suite's nodes. Kill it from the page so the suites that
+  // follow find the machine idle; the failure banner names the reason.
+  const kill = page.locator("#killExecution");
+  await expect(kill).toBeVisible({ timeout: 15_000 });
+  await kill.click();
+  await expect(page.locator("#failure")).toContainText("cancelled by an operator", {
+    timeout: 15_000,
+  });
   // Params that are not an object never leave the page.
   await page.locator("#programParams").fill("[1, 2]");
   await page.click("#launch");
