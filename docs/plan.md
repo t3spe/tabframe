@@ -145,7 +145,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 - [x] **WP3.2 Fleet v1.** Full handover protocol with failure paths and repair-on-next-run; session heals through rotate unless the pointer says off; hourly schedule **enabled** (gate); reserved concurrency 1; idempotency under concurrent heal requests; `rotate.ts`, `up.ts`, `down.ts` finished.
   *Acceptance:* fake-client tests for every branch; a real rotation on AWS with a render in flight completes the frame with matching hashes.
 - [x] **WP3.3 Cloud cores.** Node platform hardened (session fetch, reconnect, Atomics read path under load); core role in the image; fleet policy in the control plane (desired 2 while awake, one launch per second, replace on death or age, core ids kept in the ledger and inherited at adopt); sleep policy (10 min without observers; 60 min without interaction); `machineSleeping`; wake on first visitor; core killed by a demo control is replaced.
-- [ ] **WP3.4 Handover tests.** `dev:rotate` local driver; two-process handover integration test; Playwright rotation-mid-render test.
+- [x] **WP3.4 Handover tests.** `dev:rotate` local driver; two-process handover integration test; Playwright rotation-mid-render test.
 - [ ] **WP3.5 Deploy M3.** Measure churn seconds per rotation under load and record them; confirm from CloudWatch that the session function's concurrent executions stay under 10 with no throttles during a rotation with a few hundred simulated clients.
 
 **M3 done when:** the dashboard shows the generation change at the top of the hour while tiles keep landing; cores appear on wake and vanish on sleep; `mise run deploy` is a rotation.

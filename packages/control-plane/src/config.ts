@@ -16,6 +16,8 @@ export interface Config {
   blobBucket: string | null;
   /** Local mode only: serve `{off: true}` from the emulated session endpoint. */
   localOff: boolean;
+  /** Local mode only: boot neutral and wait for `/run`, the way the image does (`dev:rotate`). */
+  localNeutral: boolean;
   tickMs: number;
   /** Where the demo programs live: `/app/programs` in the image, `programs/` in the repo locally. */
   programsDir: string | null;
@@ -45,6 +47,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     webDir: env.TABFRAME_WEB_DIR ?? null,
     blobBucket: env.TABFRAME_BLOB_BUCKET ?? null,
     localOff: env.TABFRAME_LOCAL_OFF === "1",
+    localNeutral: env.TABFRAME_LOCAL_NEUTRAL === "1",
     tickMs: intEnv(env.TABFRAME_TICK_MS, 500),
     programsDir:
       env.TABFRAME_PROGRAMS_DIR === ""

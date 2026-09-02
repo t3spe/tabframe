@@ -45,6 +45,9 @@
     "packages/dev": {
       "name": "@tabframe/dev",
       "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/fleet": "workspace:*",
+      },
     },
     "packages/fleet": {
       "name": "@tabframe/fleet",
