@@ -6,6 +6,7 @@ RUN dnf install -y nodejs22 && dnf clean all
 WORKDIR /app
 COPY package.json /app/package.json
 COPY main.js /app/main.js
+COPY node-worker.js /app/node-worker.js
 COPY programs/ /app/programs/
 EXPOSE 8080 8081
 CMD ["node", "/app/main.js"]

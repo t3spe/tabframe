@@ -129,6 +129,7 @@ export class ImageStack extends cdk.Stack {
         { key: "TABFRAME_PUBLIC_PORT", value: String(PORTS.public) },
         { key: "TABFRAME_PRIVATE_PORT", value: String(PORTS.private) },
         { key: "TABFRAME_MODE", value: "image" },
+        { key: "TABFRAME_SANDBOX_WORKER", value: "/app/node-worker.js" },
         { key: "TABFRAME_HOST", value: "0.0.0.0" },
       ],
       // Hooks are ENABLED/DISABLED flags; the paths are fixed by the platform at

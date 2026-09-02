@@ -68,6 +68,8 @@ run = "bun packages/web/scripts/build.ts"
 description = "Bundle the control-plane process and stage the MicroVM image directory"
 run = [
   "bun build packages/control-plane/src/main.ts --target=node --format=esm --outfile packages/control-plane/dist/main.js",
+  # The sandbox's worker thread is a second entry point: one bundled file cannot be its own worker.
+  "bun build packages/sandbox/src/adapters/node-worker.ts --target=node --format=esm --outfile packages/control-plane/dist/node-worker.js",
   "node packages/infra/scripts/stage-image.ts",
 ]
 
@@ -87,6 +89,11 @@ run = [
 description = "M0 runbook against the real account (masked output)"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m0.ts"
+
+[tasks."verify:m3"]
+description = "M3 runbook: a real rotation under load — churn seconds, drain jitter, session-function concurrency"
+depends = ["whoami"]
+run = "node packages/infra/scripts/verify-m3.ts"
 
 [tasks."verify:m1"]
 description = "M1 runbook: browser tabs render a frame on the deployed machine, kill half mid-frame, golden hashes, uploads, snapshots"

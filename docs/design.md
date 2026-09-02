@@ -771,4 +771,11 @@ Dated deviations discovered while building, recorded before the code landed (pla
   its own port; locally each generation has its own in-memory store, so a rotation loses earlier
   blobs and the local test rotates within one stage. On AWS the store is shared and this does not
   arise (§7.1).
+- **2026-09-02 (WP3.5).** A bundled image cannot spawn itself as a worker thread: the sandbox
+  worker is bundled as a second entry point, staged beside `main.js`, and named to the process by
+  `TABFRAME_SANDBOX_WORKER` (§4.2, §11.3). The fleet's private-port calls retry on 429 and 5xx
+  (§9.4). **Measured:** one client holds about 16 concurrent sockets through a MicroVM endpoint
+  before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint —
+  so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1;
+  `docs/m3-verification.md`). A rotation with a render in flight costs about 8.4 s of churn.
 
