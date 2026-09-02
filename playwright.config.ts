@@ -20,7 +20,9 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: local
     ? {
-        command: "bun packages/web/scripts/build.ts && node packages/control-plane/src/main.ts",
+        // The programs build first: the editor test compares a page compile to the build's module.
+        command:
+          "node packages/sdk-as/scripts/build-programs.ts && bun packages/web/scripts/build.ts && node packages/control-plane/src/main.ts",
         url: `http://127.0.0.1:${port}/config.json`,
         reuseExistingServer: false,
         timeout: 60_000,

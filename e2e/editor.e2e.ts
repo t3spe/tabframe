@@ -1,0 +1,129 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, type Page, test } from "@playwright/test";
+
+// WP2.4: the in-page editor against the real local control plane. The compiler loads in a worker
+// and compiles the prefilled Mandelbrot; the module must hash to what the build produced (the
+// web server built programs/mandelbrot/dist first). The drop door validates a real module and
+// refuses junk. A launch uploads the bundle over the observer socket and the control plane
+// answers — a refusal until WP2.3 teaches the core to take uploaded bundles, a queued execution
+// after; either way the round trip is what this test pins.
+
+const wasmPath = path.resolve(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "../programs/mandelbrot/dist/program.wasm",
+);
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+async function openEditor(page: Page): Promise<void> {
+  await page.goto("/?observe");
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  await expect(page.locator("#editor")).toBeHidden();
+  await page.click("#openEditor");
+  await expect(page.locator("#editor")).toBeVisible();
+  await expect(page.locator("#source")).toHaveValue(/Mandelbrot/);
+  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 120_000 });
+}
+
+test("the compiler loads in a worker and the page compile is byte-identical to the build", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  const loaded = await page.locator("#editorStatus").textContent();
+  await page.click("#compile");
+  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+    timeout: 120_000,
+  });
+  const compiled = await page.locator("#editorStatus").textContent();
+  console.log(`[editor.e2e] ${loaded}; ${compiled}`);
+  const expected = sha256(new Uint8Array(readFileSync(wasmPath)));
+  await expect(page.locator("#moduleHash")).toHaveText(expected);
+  await expect(page.locator("#moduleInfo")).toContainText("imports env.abort");
+  for (const name of ["alloc", "memory", "plan", "run"])
+    await expect(page.locator("#moduleInfo")).toContainText(name);
+  await expect(page.locator("#moduleInfo")).toContainText("memory max 256 pages");
+  await expect(page.locator("#launch")).toBeEnabled();
+  await expect(page.locator("#diagnostics li")).toHaveCount(0);
+});
+
+test("a broken edit shows diagnostics with the line; reset restores the shipped source", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  const source = await page.locator("#source").inputValue();
+  const lines = source.split("\n");
+  const at = lines.findIndex((l) => l.startsWith("const TILE"));
+  lines.splice(at, 0, 'const broken: i32 = "not a number";');
+  await page.locator("#source").fill(lines.join("\n"));
+  await page.click("#compile");
+  await expect(page.locator("#editorStatus")).toHaveText(/1 error/, { timeout: 120_000 });
+  const diag = page.locator("#diagnostics li").first();
+  await expect(diag).toContainText("ERROR TS2322");
+  await expect(diag).toContainText(`assembly/index.ts:${at + 1}:`);
+  await expect(page.locator("#launch")).toBeDisabled();
+  await page.click("#resetSource");
+  await expect(page.locator("#source")).toHaveValue(source);
+});
+
+test("the drop door accepts a real module and refuses junk", async ({ page }) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  await page.locator("#wasmFile").setInputFiles(wasmPath);
+  await expect(page.locator("#moduleInfo")).toContainText("dropped module", { timeout: 15_000 });
+  await expect(page.locator("#moduleHash")).toHaveText(
+    sha256(new Uint8Array(readFileSync(wasmPath))),
+  );
+  await expect(page.locator("#programName")).toHaveValue("program");
+  await expect(page.locator("#launch")).toBeEnabled();
+  await page.locator("#wasmFile").setInputFiles({
+    name: "junk.wasm",
+    mimeType: "application/wasm",
+    buffer: Buffer.from("definitely not a module"),
+  });
+  await expect(page.locator("#moduleInfo")).toContainText("not a WebAssembly module");
+  await page.locator("#wasmFile").setInputFiles({
+    name: "empty.wasm",
+    mimeType: "application/wasm",
+    buffer: Buffer.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]),
+  });
+  await expect(page.locator("#moduleInfo")).toContainText("refused");
+  await expect(page.locator("#launch")).toBeDisabled();
+});
+
+test("launch uploads the bundle through the observer socket and the control plane answers", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  await page.locator("#wasmFile").setInputFiles(wasmPath);
+  await expect(page.locator("#launch")).toBeEnabled({ timeout: 15_000 });
+  await page.locator("#programParams").fill('{"preset": 2, "palette": "ocean"}');
+  await page.click("#launch");
+  await expect(page.locator("#launchInfo")).toContainText("launch sent", { timeout: 30_000 });
+  const bundle = await page.locator("#bundleHash").textContent();
+  expect(bundle).toMatch(/^[0-9a-f]{64}$/);
+  // The blobs went to the store: the module and the bundle manifest read back by hash.
+  const moduleHash = sha256(new Uint8Array(readFileSync(wasmPath)));
+  const mod = await request.get(`/blob/${moduleHash}`);
+  expect(mod.status()).toBe(200);
+  expect((await mod.body()).length).toBe(readFileSync(wasmPath).length);
+  const manifest = await request.get(`/blob/${bundle}`);
+  expect(manifest.status()).toBe(200);
+  const files = (await manifest.json()) as { version: number; files: Record<string, unknown> };
+  expect(files.version).toBe(1);
+  expect(Object.keys(files.files).sort()).toEqual(["/manifest.json", "/program.wasm"]);
+  // And the control plane answered the launch, one way or the other.
+  await expect(page.locator("#launchInfo")).toContainText(/answered|queued as|running as/, {
+    timeout: 30_000,
+  });
+  console.log(`[editor.e2e] ${await page.locator("#launchInfo").textContent()}`);
+  // Params that are not an object never leave the page.
+  await page.locator("#programParams").fill("[1, 2]");
+  await page.click("#launch");
+  await expect(page.locator("#launchInfo")).toContainText("params must be a JSON object");
+});
