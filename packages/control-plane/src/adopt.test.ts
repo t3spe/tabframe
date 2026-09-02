@@ -55,6 +55,7 @@ describe("adopt from snapshot on /run", () => {
       bundle: H("b"),
       module: H("d"),
       manifest: { name: "demo", view: "tiles", persist: false, defaultParams: {} },
+      files: {},
       addedAt: 1,
     });
     old.config.defaultLoop = { bundle: H("b"), params: {} };

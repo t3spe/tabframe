@@ -151,6 +151,8 @@ export interface ProgramRecord {
   bundle: string;
   module: string;
   manifest: ProgramManifest;
+  /** The bundle's own files (design §5.1): the module, the manifest, and anything under `/in/`. */
+  files: FsManifest["files"];
   addedAt: number;
 }
 
@@ -179,6 +181,8 @@ export interface LedgerConfig {
   /** Compute budget per execution in milliseconds of task time. */
   computeMsCap?: number;
   taskLimits?: TaskLimits;
+  /** Cap on the total size of an execution's filesystem (design §5.5). */
+  fsBytesCap?: number;
   /** Deadline floor and multiplier (design §6.4). */
   deadlineFloorMs?: number;
   deadlineFactor?: number;
@@ -187,7 +191,10 @@ export interface LedgerConfig {
 export interface Ledger {
   meta: Meta;
   config: Required<
-    Pick<LedgerConfig, "computeMsCap" | "taskLimits" | "deadlineFloorMs" | "deadlineFactor">
+    Pick<
+      LedgerConfig,
+      "computeMsCap" | "taskLimits" | "deadlineFloorMs" | "deadlineFactor" | "fsBytesCap"
+    >
   > & {
     defaultLoop: { bundle: string; params: Record<string, unknown> } | null;
   };
@@ -230,6 +237,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       defaultLoop: config.defaultLoop ?? null,
       computeMsCap: config.computeMsCap ?? 60 * 60 * 1000,
       taskLimits: config.taskLimits ?? DEFAULT_TASK_LIMITS,
+      fsBytesCap: config.fsBytesCap ?? 256 * 1024 * 1024,
       deadlineFloorMs: config.deadlineFloorMs ?? 2_000,
       deadlineFactor: config.deadlineFactor ?? 3,
     },

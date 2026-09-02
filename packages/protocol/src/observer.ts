@@ -171,6 +171,14 @@ export const executionDone = z.object({
   root: hash.nullable(),
   followUp: params.nullable(),
 });
+/** Something an operator should see that did not stop the execution (design §5.4). */
+export const executionWarning = z.object({
+  t: z.literal("executionWarning"),
+  ...event,
+  executionId,
+  code: z.enum(["expired-root"]),
+  message: z.string().max(1024),
+});
 export const executionFailed = z.object({
   t: z.literal("executionFailed"),
   ...event,
@@ -269,6 +277,7 @@ export const controlPlaneToObserver = z.discriminatedUnion("t", [
   stageDone,
   executionDone,
   executionFailed,
+  executionWarning,
   budget,
   taskAssigned,
   taskDone,

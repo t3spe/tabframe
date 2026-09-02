@@ -28,9 +28,10 @@ export function addProgram(
   bundle: string,
   module: string,
   manifest: ProgramManifest,
+  files: FsManifest["files"],
   now: number,
 ): Effect[] {
-  ledger.programs.set(bundle, { bundle, module, manifest, addedAt: now });
+  ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
   return broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
 }
 
@@ -49,7 +50,9 @@ export function enqueue(
 ): { effects: Effect[]; executionId: string | null; error?: string } {
   const program = ledger.programs.get(req.bundle);
   if (!program) return { effects: [], executionId: null, error: "unknown program" };
-  const inherited = resolveInherit(ledger, req);
+  // A `persist` program inherits the latest finished run of itself unless told otherwise (D5).
+  const inherit = req.inherit ?? (program.manifest.persist ? "latest" : null);
+  const inherited = resolveInherit(ledger, { ...req, inherit });
   if (req.inherit && !inherited)
     return { effects: [], executionId: null, error: "nothing to inherit" };
   const executionId = `e${++ledger.meta.executionCounter}`;
@@ -68,8 +71,10 @@ export function enqueue(
     canvas: null,
     stageTaskIds: [],
     planTaskId: null,
-    root: inherited?.root ?? null,
-    files: inherited ? { ...inherited.files } : {},
+    // The filesystem starts from the bundle's own files, overlaid on whatever it inherits, so a
+    // relaunched bundle's inputs and module always win over stale copies (design §5.4).
+    root: inherited ? null : program.bundle,
+    files: { ...(inherited?.files ?? {}), ...program.files },
     computeSamples: [],
     computeMsUsed: 0,
     computeMsCap: ledger.config.computeMsCap,
@@ -122,9 +127,59 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   exec.startedAt = now;
   ledger.running = exec.executionId;
   const effects = broadcast(ledger, { t: "executionStarted", execution: executionView(exec) });
+  const inheritedRoot = exec.inheritedFrom
+    ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
+    : null;
+  if (inheritedRoot) {
+    // Blobs expire (a year, §5.4). Check the inherited root is still there before planning;
+    // the plan task waits for the answer.
+    effects.push({
+      kind: "fetchBlob",
+      hash: inheritedRoot,
+      purpose: { type: "inheritRoot", executionId: exec.executionId },
+    });
+    return effects;
+  }
   effects.push(...createPlanTask(ledger, exec, 0, now));
   effects.push(...fill(ledger, now));
   return effects;
+}
+
+/**
+ * The answer about an inherited root (design §5.4). Present: merge the filesystems and store the
+ * merged manifest, which becomes this execution's initial root. Gone: say so and start from the
+ * bundle alone — a warning, not a failure, because the program can still run.
+ */
+export function onInheritRoot(
+  ledger: Ledger,
+  executionId: string,
+  bytes: Uint8Array | null,
+  now: number,
+): Effect[] {
+  const exec = ledger.executions.get(executionId);
+  if (!exec || exec.status !== "running" || exec.root !== null) return [];
+  const program = ledger.programs.get(exec.bundle);
+  if (bytes === null) {
+    exec.files = { ...(program?.files ?? {}) };
+    exec.root = exec.bundle;
+    const effects = broadcast(ledger, {
+      t: "executionWarning",
+      executionId,
+      code: "expired-root",
+      message: `the filesystem inherited from ${exec.inheritedFrom} is gone; starting from the bundle`,
+    });
+    effects.push(...createPlanTask(ledger, exec, 0, now));
+    effects.push(...fill(ledger, now));
+    return effects;
+  }
+  const manifest: FsManifest = { version: 1, files: exec.files };
+  return [
+    {
+      kind: "putBlob",
+      bytes: encoder.encode(canonicalStringify(manifest)),
+      purpose: { type: "manifest", executionId, stage: -1 },
+    },
+  ];
 }
 
 /** The planner runs on a core like any task (D6); its input is frozen here. */
@@ -296,6 +351,15 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
       files[w.path] = { hash: w.hash, size: w.size };
     }
   }
+  const bytes = Object.values(files).reduce((n, f) => n + f.size, 0);
+  if (bytes > ledger.config.fsBytesCap) {
+    return failExecution(
+      ledger,
+      exec,
+      `filesystem is ${bytes} bytes, cap is ${ledger.config.fsBytesCap}`,
+      now,
+    );
+  }
   const manifest: FsManifest = { version: 1, files };
   return [
     {
@@ -315,7 +379,14 @@ export function onManifestStored(
   now: number,
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
-  if (!exec || exec.status !== "running" || exec.stage !== stage) return [];
+  if (!exec || exec.status !== "running") return [];
+  if (stage === -1) {
+    // The initial filesystem of an execution that inherited one: plan can start now.
+    if (exec.root !== null) return [];
+    exec.root = hash;
+    return [...createPlanTask(ledger, exec, 0, now), ...fill(ledger, now)];
+  }
+  if (exec.stage !== stage) return [];
   const files: FsManifest["files"] = { ...exec.files };
   for (const id of exec.stageTaskIds) {
     const task = ledger.tasks.get(id);

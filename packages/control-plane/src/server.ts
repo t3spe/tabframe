@@ -142,7 +142,13 @@ export async function createControlPlane(
       target.config.defaultLoop = { bundle: loop.bundle, params: loop.manifest.defaultParams };
     }
     for (const p of seeded) {
-      dispatch({ kind: "programAdded", bundle: p.bundle, module: p.module, manifest: p.manifest });
+      dispatch({
+        kind: "programAdded",
+        bundle: p.bundle,
+        module: p.module,
+        manifest: p.manifest,
+        files: p.files,
+      });
     }
     log("seed", {
       programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
