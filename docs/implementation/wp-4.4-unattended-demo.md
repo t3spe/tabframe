@@ -53,6 +53,29 @@ the background, so the browser tests carry no AWS SDK.
   sixteen connections a MicroVM endpoint allows (WP4.5); the script spawns six, and says why on
   the page's own hint.
 
+- **The redundancy toggle's counter never moved.** A twin that agreed *after* a task was done was
+  counted as verified; the pair that settles a task together under redundancy — the toggle's own
+  case — was not. The core now counts and announces that agreement (the plan task's too).
+- **Word count's bars lasted one tick.** A person's launch ended and the loop's next frame took the
+  stage at once — first from `ensureDefaultLoop`, then, once that was held, from the follow-up the
+  previous loop frame had left in the queue. The loop's pause now holds new launches *and* queued
+  continuations for `HUMAN_RESULT_HOLD_MS` (twenty seconds) after a person's execution ends, the
+  tick starts a held continuation when the pause is over, and the snapshot shows the execution that
+  ended last when nothing runs, so a resubscribing dashboard (or a visitor arriving during the hold)
+  sees the result rather than "idle".
+- **Every rotation terminated every core.** The link timeout measured an adopted core's silence
+  from its launch, and adoption clears the links; the successor's first tick retired the fleet and
+  launched it again (`mise run health -- --cores` showed three six-second-old cores after each
+  rotation). Adoption now stamps the grace from the moment of adoption.
+- **A CI runner's host failure took a frame down.** Ten workers on the two-vCPU runner; one
+  instantiation failed with `WebAssembly.Instance(): Out of memory`, the node reported a program
+  error, and the execution failed — the money shot stalled at 215 and 315 of 640 that way. A host
+  that cannot instantiate the module now gives the task back (released), like a deadline kill.
+- **Assertions that raced the machine.** The rotating banner's countdown is under two seconds, so
+  the beat collects the banners it sees while the generation advances rather than asserting one at
+  an instant; word count is followed through one logged poll; the frozen victims are named and
+  watched out of the node table (a frozen core's MicroVM is replaced, so the count says nothing).
+
 ## Results
 
 _Filled by the runs below._
