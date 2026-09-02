@@ -1,0 +1,11 @@
+{
+  "name": "@tabframe/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The host page: dashboard, controls, node spawner, editor",
+  "dependencies": {
+    "@tabframe/node": "workspace:*",
+    "@tabframe/protocol": "workspace:*"
+  }
+}

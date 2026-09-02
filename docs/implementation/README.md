@@ -12,3 +12,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.4 | [wp-0.4-control-plane.md](wp-0.4-control-plane.md) | 2026-09-01 | Process: two listeners, sockets → core, hooks, local store, session emulation |
 | WP0.12 | [wp-0.12-ci.md](wp-0.12-ci.md) | 2026-09-01 | GitHub Actions: lint, unit, browser tests on every push; nightly simulation; no AWS in CI |
 | WP0.5 | [wp-0.5-node.md](wp-0.5-node.md) | 2026-09-01 | Orchestrator: session, hello, heartbeat, reconnect with backoff and rotation delay; web and Node platforms |
+| WP0.6 | [wp-0.6-web.md](wp-0.6-web.md) | 2026-09-01 | Host page: session states, observer client, node table, local nodes, controls; Playwright acceptance |

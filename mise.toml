@@ -21,7 +21,11 @@ run = "node packages/infra/scripts/whoami.ts"
 
 [tasks.lint]
 description = "Biome lint and format check, then a TypeScript type check"
-run = ["bunx biome check .", "bunx tsc -p tsconfig.json --noEmit"]
+run = [
+  "bunx biome check .",
+  "bunx tsc -p tsconfig.json --noEmit",
+  "bunx tsc -p packages/web/tsconfig.json --noEmit",
+]
 
 [tasks.test]
 description = "Unit and integration tests, then browser tests"
@@ -49,8 +53,8 @@ description = "Compile the AssemblyScript demo programs"
 run = "node packages/sdk-as/scripts/build-programs.ts"
 
 [tasks."build:web"]
-description = "Bundle the browser entry points"
-run = "bun build packages/web/src/host.ts packages/web/src/node.ts packages/web/src/sandbox.ts packages/web/src/editor.ts --target=browser --outdir packages/web/dist"
+description = "Bundle the browser entry points and copy static files (--watch for the dev loop)"
+run = "bun packages/web/scripts/build.ts"
 
 [tasks."build:image"]
 description = "Bundle the control-plane process for the MicroVM image"
