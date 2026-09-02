@@ -119,7 +119,7 @@ export function harness(config: Partial<LedgerConfig> = {}, gen = 3): Harness {
         taskId,
         attempt,
         output,
-        outputSize: 16,
+        outputSize: 256, // 8×8 RGBA, what renderSpec places
         writes: [],
         log: null,
         computeMs: 100,

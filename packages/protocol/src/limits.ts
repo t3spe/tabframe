@@ -16,8 +16,11 @@ export const LIMITS = {
   goneAfterMs: 4_000,
   observerPingMs: 2_000,
   maxInFlight: 2,
-  /** Rate limits, messages per second per connection. */
-  nodeMessagesPerSecond: 20,
+  /**
+   * Rate limits, messages per second per connection. A node sends a presign and a result per
+   * task, and a tile takes a few milliseconds, so an honest node reaches hundreds per second.
+   */
+  nodeMessagesPerSecond: 1_000,
   observerMessagesPerSecond: 5,
   /** Results and uploads (design §5.5, §8.4). */
   maxWriteFiles: 256,

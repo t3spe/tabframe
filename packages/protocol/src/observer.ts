@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { LIMITS } from "./limits.ts";
 import { envelope, hash, health, millis, nodeId, nodeView, seq } from "./shared.ts";
-import { counters, executionView, params, place, queueEntry, taskView } from "./task.ts";
+import { executionView, params, place, queueEntry, taskView } from "./task.ts";
 
 const executionId = z.string().min(1).max(64);
 const taskId = z.string().min(1).max(64);
@@ -77,6 +77,16 @@ export const machineView = z.object({
   uptimeMs: millis,
 });
 
+/** A program the machine can launch (design §5.1); the seeded demos and every upload since. */
+export const programView = z.object({
+  bundle: hash,
+  name: z.string().min(1).max(64),
+  view: z.enum(["tiles", "bars", "text"]),
+  description: z.string().max(512).nullable(),
+  defaultParams: params,
+  addedAt: millis,
+});
+
 export const snapshot = z.object({
   t: z.literal("snapshot"),
   ...envelope,
@@ -85,6 +95,7 @@ export const snapshot = z.object({
   pages: z.number().int().min(1),
   /** Present on page 0 only. */
   nodes: z.array(nodeView).optional(),
+  programs: z.array(programView).optional(),
   execution: executionView.nullable().optional(),
   queue: z.array(queueEntry).optional(),
   machine: machineView.optional(),
@@ -275,6 +286,7 @@ export const controlPlaneToObserver = z.discriminatedUnion("t", [
 export type Subscribe = z.infer<typeof subscribe>;
 export type Ping = z.infer<typeof ping>;
 export type Snapshot = z.infer<typeof snapshot>;
+export type ProgramView = z.infer<typeof programView>;
 export type Pong = z.infer<typeof pong>;
 export type ErrorMessage = z.infer<typeof error>;
 export type MachineView = z.infer<typeof machineView>;

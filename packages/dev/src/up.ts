@@ -66,13 +66,18 @@ function startCore(name: string): void {
   });
 }
 
-// 1. Build the web bundle once (watch mode keeps rebuilding in the background).
-await new Promise<void>((resolve, reject) => {
-  const b = spawn("bun", ["packages/web/scripts/build.ts"], { cwd: root, stdio: "inherit" });
-  b.on("exit", (code) =>
-    code === 0 ? resolve() : reject(new Error(`web build failed (${code})`)),
-  );
-});
+// 1. Compile the demo programs and build the web bundle once (watch mode keeps rebuilding the
+//    bundle in the background). The control plane seeds programs/<name>/dist at boot.
+function buildStep(name: string, cmd: string, args: string[]): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const b = spawn(cmd, args, { cwd: root, stdio: "inherit" });
+    b.on("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`${name} failed (${code})`)),
+    );
+  });
+}
+await buildStep("build:programs", "node", ["packages/sdk-as/scripts/build-programs.ts"]);
+await buildStep("build:web", "bun", ["packages/web/scripts/build.ts"]);
 if (watch) run("web", "bun", ["packages/web/scripts/build.ts", "--watch"], {});
 
 // 2. Control plane, local mode, serving the bundle.

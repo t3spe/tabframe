@@ -10,6 +10,7 @@ import {
   nodeToControlPlane,
   observerToControlPlane,
   PROTOCOL_VERSION,
+  type ProgramView,
   type Snapshot,
 } from "@tabframe/protocol";
 import type { Effect, Event } from "./events.ts";
@@ -32,6 +33,7 @@ import {
   type Ledger,
   type NodeRecord,
   nodeView,
+  type ProgramRecord,
   queueEntry,
   taskView,
 } from "./ledger.ts";
@@ -373,6 +375,17 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
 }
 
 /** Page 0 carries the cluster; every page carries task rows (design §8.3). */
+export function programView(p: ProgramRecord): ProgramView {
+  return {
+    bundle: p.bundle,
+    name: p.manifest.name,
+    view: p.manifest.view,
+    description: p.manifest.description ?? null,
+    defaultParams: p.manifest.defaultParams,
+    addedAt: p.addedAt,
+  };
+}
+
 export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   const tasks = exec ? executionTasks(ledger, exec.executionId).map(taskView) : [];
@@ -406,6 +419,7 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
           ? {
               ...base,
               nodes: [...ledger.nodes.values()].map(nodeView),
+              programs: [...ledger.programs.values()].map(programView),
               execution: exec ? executionView(exec) : null,
               queue: ledger.queue
                 .map((id) => ledger.executions.get(id))

@@ -38,6 +38,7 @@ export function onResult(
   const effects: Effect[] = [];
   const task = ledger.tasks.get(msg.taskId);
   const attempt = task?.attempts.find((a) => a.nodeId === node.nodeId && a.outcome === "running");
+  if (task) msg = checkTileSize(ledger, task, msg);
   // Bookkeeping on the node regardless of what the task says.
   node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   if (msg.error === RELEASED) {
@@ -118,6 +119,21 @@ export function onResult(
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };
+}
+
+/** A tile is RGBA of its placed size (design §5.2); anything else is a program fault. */
+function checkTileSize(ledger: Ledger, task: TaskRecord, msg: Result): Result {
+  if (msg.error !== undefined || !task.place) return msg;
+  const exec = ledger.executions.get(task.executionId);
+  if (!exec || exec.manifest.view !== "tiles") return msg;
+  const expected = task.place.w * task.place.h * 4;
+  if (msg.outputSize === expected) return msg;
+  const { output: _o, outputSize: _s, ...rest } = msg;
+  return {
+    ...rest,
+    writes: [],
+    error: `tile output is ${msg.outputSize ?? 0} bytes, expected ${expected} (RGBA ${task.place.w}×${task.place.h})`,
+  };
 }
 
 /** With no attempt left running and nothing decided this round, the task goes back to the front. */
