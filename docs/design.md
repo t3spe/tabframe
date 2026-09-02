@@ -707,4 +707,9 @@ Dated deviations discovered while building, recorded before the code landed (pla
   a fetch of the inherited root before planning, and its absence raises a new `executionWarning`
   observer event with code `expired-root` (§5.4, §8.3). The per-execution filesystem cap
   (`fsBytesCap`, 256 MB) is enforced at fold (§5.5).
+- **2026-09-02 (WP2.3).** A launch naming an unknown bundle produces a `resolveBundle` effect; the
+  process fetches and validates the bundle (paths under `/in/`, both required files, size caps,
+  the module through `validateModuleBytes`) and answers with `programAdded` plus the launch, or
+  `bundleRejected` addressed to the asking observer (§5.2). Budgets: `taskCap` 20 000 tasks per
+  execution including plan tasks, `launchesPerMinute` 6 per observer covering follow-ups (§5.5).
 
