@@ -1,0 +1,14 @@
+{
+  "name": "@tabframe/sdk-as",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "AssemblyScript SDK for Tabframe programs: the ABI byte formats, params, stage builder, filesystem imports; plus the program build, goldens, and Node host scripts",
+  "ascMain": "assembly/index.ts",
+  "exports": {
+    "./host": "./scripts/host.ts"
+  },
+  "dependencies": {
+    "@tabframe/protocol": "workspace:*"
+  }
+}

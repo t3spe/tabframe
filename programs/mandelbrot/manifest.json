@@ -1,0 +1,7 @@
+{
+  "name": "mandelbrot",
+  "view": "tiles",
+  "persist": false,
+  "defaultParams": { "preset": 0, "palette": "ocean" },
+  "description": "Distributed Mandelbrot render: 640 tiles of 64×64 per 2048×1280 frame, smooth coloring, presets that advance every frame."
+}
