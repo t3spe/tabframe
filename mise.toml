@@ -25,6 +25,7 @@ run = [
   "bunx biome check .",
   "bunx tsc -p tsconfig.json --noEmit",
   "bunx tsc -p packages/web/tsconfig.json --noEmit",
+  "bunx tsc -p packages/infra/tsconfig.json --noEmit",
 ]
 
 [tasks.test]

@@ -15,3 +15,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.6 | [wp-0.6-web.md](wp-0.6-web.md) | 2026-09-01 | Host page: session states, observer client, node table, local nodes, controls; Playwright acceptance |
 | WP0.7 | [wp-0.7-dev.md](wp-0.7-dev.md) | 2026-09-01 | `mise run dev`: control plane, two local cores, web watch, one-command teardown |
 | WP0.9 | [wp-0.9-fleet-skeleton.md](wp-0.9-fleet-skeleton.md) | 2026-09-01 | Session and rotate v0 functions, pointer, operator scripts, fakes and SDK-mock tests |
+| WP0.8 | [wp-0.8-infra-skeleton.md](wp-0.8-infra-skeleton.md) | 2026-09-01 | CDK stacks Core, Image, Fleet; image staging dir with placeholder process; base-image resolver; synth tests |
