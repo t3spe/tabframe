@@ -1,0 +1,5 @@
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageThreshold = { lines = 0.85 }
+coveragePathIgnorePatterns = ["packages/web/**", "**/dist/**", "**/sim/**"]

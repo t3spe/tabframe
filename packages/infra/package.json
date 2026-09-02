@@ -1,0 +1,10 @@
+{
+  "name": "@tabframe/infra",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "CDK app and operator scripts (whoami, verify-m0, image publish)",
+  "dependencies": {
+    "@aws-sdk/client-sts": "3.1124.0"
+  }
+}
