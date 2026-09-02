@@ -701,4 +701,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   to five minutes, reset by a success — so a broken program cannot spin the machine (§6.8). Ended
   executions beyond the most recent 32 are pruned with their tasks on every tick, keeping the
   ledger and its snapshots bounded (§9.4).
+- **2026-09-02 (WP2.1).** A bundle manifest and a filesystem manifest are the same shape, so an
+  execution that inherits nothing uses the **bundle hash itself** as its first root (§5.4). The
+  bundle's files win over an inherited filesystem on conflicting paths. The expired-root check is
+  a fetch of the inherited root before planning, and its absence raises a new `executionWarning`
+  observer event with code `expired-root` (§5.4, §8.3). The per-execution filesystem cap
+  (`fsBytesCap`, 256 MB) is enforced at fold (§5.5).
 

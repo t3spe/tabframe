@@ -13,6 +13,7 @@ export {
   LOOP_BACKOFF_MAX_MS,
   LOOP_BACKOFF_MIN_MS,
   maybeStart,
+  onInheritRoot,
   pruneExecutions,
 } from "./executions.ts";
 export {

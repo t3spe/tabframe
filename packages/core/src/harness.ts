@@ -1,5 +1,6 @@
 // Test harness for the core: a ledger with a program, virtual time, and helpers that speak the
 // wire the way nodes and observers do. Used by the unit tests and the churn simulation.
+import type { FsManifest } from "@tabframe/protocol";
 import { encodeStageSpec, PROTOCOL_VERSION, type StageSpec } from "@tabframe/protocol";
 import { apply } from "./apply.ts";
 import type { Effect, Event } from "./events.ts";
@@ -8,6 +9,12 @@ import { createLedger, type Ledger, type LedgerConfig } from "./ledger.ts";
 
 export const H = (c: string) => c.repeat(64);
 export const BUNDLE = H("b");
+/** What a seeded bundle looks like: the module, the manifest, one input. */
+export const defaultBundleFiles: FsManifest["files"] = {
+  "/program.wasm": { hash: H("d"), size: 100 },
+  "/manifest.json": { hash: H("c"), size: 50 },
+  "/in/data.txt": { hash: H("a"), size: 10 },
+};
 export const MODULE = H("d");
 
 export interface Harness {
@@ -23,7 +30,11 @@ export interface Harness {
   hello(connId: string, hostId?: string, kind?: "tab" | "core"): Effect[];
   subscribe(connId: string): Effect[];
   heartbeat(connId: string, visible?: boolean): Effect[];
-  addProgram(view?: "tiles" | "bars" | "text"): Effect[];
+  addProgram(
+    view?: "tiles" | "bars" | "text",
+    persist?: boolean,
+    files?: FsManifest["files"],
+  ): Effect[];
   launch(params?: Record<string, unknown>, human?: boolean): Effect[];
   /** Answer a fetchBlob effect for a plan task with this stage spec. */
   planSpec(effects: Effect[], spec: StageSpec): Effect[];
@@ -89,12 +100,13 @@ export function harness(config: Partial<LedgerConfig> = {}, gen = 3): Harness {
     },
     heartbeat: (connId, visible = true) =>
       h.send(connId, { t: "heartbeat", visible, queue: 0, lastTaskMs: null, tasksDone: 0 }),
-    addProgram: (view = "tiles") =>
+    addProgram: (view = "tiles", persist = false, files = defaultBundleFiles) =>
       h.event({
         kind: "programAdded",
         bundle: BUNDLE,
         module: MODULE,
-        manifest: { name: "demo", view, persist: false, defaultParams: { preset: 0 } },
+        manifest: { name: "demo", view, persist, defaultParams: { preset: 0 } },
+        files,
       }),
     launch: (params = { preset: 0 }, human = true) =>
       h.event({ kind: "launch", bundle: BUNDLE, params, human, inherit: null }),

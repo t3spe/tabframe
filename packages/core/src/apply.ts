@@ -23,6 +23,7 @@ import {
   ensureDefaultLoop,
   executionTasks,
   maybeStart,
+  onInheritRoot,
   onManifestStored,
   onStageSpec,
   pruneExecutions,
@@ -74,7 +75,7 @@ export function apply(
       return tick(ledger, now);
     case "programAdded":
       return [
-        ...addProgram(ledger, event.bundle, event.module, event.manifest, now),
+        ...addProgram(ledger, event.bundle, event.module, event.manifest, event.files ?? {}, now),
         ...ensureDefaultLoop(ledger, now),
       ];
     case "launch":
@@ -92,6 +93,8 @@ export function apply(
           event.bytes,
           now,
         );
+      if (event.purpose.type === "inheritRoot")
+        return onInheritRoot(ledger, event.purpose.executionId, event.bytes, now);
       return [];
     case "blobStored":
       if (event.purpose.type === "manifest")

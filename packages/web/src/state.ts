@@ -343,6 +343,11 @@ export function applyMessage(
       next.programs = new Map(next.programs).set(msg.program, msg.name);
       return note(next, now, "system", `program ${msg.name} added (${msg.program.slice(0, 8)}…)`);
     }
+    case "executionWarning": {
+      // Visible, not fatal (design §5.4): the run continues with whatever it could start from.
+      const next = advance(state, msg.seq);
+      return note(next, now, "execution", `warning: ${msg.message}`);
+    }
     case "controlPlaneRotating": {
       const next = advance(state, msg.seq);
       next.rotation = { next: msg.next, reconnectAfterMs: msg.reconnectAfterMs, at: now };

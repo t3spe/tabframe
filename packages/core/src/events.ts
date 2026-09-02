@@ -1,6 +1,7 @@
 import type {
   ControlPlaneToNode,
   ControlPlaneToObserver,
+  FsManifest,
   ProgramManifest,
 } from "@tabframe/protocol";
 import type { ConnRole } from "./ledger.ts";
@@ -8,7 +9,10 @@ import type { ConnRole } from "./ledger.ts";
 /** Why the process fetched or stored a blob on the core's behalf. */
 export type BlobPurpose =
   | { type: "stageSpec"; executionId: string; taskId: string }
-  | { type: "manifest"; executionId: string; stage: number };
+  /** `stage` is -1 for an execution's initial filesystem (bundle plus what it inherits). */
+  | { type: "manifest"; executionId: string; stage: number }
+  /** Does the root an execution inherits still exist? (design §5.4, expired-root fallback) */
+  | { type: "inheritRoot"; executionId: string };
 
 /** Inbound events. The process turns socket activity, timers, and store I/O into these. */
 export type Event =
@@ -18,7 +22,14 @@ export type Event =
   | { kind: "tick" }
   | { kind: "blobFetched"; hash: string; bytes: Uint8Array | null; purpose: BlobPurpose }
   | { kind: "blobStored"; hash: string; size: number; purpose: BlobPurpose }
-  | { kind: "programAdded"; bundle: string; module: string; manifest: ProgramManifest }
+  | {
+      kind: "programAdded";
+      bundle: string;
+      module: string;
+      manifest: ProgramManifest;
+      /** The bundle's files; an execution's filesystem starts here (design §5.4). */
+      files?: FsManifest["files"];
+    }
   | {
       kind: "launch";
       bundle: string;
