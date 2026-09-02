@@ -32,7 +32,7 @@ Plus `bunfig.toml` now writes an `lcov` report to `coverage/` alongside the text
 - mise missing-file behavior measured, not assumed: in a directory with no parent configuration, `mise env` with `_.file = ".env.local"` and no such file exits 0 with no warning and exports the remaining `[env]` entries.
 - `bun test` in the worktree: 3 pass, 0 fail, 100 % lines; `coverage/lcov.info` written.
 - `mise run lint`: Biome and `tsc` clean.
-- **Not verifiable locally:** an Actions run itself. The first push of this branch is the first run; what it confirms is that `jdx/mise-action` installs the pinned mise, that `mise install` succeeds on the runner (including `aws-cli` and `gh` through aqua and `aws-cdk` through the npm backend), that the plain Chromium install has its libraries, and the wall-clock of a cold run.
+- **First Actions run, on the push of this branch:** [run 33590128353](https://github.com/t3spe/tabframe/actions/runs/33590128353) — conclusion `success`; the `lint, unit, browser` job passed every step, and `nightly long churn simulation` was skipped as designed for a push event. That confirms `jdx/mise-action` installs the pinned mise, `mise install` succeeds on the runner (including `aws-cli` and `gh` through aqua and `aws-cdk` through the npm backend), the plain Chromium install has its libraries on `ubuntu-latest`, and the project's tasks run unchanged in CI.
 
 ## Dependencies introduced
 
