@@ -27,3 +27,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP1.8 | [wp-1.8-dashboard-v1.md](wp-1.8-dashboard-v1.md) | 2026-09-02 | Dashboard: verified tiles on the canvas with state overlay, task grid, counters, throughput, controls over the socket, notices, demo mode |
 | WP1.10 | [wp-1.10-deploy-m1.md](wp-1.10-deploy-m1.md) | 2026-09-02 | M1 on AWS: signed-checksum presigns, default-loop backoff, execution pruning, the M1 runbook — 640 of 640 golden tiles from browser tabs through a kill-half |
 | WP2.1 | [wp-2.1-filesystem.md](wp-2.1-filesystem.md) | 2026-09-02 | Execution filesystem: bundle files as the first root, persist inheritance, expired-root warning, per-execution size cap |
+| WP2.3 | [wp-2.3-launch-path.md](wp-2.3-launch-path.md) | 2026-09-02 | Launch path: uploaded bundles resolved and validated by the process, per-execution task budget, per-observer launch rate |

@@ -39,6 +39,8 @@ export interface ObserverRecord {
   connId: string;
   subscribedAt: number;
   lastSeen: number;
+  /** When this observer launched executions, for the per-observer rate limit (design §5.5). */
+  launchedAt: number[];
 }
 
 export type ConnRole = "node" | "observer";
@@ -141,6 +143,8 @@ export interface ExecutionRecord {
   computeSamples: number[];
   computeMsUsed: number;
   computeMsCap: number;
+  /** Tasks created across every stage so far, against `config.taskCap`. */
+  tasksCreated: number;
   followUp: Record<string, unknown> | null;
   inheritedFrom: string | null;
   failure: string | null;
@@ -183,6 +187,10 @@ export interface LedgerConfig {
   taskLimits?: TaskLimits;
   /** Cap on the total size of an execution's filesystem (design §5.5). */
   fsBytesCap?: number;
+  /** Cap on the tasks one execution may create across all its stages (design §5.5). */
+  taskCap?: number;
+  /** Launches one observer may start per minute (design §5.5). */
+  launchesPerMinute?: number;
   /** Deadline floor and multiplier (design §6.4). */
   deadlineFloorMs?: number;
   deadlineFactor?: number;
@@ -193,7 +201,13 @@ export interface Ledger {
   config: Required<
     Pick<
       LedgerConfig,
-      "computeMsCap" | "taskLimits" | "deadlineFloorMs" | "deadlineFactor" | "fsBytesCap"
+      | "computeMsCap"
+      | "taskLimits"
+      | "deadlineFloorMs"
+      | "deadlineFactor"
+      | "fsBytesCap"
+      | "taskCap"
+      | "launchesPerMinute"
     >
   > & {
     defaultLoop: { bundle: string; params: Record<string, unknown> } | null;
@@ -238,6 +252,8 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       computeMsCap: config.computeMsCap ?? 60 * 60 * 1000,
       taskLimits: config.taskLimits ?? DEFAULT_TASK_LIMITS,
       fsBytesCap: config.fsBytesCap ?? 256 * 1024 * 1024,
+      taskCap: config.taskCap ?? 20_000,
+      launchesPerMinute: config.launchesPerMinute ?? 6,
       deadlineFloorMs: config.deadlineFloorMs ?? 2_000,
       deadlineFactor: config.deadlineFactor ?? 3,
     },

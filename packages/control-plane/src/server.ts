@@ -6,6 +6,7 @@ import {
   apply,
   type Clock,
   createLedger,
+  DEFAULT_TASK_LIMITS,
   type Effect,
   type Event,
   type Ledger,
@@ -23,6 +24,7 @@ import {
   type StoreDriver,
 } from "@tabframe/store";
 import { type WebSocket, WebSocketServer } from "ws";
+import { resolveBundle } from "./bundles.ts";
 import type { Config, Role } from "./config.ts";
 import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
 import { log } from "./log.ts";
@@ -209,6 +211,31 @@ export async function createControlPlane(
               dispatch({ kind: "blobFetched", hash: e.hash, bytes: null, purpose: e.purpose });
             });
           break;
+        case "resolveBundle": {
+          const { bundle, connId, params, inherit } = e;
+          void resolveBundle(store, bundle, DEFAULT_TASK_LIMITS.memoryPagesMax)
+            .then((r) => {
+              if (!r.ok) {
+                log("bundle-rejected", { bundle: bundle.slice(0, 12), reason: r.reason });
+                dispatch({ kind: "bundleRejected", bundle, connId, reason: r.reason });
+                return;
+              }
+              log("bundle-accepted", { bundle: bundle.slice(0, 12), name: r.manifest.name });
+              dispatch({
+                kind: "programAdded",
+                bundle: r.bundle,
+                module: r.module,
+                manifest: r.manifest,
+                files: r.files,
+              });
+              dispatch({ kind: "launch", bundle, params, human: true, inherit, connId });
+            })
+            .catch((err) => {
+              log("bundle-failed", { bundle: bundle.slice(0, 12), error: String(err) });
+              dispatch({ kind: "bundleRejected", bundle, connId, reason: `store error` });
+            });
+          break;
+        }
         case "putBlob":
           void store
             .put(e.bytes)

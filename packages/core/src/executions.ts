@@ -78,6 +78,7 @@ export function enqueue(
     computeSamples: [],
     computeMsUsed: 0,
     computeMsCap: ledger.config.computeMsCap,
+    tasksCreated: 0,
     followUp: null,
     inheritedFrom: inherited?.executionId ?? null,
     failure: null,
@@ -222,6 +223,7 @@ function createPlanTask(
   ledger.tasks.set(taskId, task);
   exec.planTaskId = taskId;
   exec.counters.pending += 1;
+  exec.tasksCreated += 1;
   return [];
 }
 
@@ -284,6 +286,14 @@ export function onStageSpec(
     exec.followUp = spec.next;
     return finishExecution(ledger, exec, now);
   }
+  if (exec.tasksCreated + spec.tasks.length > ledger.config.taskCap) {
+    return failExecution(
+      ledger,
+      exec,
+      `stage ${planTask.stage} would make ${exec.tasksCreated + spec.tasks.length} tasks, cap is ${ledger.config.taskCap}`,
+      now,
+    );
+  }
   const stage = planTask.stage;
   exec.stage = stage;
   exec.stageName = spec.name;
@@ -319,6 +329,7 @@ export function onStageSpec(
     views.push(taskView(task));
   }
   exec.counters.pending += spec.tasks.length;
+  exec.tasksCreated += spec.tasks.length;
   const effects = broadcast(ledger, {
     t: "stageStarted",
     executionId: exec.executionId,
