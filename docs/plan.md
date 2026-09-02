@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0, M1 and M3 tagged; M2 complete and verified on AWS (`docs/m2-verification.md`): an edited program compiles in the page and runs on the cluster, word count matches the goldens exactly, a program fault fails visibly. M3 verified too (`docs/m3-verification.md`): a rotation with a render in flight costs about 8.4 s. M4 (polish, runbook, unattended demo) and M5 (packaging) remain.
+**Where we are (2026-09-02):** M0–M3 tagged and verified on AWS (`docs/m1-verification.md`, `docs/m2-verification.md`, `docs/m3-verification.md`). The endpoint ceiling is explained (WP4.5): 16 concurrent connections per MicroVM, a non-adjustable quota — scaling the client edge is an open decision (WP4.6). In flight: the churn simulation learning to be a fleet (worktree), a one-cent alarm test waiting on billing data (WP4.7). M4 dashboard polish, operations runbook, pacing, and the unattended demo remain; M5 packaging after.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -160,8 +160,11 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 - [ ] **WP4.2 Operations.** `/health` and `/diag` complete; log groups named; runbook `docs/runbook.md` (deploy, rotate, rollback, down, verify); budget confirmed firing on a test threshold.
 - [ ] **WP4.3 Performance and pacing.** Frame pacing about a minute per frame single-node; tile timing; reduce read batching if word count is slow; snapshot size and resume latency.
 - [ ] **WP4.4 Unattended demo.** Playwright runs the whole demo script; simulation long mode in CI nightly.
+- [x] **WP4.5 Endpoint capacity.** Why one client stops at 16 sockets: measured against fresh MicroVMs with one and three tokens, one and three processes, 512 MiB to 6 GB; explained by the non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota; the M0 "250 sockets" record corrected; design §9.7 written. Script: `packages/infra/scripts/socket-ceiling.ts`.
+- [ ] **WP4.6 Scaling the client edge — decision needed.** Thousands of concurrent clients cannot reach a MicroVM endpoint at any size (§9.7). Options: (a) API Gateway WebSocket API as the edge — `PostToConnection` for pushes, a Lambda integration to the control plane's private port for inbound; about $1 per million messages plus connection-minutes; (b) IoT Core over WebSockets — managed connections and lifecycle events, so heartbeats could go, but per-message pricing punishes a chatty protocol; (c) a relay tier of MicroVMs — same image, a `relay` role, but each relay is itself capped at 16 and the control plane's budget caps the tier near 240 clients, so it does not reach thousands; (d) accept the ceiling and state it. Recommended: (a), scoped as a milestone of its own after M5 unless the deadline allows it sooner.
+- [ ] **WP4.7 Alarm test.** A one-cent test budget (`tabframe-alarm-test`) with the same subscriber was created 2026-09-02; AWS Budgets evaluates a few times a day and the account had no billing data yet, so confirmation is pending. Delete the test budget once the email has arrived. Cost Explorer likewise had no data on day two; check it and record the first real number here.
 
-**M4 done when:** the demo script passes unattended three times in a row against AWS.
+**M4 done when:** the demo script passes unattended three times in a row against AWS, and WP4.6 has a decision recorded.
 
 ---
 
@@ -170,11 +173,11 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 **Goal:** submitted.
 
 - [ ] **WP5.1 README** final: what, why, architecture, in and out of scope, run, deploy.
-- [ ] **WP5.2 Rationale doc:** the five required questions, time spent from `docs/timelog.md` stated plainly, the scoping choice owned.
+- [ ] **WP5.2 Rationale doc:** the five required questions, time spent from `docs/timelog.md` stated plainly, the scoping choice owned. **Needs Mircea:** the developer-time column in `docs/timelog.md` is still `_to fill_`; only he has those numbers.
 - [ ] **WP5.3 Video:** record the demo script with narration, about five minutes.
-- [ ] **WP5.4 Transcripts** into `docs/transcripts/` — export mechanism to be decided then.
+- [ ] **WP5.4 Transcripts** into `docs/transcripts/` — export mechanism to be decided then. **Inventory (2026-09-02):** the build so far is one Claude Code session, id `2f9f4ebc-d551-4417-ad7d-e749c7e0ea1a` (transcript at `~/.claude/projects/-home-mircea-homework/<id>.jsonl`), plus ten forked worker sessions whose JSONL transcripts were copied to `~/homework/tabframe-transcripts/` outside the repo. Every transcript contains the account id, MicroVM endpoints, and tokens in tool output, so the export needs a scrub pass (the `mask` helpers in `packages/infra/scripts/mask.ts` and `packages/fleet/scripts/_deps.ts` are the patterns to reuse) before anything lands in the repo.
 - [ ] **WP5.5 Pre-public checks:** secrets scan of the full history, the AGPL-3.0 license file, corpus attribution, `.env.local` absent, no account id or address anywhere, CDK context excluded.
-- [ ] **WP5.6 Public** (gate: Mircea flips the repo), final deploy, submission checklist.
+- [ ] **WP5.6 Public** (gate: **Mircea flips the repo**), final deploy, submission checklist. Before the flip: delete `tabframe-alarm-test` if it is still there, confirm the real budget's notifications, and decide whether the machine stays up (hourly rotation, cores while awake) or goes `down` for the review period.
 
 ---
 
@@ -183,10 +186,11 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 | Risk | Where it bites | Mitigation | Owner WP |
 |---|---|---|---|
 | Endpoint 429 thresholds are strict | heartbeats and fan-out | coalesce events per observer; heartbeat 2 s | WP0.11 → WP1.7 |
+| **Endpoint holds 16 concurrent connections per MicroVM** (non-adjustable quota, measured WP4.5) | the whole client-facing surface: one control plane serves ~15 tabs, and open sockets block the fleet's private-port calls | an edge tier that is not a MicroVM endpoint (API Gateway WebSocket, IoT Core, or relays); the protocol's `Transport` seam already isolates it | WP4.5 → WP4.6 (decision pending) |
 | Frames don't count as idle traffic | control plane suspends mid-demo | observer ping becomes HTTP | WP0.11 → WP0.6 |
 | Sync XHR in workers changes | browser read path | declared-prefetch fallback in the sandbox glue | WP1.4 |
 | Token-mint throttling | wake with many visitors | one shared token per control plane, cached | WP0.9 |
-| Lambda concurrency default of 10, endpoint ~50 req/s | session function and socket upgrades during a rotation reconnect storm | drain-time jitter window (30 ms per client, ≥ 2 s) plus the shared cached token; measured in M0 | WP3.1 → WP3.5 |
+| Lambda concurrency default of 10, endpoint ~50 req/s | session function and socket upgrades during a rotation reconnect storm | drain-time jitter window (30 ms per client, ≥ 2 s) plus the shared cached token; measured in M0; the concurrency increase to 1000 was granted 2026-09-02 | WP3.1 → WP3.5 (measured: peak 3 concurrent, 0 throttles) |
 | Rotation coincides with a live demo | reviewer confusion | banner with countdown; explained in the video | WP4.1 |
 | Word count reduce is slow | 150 reads per reducer | fewer, larger map chunks; batch reads | WP4.3 |
 | AssemblyScript compiler size (23 MB unminified) | editor first open | minify, split binaryen into its own asset, lazy load in a worker with progress | WP2.4 |

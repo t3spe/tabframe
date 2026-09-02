@@ -410,7 +410,7 @@ Every socket message is one JSON text frame with a type field and the generation
 | stage spec | a blob | 1 MB, 4096 tasks |
 | module | a blob | 8 MB |
 
-Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting node is a new node; a reconnecting observer resubscribes; tokens are refreshed before expiry. **Rotation jitter:** the rotating-reconnect close carries a delay the control plane drew uniformly from a window sized to its client count — 30 ms per connected client, at least 2 s — and each client waits that long before fetching a session. A rotation with 300 clients therefore spreads its session calls and socket upgrades over roughly 9 s, about 33 per second, under the endpoint's measured limit of about 50 requests per second and well under the account's Lambda concurrency default of 10 concurrent invocations. Protocol version mismatch closes with a dedicated code and the page reloads itself once. Rate limits: roughly twenty messages a second per node, five per observer; one launch a minute and one control a second per observer. Caps: 256 nodes, 64 observers, no per-IP limit. **Close codes:** invalid message, version mismatch, node cap, rate limited, declared gone, rotating-reconnect-now.
+Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting node is a new node; a reconnecting observer resubscribes; tokens are refreshed before expiry. **Rotation jitter:** the rotating-reconnect close carries a delay the control plane drew uniformly from a window sized to its client count — 30 ms per connected client, at least 2 s — and each client waits that long before fetching a session. A rotation with 300 clients would spread its session calls and socket upgrades over roughly 9 s, about 33 per second, under the endpoint's measured limit of about 50 requests per second and well under the account's Lambda concurrency (now 1000; it was 10 when this was written). In practice one control plane never has 300 clients: a MicroVM endpoint holds **16 concurrent connections** (§9.7), so the window is rarely above its two-second floor. Protocol version mismatch closes with a dedicated code and the page reloads itself once. Rate limits: roughly twenty messages a second per node, five per observer; one launch a minute and one control a second per observer. Caps in the ledger: 256 nodes, 64 observers, no per-IP limit — but the ledger's caps are not the binding ones; the endpoint's 16 concurrent connections per MicroVM are (§9.7). **Close codes:** invalid message, version mismatch, node cap, rate limited, declared gone, rotating-reconnect-now.
 
 **Deliberately not carried:** payload bytes, acks, resume tokens, client timestamps, or anything a node could use to learn where another node lives.
 
@@ -436,8 +436,8 @@ Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting nod
 
 - **Fleet functions** (two Lambdas sharing code): `session` on a public URL vends sessions — one shared token per control plane, minted every twenty-five minutes and cached — and triggers a heal when no control plane runs, or serves the off state; `rotate` runs hourly on EventBridge with reserved concurrency 1, is idempotent (it checks the pointer and the running MicroVMs before launching anything), and is the sole writer of the pointer.
 - **Pointer:** one SSM parameter naming the active control-plane MicroVM and its generation.
-- **Control plane:** 1 GB / 0.5 vCPU, `ALL_INGRESS` + `INTERNET_EGRESS`, idle policy suspend after 15 min with auto-resume, max duration 8 h. Public port 8080 carries sockets only; private port 8081 carries hooks and the internal endpoints; browser tokens are scoped to 8080, fleet tokens to all ports.
-- **Cloud cores:** two × 0.5 GB / 0.25 vCPU (burst to 1 vCPU), `NO_INGRESS`, no idle policy, max duration 4 h.
+- **Control plane:** 1 GB (the API takes only a minimum memory; the vCPU class is the platform's, and for every size we can launch it is the 2-vCPU class, §9.7), `ALL_INGRESS` + `INTERNET_EGRESS`, idle policy suspend after 15 min with auto-resume, max duration 8 h. Public port 8080 carries sockets only; private port 8081 carries hooks and the internal endpoints; browser tokens are scoped to 8080, fleet tokens to all ports.
+- **Cloud cores:** two × 0.5 GB, `NO_INGRESS`, no idle policy, max duration 4 h.
 - **Store and static:** S3 behind one CloudFront distribution.
 
 ### 9.3 One image, two roles
@@ -462,6 +462,28 @@ Exactly one control plane is **active**, stamped with a generation. Others are b
 **Snapshots:** the control plane writes its ledger to S3 every 5 s when it has changed, gzipped, and in the suspend and terminate hooks, keyed by generation and time, kept one day. Core MicroVM ids are part of the ledger, so cores follow the snapshot through a handover.
 
 **Off:** `mise run down` disables the hourly schedule, terminates every MicroVM, and writes *off* to the pointer. The session function returns `{off: true}` and heals nothing; the page shows an off screen. `mise run up` clears the state and launches a control plane.
+
+### 9.7 Capacity: what one MicroVM endpoint can hold
+
+Measured on 2026-09-02 (`docs/m3-verification.md`, `packages/infra/scripts/socket-ceiling.ts`) and
+confirmed in the account's Service Quotas: a MicroVM endpoint accepts **16 concurrent connections**
+and answers 429 to the seventeenth. The quota is *Concurrent connections per 2 vCPU MicroVM*, it is
+not adjustable, and it scales only with the vCPU class (8 / 16 / 32 / 64 / 128 for 1 / 2 / 4 / 8 /
+16 vCPU). The class cannot be chosen: `RunMicrovm` takes a minimum memory and nothing else, and every
+size we launched — 512 MiB to 6 GB — behaved as the 2-vCPU class. The ceiling is per MicroVM, not per
+token, client process, or source: three tokens, three processes, and a 6 GB VM all stopped at 16.
+Open WebSockets count against it, so a control plane with 16 clients cannot even be reached by the
+fleet on its private port — which is why `/handover` falls back to the snapshot (§9.4).
+
+Consequences: one control plane serves at most about fifteen browser tabs plus the fleet's own
+calls; the "256 nodes" cap in the ledger is a property of the scheduler, not of the deployment; and
+"thousands of concurrent clients" cannot be reached through a MicroVM endpoint at any size. Reaching
+them needs an edge that terminates client connections somewhere else and speaks to the control plane
+over a few connections — an API Gateway WebSocket API (`PostToConnection` for pushes, a Lambda
+integration for inbound), IoT Core, or a relay tier of MicroVMs (each relay is itself capped at 16
+clients, so a relay tier caps out around 240 before the control plane's own budget is spent). The
+protocol survives any of them unchanged: the core already speaks to connections through a `Transport`
+seam. Which edge, and whether at all, is an open decision recorded in the plan (WP4.6).
 
 ### 9.5 Costs
 
@@ -794,4 +816,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   has no programs": a control plane that adopts a predecessor's ledger still adds programs the
   image ships that the ledger does not have, which is what lets a deploy-as-rotation deliver a new
   program (§5.6, §9.4).
+- **2026-09-02 (WP4.5).** The endpoint ceiling is explained: **16 concurrent connections per
+  MicroVM**, the account's non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota, the same
+  at 512 MiB and 6 GB, per MicroVM rather than per token, process, or source (§9.7). The M0 record's
+  "250 sustained sockets" was a counting error — that script attached its close handlers after the
+  loop and never heartbeated during it, so the sockets it counted as open had already been declared
+  gone; about sixteen were alive. `docs/m0-verification.md` carries the correction. The account's
+  Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
+  historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the
+  options are in §9.7 and the plan's WP4.6.
 

@@ -11,6 +11,7 @@
     "@aws-sdk/client-lambda-microvms": "3.1124.0",
     "@aws-sdk/client-s3": "3.1124.0",
     "@aws-sdk/client-service-quotas": "3.1124.0",
+    "@aws-sdk/client-ssm": "3.1124.0",
     "@aws-sdk/client-sts": "3.1124.0",
     "@tabframe/protocol": "workspace:*",
     "aws-cdk-lib": "2.267.0",

@@ -14,7 +14,7 @@ through the real proxy, and terminates it. Account ids and tokens never reach th
 | WebSocket frames count as idle-policy traffic | still RUNNING after 105 s of heartbeat frames on one socket with a 60 s idle policy; socket stayed open | yes |
 | Socket survives its token's expiry | a socket opened with a 1-minute token was still open after 130 s | yes |
 | Endpoint request rate | first throttling (429) at 50 requests per second on the private port | yes (≥ 50) |
-| Concurrent WebSocket connections | first run: 48 of 250 (opened in a burst → the request-rate limit); paced at 4 opens per second: 250 of 250 open and stable for 20 s | yes |
+| Concurrent WebSocket connections | first run: 48 of 250 (opened in a burst → the request-rate limit); paced at 4 opens per second: 250 of 250 open and stable for 20 s — **wrong, see the correction below** | no |
 | Per-connection message rate | 15 messages per second for 30 s, socket open | yes |
 | Token minting burst | 20 tokens in 243 ms, none throttled | info |
 | Resume latency | 0.7 s from a suspended 1 GB MicroVM to the first response | yes |
@@ -39,3 +39,14 @@ through the real proxy, and terminates it. Account ids and tokens never reach th
   API during launch and left its throwaway VM suspended; it was found and terminated by hand.
   The runbook now terminates in a `finally`, but an aborted launch before the VM id is known
   still needs the operator's `mise run down` or a manual terminate. Recorded as an open item.
+
+## Correction (2026-09-02, WP4.5)
+
+The "250 of 250 open" row was a counting error. The check attached its `onclose` handlers only
+after the opening loop and sent no heartbeats during it, so every socket was declared gone four
+seconds after its hello and closed before anyone was counting; at the end about sixteen were
+actually alive, which is exactly the platform's limit. Re-measured with heartbeats and the right
+generation (`packages/infra/scripts/socket-ceiling.ts`), a fresh MicroVM holds **16 concurrent
+connections** and answers 429 to the next — the account's non-adjustable *Concurrent connections per
+2 vCPU MicroVM* quota. The full investigation is in `docs/m3-verification.md` and design §9.7.
+
