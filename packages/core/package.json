@@ -1,0 +1,16 @@
+{
+  "name": "@tabframe/core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Pure control-plane logic: ledger, apply(event) → effects, liveness, scheduling",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@tabframe/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "fast-check": "4.9.0"
+  }
+}
