@@ -42,6 +42,7 @@ export function deserializeLedger(json: string): Ledger {
     // Fields added after a snapshot was written take their defaults.
     meta: {
       ...s.meta,
+      phase: "active",
       loopBackoffMs: s.meta.loopBackoffMs ?? 0,
       loopPausedUntil: s.meta.loopPausedUntil ?? 0,
     },
@@ -75,5 +76,7 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
   ledger.observers.clear();
   ledger.meta.generation = generation;
   ledger.meta.startedAt = now;
+  // Whatever the source ledger was doing, this one is the active control plane now.
+  ledger.meta.phase = "active";
   return effects;
 }

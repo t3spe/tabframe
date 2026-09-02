@@ -17,6 +17,13 @@ export {
   pruneExecutions,
 } from "./executions.ts";
 export {
+  beginHandover,
+  drain,
+  JITTER_FLOOR_MS,
+  JITTER_MS_PER_CLIENT,
+  jitterWindowMs,
+} from "./handover.ts";
+export {
   type Clock,
   type Rng,
   type Store,
@@ -40,6 +47,7 @@ export {
   type NodeRecord,
   nodeView,
   type ObserverRecord,
+  type Phase,
   type ProgramRecord,
   queueEntry,
   type ResultRecord,

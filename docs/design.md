@@ -712,4 +712,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   the module through `validateModuleBytes`) and answers with `programAdded` plus the launch, or
   `bundleRejected` addressed to the asking observer (§5.2). Budgets: `taskCap` 20 000 tasks per
   execution including plan tasks, `launchesPerMinute` 6 per observer covering follow-ups (§5.5).
+- **2026-09-02 (WP3.1).** A ledger carries `meta.phase` (`active`, `handing-over`, `drained`);
+  only an active control plane assigns work or accepts socket upgrades, and adopting always stamps
+  `active` (§9.4). `/adopt` refuses a ledger from a later generation and accepts a repeat of the
+  same one, which is what makes a retried rotation safe. `/health` is **not** gated by the fleet
+  secret — the operator scripts poll it and it carries only counts; `/handover`, `/adopt`,
+  `/drain`, `/snapshot`, and `/diag` are (§8).
 
