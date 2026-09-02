@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-01):** M0 in progress — WP0.1 repo scaffold on branch `wp/0.1-repo-scaffold`.
+**Where we are (2026-09-01):** M0 in progress — WP0.1 merged; WP0.2 protocol on `wp/0.2-protocol`; WP0.8/0.9 (infra, fleet) and WP0.12 (CI) in parallel worktrees.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -54,7 +54,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 
 - [x] **WP0.1 Repo scaffold.** `mise.toml` (§11.2 of design), root `package.json` with Bun workspaces, `tsconfig.base.json`, `biome.json`, `.gitignore` (`node_modules`, `dist`, `cdk.out`, `cdk.context.json`, `.env.local`, `playwright-report`), `.env.local` written locally with `TABFRAME_ACCOUNT_ID` and `TABFRAME_BUDGET_EMAIL` — never committed; `LICENSE` (AGPL-3.0); `erasableSyntaxOnly` in the base tsconfig. README updated to point at `docs/`. `docs/design.md`, `docs/plan.md`, `docs/timelog.md` (seeded with the design day) committed.
   *Acceptance:* `mise install`, `bun install`, `mise run whoami` passes with the account id masked in output.
-- [ ] **WP0.2 `protocol` skeleton.** Envelope `{t, v, gen}`; zod schemas for `hello`, `welcome`, `heartbeat`, `subscribe`, `snapshot` (nodes only for now), `ping`/`pong`, `error`; close codes; limits constants; canonical JSON codec.
+- [x] **WP0.2 `protocol` skeleton.** Envelope `{t, v, gen}`; zod schemas for `hello`, `welcome`, `heartbeat`, `subscribe`, `snapshot` (nodes only for now), `ping`/`pong`, `error`; close codes; limits constants; canonical JSON codec.
   *Acceptance:* round-trip tests; invalid, oversized, and foreign-generation messages rejected.
 - [ ] **WP0.3 `core` skeleton.** Ledger types for node, observer, meta; `Clock`, `Transport`, `Store` interfaces; `apply(ledger, event, now)` for hello, heartbeat, disconnect, subscribe, ping, tick; liveness sweep (gone at 4 s); events `nodeJoined`/`nodeLeft`; sequence numbers.
   *Acceptance:* unit tests with a fake clock; a node that stops heartbeating is gone at 4 s and its connection-close effect is emitted.
