@@ -334,10 +334,21 @@ export function onManifestStored(
   return effects;
 }
 
+/** How long the default loop waits after a failed execution: doubling from five seconds to five minutes. */
+export const LOOP_BACKOFF_MIN_MS = 5_000;
+export const LOOP_BACKOFF_MAX_MS = 300_000;
+/** Ended executions kept in the ledger (and the snapshot); older ones and their tasks are pruned. */
+export const KEEP_ENDED_EXECUTIONS = 32;
+
+function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
+  return !exec.human && ledger.config.defaultLoop?.bundle === exec.bundle;
+}
+
 function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
   exec.status = "done";
   exec.endedAt = now;
   ledger.running = null;
+  if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
   const effects = broadcast(ledger, {
     t: "executionDone",
     executionId: exec.executionId,
@@ -395,6 +406,15 @@ export function failExecution(
   exec.failure = reason;
   exec.endedAt = now;
   if (ledger.running === exec.executionId) ledger.running = null;
+  if (isDefaultLoop(ledger, exec)) {
+    // A failing loop must not spin: back off, doubling, before the next automatic launch.
+    const delay = Math.min(
+      Math.max(ledger.meta.loopBackoffMs * 2, LOOP_BACKOFF_MIN_MS),
+      LOOP_BACKOFF_MAX_MS,
+    );
+    ledger.meta.loopBackoffMs = delay;
+    ledger.meta.loopPausedUntil = now + delay;
+  }
   effects.push(
     ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
   );
@@ -446,6 +466,7 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   const loop = ledger.config.defaultLoop;
   if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
+  if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
   return enqueue(
     ledger,
@@ -495,4 +516,24 @@ export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[
     });
   }
   return { effects, victims };
+}
+
+/**
+ * Keep the ledger small: ended executions beyond the most recent `keep` are dropped with their
+ * tasks. Results live in the store by hash, and a continuation copies what it inherits at
+ * enqueue, so nothing live points at what is pruned.
+ */
+export function pruneExecutions(ledger: Ledger, keep = KEEP_ENDED_EXECUTIONS): string[] {
+  const ended = [...ledger.executions.values()]
+    .filter((e) => e.status === "done" || e.status === "failed" || e.status === "cancelled")
+    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
+  const pruned: string[] = [];
+  for (const exec of ended.slice(keep)) {
+    for (const [taskId, task] of ledger.tasks) {
+      if (task.executionId === exec.executionId) ledger.tasks.delete(taskId);
+    }
+    ledger.executions.delete(exec.executionId);
+    pruned.push(exec.executionId);
+  }
+  return pruned;
 }

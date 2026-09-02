@@ -63,10 +63,22 @@ export class S3Store implements StoreDriver {
           ContentLength: it.size,
           ChecksumSHA256: hexToBase64(it.hash),
         };
+        // The checksum must be a *signed header*, not a query parameter: S3 enforces the pin
+        // only when the header is part of the signature (a tampered body is refused with a
+        // checksum mismatch). Hoisted into the query it is accepted and ignored — verified
+        // against the real bucket (WP1.10).
         const url = await getSignedUrl(this.s3, new PutObjectCommand(input), {
           expiresIn: this.expiresIn,
+          unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+          signableHeaders: new Set(["x-amz-checksum-sha256"]),
         });
-        return { hash: it.hash, url, headers: signedHeaders(url, input) };
+        const headers = signedHeaders(url, input);
+        if (!headers["x-amz-checksum-sha256"]) {
+          throw new Error(
+            "presigned URL does not sign the checksum header; refusing to hand it out",
+          );
+        }
+        return { hash: it.hash, url, headers };
       }),
     );
   }
@@ -127,8 +139,10 @@ export function signedHeaders(
     const v = known[name];
     if (v !== undefined && name !== "host" && name !== "content-length") out[name] = v;
   }
-  // The checksum pin is the point; send it even if a signer version leaves it out of the list.
-  out["x-amz-checksum-sha256"] = input.ChecksumSHA256;
+  // Exactly the signed set and nothing more: S3 refuses a request carrying an unsigned
+  // x-amz-* header ("headers present in the request which were not signed"). With the current
+  // signer the checksum pin travels in the signed query string instead, and S3 enforces it
+  // there (verified against the real bucket, WP1.10).
   return out;
 }
 

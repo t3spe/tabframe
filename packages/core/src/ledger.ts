@@ -167,6 +167,9 @@ export interface Meta {
   startedAt: number;
   /** Last human interaction, for the sleep policy (design §6.8). */
   lastInteractionAt: number;
+  /** The default loop backs off after a failed execution: current delay and when it may relaunch. */
+  loopBackoffMs: number;
+  loopPausedUntil: number;
 }
 
 export interface LedgerConfig {
@@ -220,6 +223,8 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       redundancy: false,
       startedAt: now,
       lastInteractionAt: now,
+      loopBackoffMs: 0,
+      loopPausedUntil: 0,
     },
     config: {
       defaultLoop: config.defaultLoop ?? null,

@@ -25,6 +25,7 @@ import {
   maybeStart,
   onManifestStored,
   onStageSpec,
+  pruneExecutions,
   resumeAll,
 } from "./executions.ts";
 import {
@@ -107,6 +108,7 @@ export function apply(
 
 function tick(ledger: Ledger, now: number): Effect[] {
   const effects = sweep(ledger, now);
+  pruneExecutions(ledger);
   effects.push(...relabelHealth(ledger));
   effects.push(...ensureDefaultLoop(ledger, now));
   effects.push(...fill(ledger, now));

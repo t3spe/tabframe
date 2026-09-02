@@ -81,6 +81,11 @@ description = "M0 runbook against the real account (masked output)"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m0.ts"
 
+[tasks."verify:m1"]
+description = "M1 runbook: browser tabs render a frame on the deployed machine, kill half mid-frame, golden hashes, uploads, snapshots"
+depends = ["whoami"]
+run = "node packages/infra/scripts/verify-m1.ts"
+
 [tasks.up]
 description = "Clear the off state and launch a control plane"
 depends = ["whoami"]

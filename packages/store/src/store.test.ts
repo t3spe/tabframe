@@ -72,8 +72,11 @@ describe("S3Store", () => {
     expect(p?.url).toContain(`blob/${h}`);
     expect(p?.url).toContain("X-Amz-Signature=");
     expect(p?.headers["x-amz-checksum-sha256"]).toBe(hexToBase64(h));
-    // Which headers the signature covers depends on the SDK version; the checksum pin is always sent.
-    expect(Object.keys(p?.headers ?? {})).toContain("x-amz-checksum-sha256");
+    // The pin must be a *signed header*: hoisted into the query string S3 ignores it, so a
+    // tampered body would be accepted (found against the real bucket, WP1.10).
+    const signed = new URL(p?.url as string).searchParams.get("X-Amz-SignedHeaders") ?? "";
+    expect(signed.split(";")).toContain("x-amz-checksum-sha256");
+    expect(new URL(p?.url as string).searchParams.has("x-amz-checksum-sha256")).toBe(false);
     s3.on(HeadObjectCommand).resolves({});
     const [q] = await store.presign([{ hash: h, size: 4 }]);
     expect(q?.url).toBeNull();
@@ -108,7 +111,7 @@ describe("S3Store", () => {
     s3.on(HeadObjectCommand).rejects({ name: "AccessDenied", $metadata: { httpStatusCode: 403 } });
     await expect(store.exists(h)).rejects.toBeDefined();
   });
-  test("signedHeaders picks only the signed names and always includes the checksum", () => {
+  test("signedHeaders picks exactly the signed names", () => {
     const url =
       "https://b.s3.amazonaws.com/blob/x?X-Amz-SignedHeaders=cache-control%3Bcontent-type%3Bhost%3Bx-amz-checksum-sha256&X-Amz-Signature=s";
     const h = signedHeaders(url, {
@@ -122,6 +125,17 @@ describe("S3Store", () => {
       "content-type": "application/octet-stream",
       "x-amz-checksum-sha256": "abc=",
     });
+    // Nothing beyond the signed set: S3 refuses a request carrying an unsigned x-amz-* header.
+    const unsigned = signedHeaders(
+      "https://b.s3.amazonaws.com/blob/x?X-Amz-SignedHeaders=content-length%3Bhost&X-Amz-Signature=s",
+      {
+        ContentType: "application/octet-stream",
+        CacheControl: IMMUTABLE,
+        ContentLength: 3,
+        ChecksumSHA256: "abc=",
+      },
+    );
+    expect(unsigned).toEqual({});
   });
 });
 

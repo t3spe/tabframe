@@ -692,3 +692,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   `g<generation>/<time>.json.gz` plus a `latest.json.gz` pointer; the suspend and terminate hooks
   write unconditionally (§9.4). Seeded bundles are manifest blobs over `/program.wasm`,
   `/manifest.json`, and `/in/*` (§5.6). The private port gains `GET /snapshot` (§9.3).
+- **2026-09-02 (WP1.10).** A presigned PUT must carry the SHA-256 checksum as a **signed header**,
+  not as a signed query parameter: with the checksum hoisted into the query, S3 accepts bytes that
+  do not match it, and a request carrying it as an unsigned header is refused outright. The store
+  passes `signableHeaders`/`unhoistableHeaders` for it and refuses to hand out a URL whose
+  signature does not cover the checksum; clients send exactly the signed header set and nothing
+  more (§7.1, §7.3). The default loop backs off after a failed execution — five seconds, doubling
+  to five minutes, reset by a success — so a broken program cannot spin the machine (§6.8). Ended
+  executions beyond the most recent 32 are pruned with their tasks on every tick, keeping the
+  ledger and its snapshots bounded (§9.4).
+

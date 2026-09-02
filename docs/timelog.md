@@ -7,3 +7,4 @@ session with the agent working. The rationale states the developer total and sho
 |---|---|---|---|
 | 2026-09-01 | _to fill_ | 10.0 | Design walkthrough (items 1–9), decisions D1–D20, design record, execution plan, AWS account and profile setup, preflight; WP0.1 started |
 | 2026-09-02 | _to fill_ | 4.5 | M0 built end to end: WP0.1–0.12 (parallel workers for fleet, infra, CI), first deploy, verification; WP1.1 protocol v1 |
+| 2026-09-02 | _to fill_ | 6.0 | M1: WP1.4–1.8 and WP1.10 (sandbox, SDK, node orchestrator, control plane, dashboard, deploy); Mandelbrot end to end locally and on AWS |
