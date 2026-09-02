@@ -25,6 +25,12 @@ export const heartbeat = z.object({
 
 const writeEntry = z.object({ path: fsPath, hash, size: z.number().int().nonnegative() });
 
+/**
+ * The error string a node sends when it gave up on a task at its own deadline (design §4.2): not a
+ * program fault, so the control plane releases the attempt instead of failing the task.
+ */
+export const RELEASED = "released";
+
 /** A result names hashes the store vouches for; the error form carries a message instead (design §8.2). */
 export const result = z
   .object({

@@ -12,6 +12,8 @@
     "./session": "./src/session.ts"
   },
   "dependencies": {
-    "@tabframe/protocol": "workspace:*"
+    "@tabframe/protocol": "workspace:*",
+    "@tabframe/sandbox": "workspace:*",
+    "@tabframe/store": "workspace:*"
   }
 }

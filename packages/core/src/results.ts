@@ -1,4 +1,4 @@
-import { canonicalStringify, PROTOCOL_VERSION, type Result } from "@tabframe/protocol";
+import { canonicalStringify, PROTOCOL_VERSION, RELEASED, type Result } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
 import type {
   ExecutionRecord,
@@ -40,6 +40,12 @@ export function onResult(
   const attempt = task?.attempts.find((a) => a.nodeId === node.nodeId && a.outcome === "running");
   // Bookkeeping on the node regardless of what the task says.
   node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
+  if (msg.error === RELEASED) {
+    // The node gave up at its own deadline: the attempt is released, the task is not judged.
+    if (attempt) attempt.outcome = "released";
+    if (task) effects.push(...releaseIfOrphaned(ledger, task, node.nodeId));
+    return { effects, settlement: { kind: "none" } };
+  }
   node.tasksDone += 1;
   node.lastTaskMs = msg.computeMs;
   node.ewmaMs =
@@ -112,6 +118,21 @@ export function onResult(
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };
+}
+
+/** With no attempt left running and nothing decided this round, the task goes back to the front. */
+function releaseIfOrphaned(ledger: Ledger, task: TaskRecord, fromNode: string): Effect[] {
+  if (task.status !== "assigned" || runningAttempts(task) > 0) return [];
+  if (task.results.some((r) => r.round === task.contestedRounds)) return [];
+  task.status = "pending";
+  task.released = true;
+  const exec = ledger.executions.get(task.executionId);
+  if (exec) {
+    exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
+    exec.counters.pending += 1;
+    exec.counters.reassigned += 1;
+  }
+  return broadcast(ledger, { t: "taskReassigned", taskId: task.taskId, fromNode });
 }
 
 function settlementFor(task: TaskRecord, result: ResultRecord): Settlement {
