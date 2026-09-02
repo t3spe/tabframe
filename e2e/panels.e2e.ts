@@ -125,6 +125,9 @@ test("live: an upload shows up in the programs panel, launches from it, and can 
   // program shows up in the panel, with its view, whether it was known before or not.
   await page.click("#openEditor");
   await expect(page.locator("#editor")).toBeVisible();
+  // editor.js loads lazily and its drop-door handler attaches only once the compiler reports
+  // ready; on a slow CI runner that can take longer than the file drop below would wait.
+  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
   await page.locator("#wasmFile").setInputFiles(wasmPath);
   await expect(page.locator("#launch")).toBeEnabled({ timeout: 15_000 });
   // A dropped module is named after its file; give it the program's real name.
