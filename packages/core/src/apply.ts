@@ -68,6 +68,9 @@ function onMessage(ledger: Ledger, connId: string, raw: unknown, now: number): E
         return onHello(ledger, connId, d.msg, now);
       case "heartbeat":
         return onHeartbeat(ledger, connId, d.msg, now);
+      default:
+        // result and presign arrive with scheduling (WP1.2, WP1.3).
+        return [];
     }
   }
   const d = decode(observerToControlPlane, raw, opts);
@@ -77,6 +80,9 @@ function onMessage(ledger: Ledger, connId: string, raw: unknown, now: number): E
       return onSubscribe(ledger, connId, now);
     case "ping":
       return onPing(ledger, connId, now);
+    default:
+      // Controls, launch, and presign arrive with scheduling and programs (WP1.2, WP2.3).
+      return [];
   }
 }
 
@@ -169,6 +175,7 @@ function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
         page,
         pages,
         nodes: nodes.slice(page * pageSize, (page + 1) * pageSize),
+        tasks: [],
         at: now,
       },
     });

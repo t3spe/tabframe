@@ -20,6 +20,7 @@ describe("cluster state", () => {
     let s = emptyState();
     s = applyMessage(s, {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 10,
       page: 0,
@@ -31,6 +32,7 @@ describe("cluster state", () => {
     expect(s.generation).toBe(2);
     s = applyMessage(s, {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 10,
       page: 1,
@@ -46,6 +48,7 @@ describe("cluster state", () => {
   test("events in sequence apply; a skipped sequence number flags a gap", () => {
     let s = applyMessage(emptyState(), {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 3,
       page: 0,
@@ -66,6 +69,7 @@ describe("cluster state", () => {
   test("a pong ahead of the last seen sequence also flags a gap; errors are ignored", () => {
     let s = applyMessage(emptyState(), {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 3,
       page: 0,
@@ -84,6 +88,7 @@ describe("cluster state", () => {
   test("a fresh first page replaces the node set; health for unknown nodes is ignored", () => {
     let s = applyMessage(emptyState(), {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 3,
       page: 0,
@@ -93,6 +98,7 @@ describe("cluster state", () => {
     });
     s = applyMessage(s, {
       t: "snapshot",
+      tasks: [],
       ...env,
       seq: 8,
       page: 0,

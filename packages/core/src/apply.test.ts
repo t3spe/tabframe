@@ -91,7 +91,7 @@ describe("handshake", () => {
     const snap = h.subscribe("o1");
     expect(types(snap)).toEqual(["snapshot"]);
     const msg = snap[0]?.kind === "send" ? snap[0].msg : undefined;
-    expect(msg?.t === "snapshot" && msg.nodes.map((n) => n.nodeId)).toEqual(["n1", "n2"]);
+    expect(msg?.t === "snapshot" && msg.nodes?.map((n) => n.nodeId)).toEqual(["n1", "n2"]);
     expect(msg?.t === "snapshot" && msg.pages).toBe(1);
     const pong = h.send("o1", { t: "ping" });
     expect(pong[0]?.kind === "send" && pong[0].msg.t === "pong" && pong[0].msg.seq).toBe(

@@ -40,12 +40,15 @@ export function applyMessage(state: ClusterState, msg: ControlPlaneToObserver): 
       if (n) next.nodes.set(msg.nodeId, { ...n, health: msg.health });
       return next;
     }
+    default:
+      // Execution and task events are modeled in WP1.8; until then they only advance the sequence.
+      return "seq" in msg ? advance(state, msg.seq) : state;
   }
 }
 
 function applySnapshot(state: ClusterState, snap: Snapshot): ClusterState {
   const nodes = snap.page === 0 ? new Map<string, NodeView>() : new Map(state.nodes);
-  for (const n of snap.nodes) nodes.set(n.nodeId, n);
+  for (const n of snap.nodes ?? []) nodes.set(n.nodeId, n);
   return {
     generation: snap.gen,
     seq: snap.seq,

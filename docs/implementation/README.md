@@ -17,3 +17,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP0.9 | [wp-0.9-fleet-skeleton.md](wp-0.9-fleet-skeleton.md) | 2026-09-01 | Session and rotate v0 functions, pointer, operator scripts, fakes and SDK-mock tests |
 | WP0.8 | [wp-0.8-infra-skeleton.md](wp-0.8-infra-skeleton.md) | 2026-09-01 | CDK stacks Core, Image, Fleet; image staging dir with placeholder process; base-image resolver; synth tests |
 | WP0.10 | [wp-0.10-first-hello.md](wp-0.10-first-hello.md) | 2026-09-02 | First deploy: four stacks, control plane in a MicroVM, page on CloudFront, browser nodes through the proxy |
+| WP1.1 | [wp-1.1-protocol-v1.md](wp-1.1-protocol-v1.md) | 2026-09-02 | Full wire vocabulary: assign/result/presign, controls, events, views, manifests; ABI byte formats |
