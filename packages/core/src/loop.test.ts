@@ -218,5 +218,11 @@ describe("pruning ended executions' tasks", () => {
     const tasksNow = h.ledger.tasks.size;
     expect(pruneExecutions(h.ledger)).toEqual([]);
     expect(h.ledger.tasks.size).toBe(tasksNow);
+    // A ledger adopted from before the file-map rule: tasks long gone, maps still there. They go.
+    const adopted = h.ledger.executions.get(older[1] as string);
+    if (!adopted) throw new Error("no record");
+    adopted.files = { "/out/0/0": { hash: H("1"), size: 256 } };
+    pruneExecutions(h.ledger);
+    expect(adopted.files).toEqual({});
   });
 });

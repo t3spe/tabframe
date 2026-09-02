@@ -162,6 +162,12 @@ export interface CoreRecord {
   launchedAt: number;
   /** The node this core connected as, once it has said hello. */
   nodeId: string | null;
+  /**
+   * Since when the core has had no node: its launch, or the moment its node left. A core that
+   * stays unlinked past `CORE_LINK_TIMEOUT_MS` is terminated and replaced (WP4.4); absent in
+   * snapshots from before, which means "since launch".
+   */
+  unlinkedAt?: number | undefined;
 }
 
 export interface ProgramRecord {

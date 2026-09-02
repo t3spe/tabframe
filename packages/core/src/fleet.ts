@@ -11,6 +11,12 @@ export const DESIRED_CORES = 2;
 export const CORE_LAUNCH_GAP_MS = 1_000;
 /** A core is replaced before it reaches its four-hour ceiling. */
 export const CORE_MAX_AGE_MS = 3.5 * 60 * 60 * 1_000;
+/**
+ * A core boots and says hello within seconds; one that has had no node for this long is not
+ * coming (a MicroVM that booted but whose process never connected — seen once in two launches
+ * during the WP4.4 demo runs) and is terminated so the policy launches another.
+ */
+export const CORE_LINK_TIMEOUT_MS = 2 * 60 * 1_000;
 /** Asleep after this long with nobody watching. */
 export const SLEEP_AFTER_NO_OBSERVER_MS = 10 * 60 * 1_000;
 /** Asleep after this long with a dashboard open but nobody touching it (a tab left overnight). */
@@ -66,9 +72,11 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
     ledger.meta.awake = true;
     ledger.meta.sleepReason = null;
   }
-  // Retire a core before its MicroVM ceiling; the replacement comes up on a later tick.
+  // Retire a core before its MicroVM ceiling, or one that has had no node for too long; the
+  // replacement comes up on a later tick.
   for (const core of [...ledger.cores.values()]) {
-    if (now - core.launchedAt >= CORE_MAX_AGE_MS) {
+    const unlinkedFor = core.nodeId === null ? now - (core.unlinkedAt ?? core.launchedAt) : 0;
+    if (now - core.launchedAt >= CORE_MAX_AGE_MS || unlinkedFor >= CORE_LINK_TIMEOUT_MS) {
       ledger.cores.delete(core.microvmId);
       effects.push({ kind: "terminateCore", microvmId: core.microvmId });
     }
@@ -86,7 +94,7 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
 /** The process launched a core: remember it so a handover carries it (design §6.8). */
 export function coreLaunched(ledger: Ledger, microvmId: string, now: number): Effect[] {
   if (!ledger.cores.has(microvmId)) {
-    ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId: null });
+    ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId: null, unlinkedAt: now });
   }
   return [];
 }

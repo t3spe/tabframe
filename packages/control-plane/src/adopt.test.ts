@@ -292,4 +292,47 @@ describe("seeding an adopted ledger", () => {
     ).json()) as { programs: string[] };
     expect(health.programs).toEqual(["mandelbrot"]);
   }, 30_000);
+
+  test("an unshipped drop nobody has run in the ledger's memory is retired after an hour; a fresh one stays", async () => {
+    const snapshots = new MemorySnapshots();
+    const programs = discoverPrograms(programsDir);
+    const first = await createControlPlane(imageConfig, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs,
+    });
+    await run(first, { role: "control-plane", generation: 40, snapshotKey: null });
+    await first.seeded();
+    const ledger = first.ledger as Ledger;
+    const shipped = [...ledger.programs.values()][0];
+    if (!shipped) throw new Error("nothing seeded");
+    // Two drops: one from two hours ago, one from a minute ago (as an upload would add them).
+    const drop = (name: string, addedAt: number) =>
+      ledger.programs.set(`${name.length}`.padStart(64, name.length === 3 ? "a" : "c"), {
+        ...shipped,
+        bundle: `${name.length}`.padStart(64, name.length === 3 ? "a" : "c"),
+        manifest: { ...shipped.manifest, name },
+        addedAt,
+      });
+    drop("old", Date.now() - 2 * 60 * 60 * 1000);
+    drop("fresh", Date.now() - 60 * 1000);
+    const handed = serializeLedger(ledger);
+    await first.close();
+
+    const second = await createControlPlane({ ...imageConfig, generation: 41 }, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs,
+    });
+    planes.push(second);
+    await run(second, { role: "control-plane", generation: 41, snapshotKey: null });
+    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+      method: "POST",
+      body: handed,
+    });
+    expect(adopt.status).toBe(200);
+    await second.seeded();
+    const names = [...(second.ledger?.programs.values() ?? [])].map((p) => p.manifest.name).sort();
+    expect(names).toEqual(["fresh", "mandelbrot"]);
+  }, 30_000);
 });

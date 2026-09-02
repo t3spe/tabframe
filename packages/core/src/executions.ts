@@ -640,6 +640,18 @@ export function commandHalf(
       connId: v.connId,
       msg: { t: "command", v: PROTOCOL_VERSION, gen: ledger.meta.generation, op },
     });
+    // A killed or frozen cloud core is a MicroVM with nothing left to do: a closed node never
+    // reconnects and a frozen one computes nothing, so the VM is terminated with the command and
+    // the fleet policy launches a fresh one (design §6.8; found when a kill half left a core
+    // alive, unlinked, and never replaced — WP4.4).
+    if (op !== "throttle" && v.kind === "core") {
+      for (const core of [...ledger.cores.values()]) {
+        if (core.nodeId === v.nodeId) {
+          ledger.cores.delete(core.microvmId);
+          effects.push({ kind: "terminateCore", microvmId: core.microvmId });
+        }
+      }
+    }
   }
   return { effects, victims: victims.map((v) => v.nodeId) };
 }
@@ -695,10 +707,13 @@ export function pruneExecutions(
     for (const [taskId, task] of ledger.tasks) {
       if (dropTasks.has(task.executionId)) ledger.tasks.delete(taskId);
     }
-    // The file map goes with the tasks (WP4.9): a frame's 640 entries of hash and size, 32 frames
-    // deep, was most of the deployed snapshot. The root hash stays, and inheritance reads the
-    // map back from the root's manifest blob.
-    for (const e of ended) if (dropTasks.has(e.executionId)) e.files = {};
+  }
+  // The file map goes with the tasks (WP4.9): a frame's 640 entries of hash and size, 32 frames
+  // deep, was most of the deployed snapshot. The root hash stays, and inheritance reads the map
+  // back from the root's manifest blob. Judged on its own, not with the task probe: an adopted
+  // ledger whose tasks went before this rule existed still has the maps to lose.
+  for (const e of ended.slice(keepTasks)) {
+    if (Object.keys(e.files).length > 0) e.files = {};
   }
   for (const id of dropRecords) ledger.executions.delete(id);
   dropUnreferencedRetired(ledger);

@@ -100,6 +100,10 @@ description = "M3 runbook: a real rotation under load — churn seconds, drain j
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m3.ts"
 
+[tasks.demo]
+description = "WP4.4: run the demo script unattended against the deployed machine (TABFRAME_VIDEO=1 records)"
+run = "node packages/infra/scripts/demo.ts"
+
 [tasks."verify:m1"]
 description = "M1 runbook: browser tabs render a frame on the deployed machine, kill half mid-frame, golden hashes, uploads, snapshots"
 depends = ["whoami"]
