@@ -127,12 +127,17 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
   const goldenSorted = [...goldens.hashes].sort();
   expect(sorted).toEqual(goldenSorted);
 
-  // The page painted them, having re-hashed every blob itself, and refused none.
-  await expect(page.locator("#tileStats")).toContainText(/[0-9]+ painted/, { timeout: 30_000 });
-  const stats = (await page.locator("#tileStats").textContent()) ?? "";
-  expect(stats).toContain("0 refused");
-  const painted = Number(/(\d+) painted/.exec(stats)?.[1] ?? "0");
-  expect(painted).toBeGreaterThan(goldens.taskCount / 2);
+  // The page paints tiles as it fetches and re-hashes their blobs, which lags the events; wait
+  // for it to catch up rather than reading the count once (it read exactly 320 on a CI runner).
+  const painted = () =>
+    page
+      .locator("#tileStats")
+      .textContent()
+      .then((t) => Number(/(\d+) painted/.exec(t ?? "")?.[1] ?? "0"));
+  await expect
+    .poll(painted, { timeout: 60_000, intervals: [500] })
+    .toBeGreaterThanOrEqual(goldens.taskCount);
+  expect((await page.locator("#tileStats").textContent()) ?? "").toContain("0 refused");
 
   // And the canvas is not blank.
   const ink = await page.evaluate(() => {

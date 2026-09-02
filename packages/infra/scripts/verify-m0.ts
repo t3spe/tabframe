@@ -303,12 +303,22 @@ try {
       if (g.state === "SUSPENDED") break;
       await sleep(2_000);
     }
+    // The proxy answers 502 while the MicroVM is being resumed behind it; the latency that matters
+    // is until the first 200, so poll rather than judge the first answer.
     const t1 = Date.now();
-    const r = await get("/health", 8081);
+    let status = 0;
+    let answers = 0;
+    while (Date.now() - t1 < 20_000) {
+      const r = await get("/health", 8081);
+      answers++;
+      status = r.status;
+      if (status === 200) break;
+      await sleep(250);
+    }
     record(
       "resume latency",
-      `${Math.round((Date.now() - t1) / 100) / 10} s to first response (${r.status})`,
-      r.status === 200 && Date.now() - t1 < 5_000,
+      `${Math.round((Date.now() - t1) / 100) / 10} s to the first 200 (${answers} requests, last status ${status})`,
+      status === 200 && Date.now() - t1 < 5_000,
     );
   }
 } finally {
