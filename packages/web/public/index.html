@@ -17,6 +17,11 @@
   .pill.wait { color:var(--warn); border-color:var(--warn); }
   .pill.off  { color:var(--bad); border-color:var(--bad); }
   .notice { padding:.4rem 1rem; background:#2a2412; color:var(--warn); border-bottom:1px solid #4a3d14; font-size:13px; }
+  .machine-banner { padding:.55rem 1rem; background:#14213a; color:var(--fg); border-bottom:1px solid #27406e; font-size:13px; line-height:1.5; }
+  .machine-banner[data-kind="sleeping"], .machine-banner[data-kind="asleep"] { background:#2a2412; border-bottom-color:#4a3d14; }
+  .machine-banner strong { color:var(--acc); }
+  .machine-banner[data-kind="sleeping"] strong, .machine-banner[data-kind="asleep"] strong { color:var(--warn); }
+  .machine-banner b { font-family:var(--mono); font-variant-numeric: tabular-nums; }
   main { display:grid; grid-template-columns: minmax(0, 1fr) 340px; gap:1rem; padding:1rem; }
   @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
   section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.75rem 1rem; }
@@ -31,6 +36,8 @@
   .bar { flex:1 1 160px; height:6px; background:#1a212a; border-radius:3px; overflow:hidden; min-width:120px; }
   .bar > div { height:100%; width:0; background:var(--ok); transition: width .15s linear; }
   #progressText { min-width:6ch; text-align:right; font-variant-numeric: tabular-nums; }
+  .throughput { display:inline-flex; align-items:center; gap:.5rem; margin-left:auto; color:var(--dim); }
+  #throughputChart { display:block; width:240px; height:36px; border:1px solid var(--line); border-radius:3px; background:var(--bg); }
   .failure { display:flex; align-items:center; flex-wrap:wrap; gap:.6rem; margin:.4rem 0 .6rem; padding:.5rem .7rem; border:1px solid var(--bad); border-radius:6px; background:#2a1414; color:var(--fg); font-size:13px; }
   .failure b { color:var(--bad); }
   .warnings { margin:.2rem 0 .6rem; padding:0; list-style:none; color:var(--warn); font-size:13px; }
@@ -52,6 +59,14 @@
   .swatch { display:inline-block; width:10px; height:10px; border-radius:2px; background:#3a4250; }
   .swatch-flash { background:#fff; }
   .swatch-contested { background:transparent; border:2px solid #f0e442; width:8px; height:8px; }
+  .pulses { display:flex; flex-wrap:wrap; gap:.25rem .5rem; margin:.1rem 0 .4rem; padding:0; list-style:none; font-family:var(--mono); font-size:12px; }
+  .pulses li { padding:.05rem .4rem; border:1px solid var(--line); border-radius:4px; color:var(--dim); }
+  .pulses li.pulse-released { border-color:#e69f00; }
+  .pulses li.pulse-speculated { border-color:#cc79a7; }
+  .pulses li.pulse-verified { border-color:#0072b2; }
+  .pulses li.pulse-mismatch { border-color:#f0e442; }
+  .pulses li.pulse-live { color:var(--fg); animation: pulse 1.5s ease-out; }
+  @keyframes pulse { from { background:#ffffff; color:#0b0d10; } to { background:transparent; } }
   .counters { display:flex; flex-wrap:wrap; gap:.35rem; margin:.4rem 0 .6rem; }
   .chip { padding:.1rem .5rem; border:1px solid var(--line); border-radius:4px; font-family:var(--mono); font-size:12px; color:var(--dim); font-variant-numeric: tabular-nums; }
   .chip b { color:var(--fg); font-weight:600; }
@@ -77,6 +92,11 @@
   .facts dt { color:var(--dim); }
   .facts dd { margin:0; overflow-wrap:anywhere; }
   table.attempts { margin-top:.2rem; }
+  #ledgerPanel { overflow-x:auto; }
+  table.ledger { margin-top:.3rem; font-size:11px; }
+  table.ledger th, table.ledger td { padding:.2rem .25rem; }
+  table.ledger td:last-child { white-space:normal; }
+  table.ledger a { color:var(--acc); text-decoration:none; }
   tr.outcome-done td, tr.outcome-verified td { color:var(--ok); }
   tr.outcome-released td, tr.outcome-cancelled td { color:var(--dim); }
   tr.outcome-mismatch td, tr.outcome-retracted td { color:var(--warn); }
@@ -93,6 +113,8 @@
   button.small { padding:.15rem .5rem; font-size:12px; }
   .banner { padding:2rem; text-align:center; color:var(--dim); }
   .banner strong { color:var(--fg); }
+  .banner #bannerBody { display:block; margin:.4rem auto 0; max-width:60ch; }
+  .banner #bannerHint { display:block; margin:.5rem auto 0; max-width:60ch; }
   .row { display:flex; justify-content:space-between; gap:1rem; padding:.3rem 0; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12.5px; }
   .muted { color:var(--dim); }
   .bad { color:var(--bad); }
@@ -146,6 +168,7 @@
   <h1>TABFRAME</h1>
   <span id="machine" class="pill wait">connecting</span>
   <span id="gen" class="pill">gen —</span>
+  <span id="nextRotation" class="pill" title="The control plane hands over to a fresh MicroVM every hour; the render continues across it" hidden>rotation in — min</span>
   <span id="counts" class="pill">0 nodes · 0 hosts</span>
   <span id="seq" class="pill">seq 0</span>
   <span id="exec" class="pill">idle</span>
@@ -154,15 +177,17 @@
   <button type="button" id="openEditor" title="Edit a program, compile it in this tab, launch it on the machine">editor</button>
 </header>
 <div id="notice" class="notice" hidden></div>
+<div id="machineBanner" class="machine-banner" role="status" hidden></div>
 <main>
   <section class="hero">
-    <div id="banner" class="banner"><strong>Connecting…</strong></div>
+    <div id="banner" class="banner" data-state="connecting"><strong id="bannerTitle">Connecting…</strong><span id="bannerBody"></span><span id="bannerHint" class="muted small"></span></div>
     <div id="stage" hidden>
       <div class="execrow">
         <span id="execName">No execution</span>
         <span id="execDetail" class="muted"></span>
         <div class="bar"><div id="progressFill"></div></div>
         <span id="progressText"></span>
+        <span class="throughput"><canvas id="throughputChart" width="240" height="36" aria-label="tasks done per second over the last minute"></canvas><span id="throughputFigure">0.0 tasks/s · 0 nodes</span></span>
       </div>
       <div id="failure" class="failure" hidden></div>
       <ul id="warnings" class="warnings" hidden></ul>
@@ -172,6 +197,7 @@
       <div id="result" class="result" hidden></div>
       <canvas id="grid" width="1024" height="96" aria-label="task grid; click a cell for its detail"></canvas>
       <div id="legend" class="legend"></div>
+      <ul id="pulses" class="pulses" aria-label="what just moved" hidden></ul>
       <div id="taskDetail" class="task-detail" hidden></div>
       <div id="counters" class="counters"></div>
       <div class="controls">
@@ -200,7 +226,7 @@
         <button type="button" id="killMine">close all mine</button>
       </div>
       <div id="mine"></div>
-      <p class="muted" id="coresNote"></p>
+      <p class="muted small" id="spawnHint"></p>
     </section>
     <section>
       <h2>Programs</h2>
@@ -212,8 +238,17 @@
     </section>
     <section id="filesPanel">
       <h2>Files <span id="filesRoot" class="mono muted">—</span></h2>
+      <p class="muted small" id="filesNote">A filesystem is a manifest — path → hash and size — itself a blob named by its hash, the root. Click a file to fetch it from the store by hash; nothing here passed through the control plane.</p>
       <div id="files"></div>
       <div id="filePreview" hidden></div>
+    </section>
+    <section id="ledgerPanel">
+      <h2>Ledger</h2>
+      <p class="muted small" id="ledgerNote"></p>
+      <table id="ledger" class="ledger">
+        <thead><tr><th>task</th><th>node</th><th>output hash</th><th class="num">size</th><th>where</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </section>
     <section>
       <h2>Activity</h2>

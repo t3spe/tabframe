@@ -15,6 +15,10 @@ import type {
 export const THROUGHPUT_WINDOW_MS = 5_000;
 /** How long a reassignment, a retraction, or a control's victims stay highlighted. */
 export const FLASH_MS = 1_500;
+/** The throughput chart looks back this far, one bucket per second (design §6.7). */
+export const CHART_WINDOW_MS = 60_000;
+/** Flash-worthy events kept for the pulse list beside the grid. */
+export const PULSE_CAP = 12;
 /** Notable events kept for the activity list. */
 export const ACTIVITY_CAP = 60;
 /** Attempt records kept per task; a task that churns more than this keeps the latest. */
@@ -43,12 +47,29 @@ export interface AttemptRecord {
   fromSnapshot: boolean;
 }
 
+/** Why a task flashed: the event that moved it (design §6.4, §6.5, §6.7). */
+export type FlashKind = "released" | "speculated" | "verified" | "mismatch";
+
+/** One flash, kept so the reader can see what just moved after the cell has stopped blinking. */
+export interface Pulse {
+  at: number;
+  seq: number;
+  taskId: string;
+  kind: FlashKind;
+  nodeId: string;
+}
+
 /** A task as the dashboard knows it: the wire view plus what the event history added. */
 export interface TaskState extends TaskView {
   /** A twin agreed with the accepted result. */
   verified: boolean;
-  /** Dashboard clock at the last reassignment or retraction; drives the flash. */
+  /** Dashboard clock at the last flash-worthy event; drives the flash. */
   flashAt: number | null;
+  flashKind: FlashKind | null;
+  /** Taken back from a node and not handed out again yet (the scheduler's tier one). */
+  released: boolean;
+  /** Dashboard clock when the accepted result landed; null until then. */
+  settledAt: number | null;
   computeMs: number | null;
   failure: string | null;
   /** Every attempt the dashboard saw, oldest first, capped at HISTORY_CAP. */
@@ -57,15 +78,28 @@ export interface TaskState extends TaskView {
   log: TaskLog;
 }
 
-/** The seven task colors of the grid, in the order a task normally passes through them. */
+/** The eight task colors of the grid, in the order a task normally passes through them. */
 export type TaskColor =
   | "pending"
   | "assigned"
   | "speculated"
+  | "released"
   | "done"
   | "verified"
   | "mismatch"
   | "failed";
+
+/** What each colour means, in legend order; the page maps the keys to swatches. */
+export const TASK_COLOR_LABELS: ReadonlyArray<[TaskColor, string]> = [
+  ["pending", "pending"],
+  ["assigned", "assigned"],
+  ["speculated", "speculated twin"],
+  ["released", "taken back, waiting"],
+  ["done", "done"],
+  ["verified", "verified by a twin"],
+  ["mismatch", "mismatch, recomputing"],
+  ["failed", "failed"],
+];
 
 export type Phase = "planning" | "running" | "folding" | "done" | "failed";
 
@@ -150,6 +184,10 @@ export interface ClusterState {
   tasks: Map<string, TaskState>;
   /** Dashboard-clock arrival times of `taskDone` inside the throughput window, oldest first. */
   doneAt: number[];
+  /** The same arrivals over the chart window, oldest first. */
+  doneLog: number[];
+  /** Flashes, oldest first, capped at PULSE_CAP. */
+  pulses: Pulse[];
   /** Notable events, oldest first, capped at ACTIVITY_CAP. */
   activity: Activity[];
   /** Nodes named by the last control, for the flash. */
@@ -174,6 +212,8 @@ export function emptyState(): ClusterState {
     machine: null,
     tasks: new Map(),
     doneAt: [],
+    doneLog: [],
+    pulses: [],
     activity: [],
     victims: null,
     rotation: null,
@@ -374,6 +414,7 @@ export function applyMessage(
         status: task.status === "pending" ? "assigned" : task.status,
         holders: [...task.holders.filter((h) => h !== msg.nodeId), msg.nodeId],
         attempts: Math.max(task.attempts + 1, msg.attempt),
+        released: false,
         history: pushAttempt(task.history, {
           attempt: msg.attempt,
           nodeId: msg.nodeId,
@@ -396,6 +437,9 @@ export function applyMessage(
         status: task.status === "pending" ? "assigned" : task.status,
         holders: [...task.holders.filter((h) => h !== msg.nodeId), msg.nodeId],
         attempts: task.attempts + 1,
+        released: false,
+        flashAt: now,
+        flashKind: "speculated",
         history: pushAttempt(task.history, {
           attempt: task.attempts + 1,
           nodeId: msg.nodeId,
@@ -406,6 +450,7 @@ export function applyMessage(
           fromSnapshot: false,
         }),
       });
+      pulse(next, now, msg.taskId, "speculated", msg.nodeId);
       return next;
     }
     case "taskDone": {
@@ -413,8 +458,22 @@ export function applyMessage(
       const task = ensureTask(next, msg.taskId, now);
       if (task.status === "assigned") bump(next, { assigned: -1, done: 1 });
       else if (task.status === "pending") bump(next, { pending: -1, done: 1 });
-      // The winner's attempt is done; any twin still running is cancelled by the core (§6.5).
-      const history = settle(task.history, msg.nodeId, "done", msg.computeMs).map((a) =>
+      // The winner's attempt is done; any twin still running is cancelled by the core (§6.5). A
+      // winner the dashboard never saw take the task (it joined late) is recorded, so the ledger
+      // can still say who computed the result.
+      const seen = task.history.some((a) => a.nodeId === msg.nodeId && a.outcome === "running");
+      const closed = seen
+        ? settle(task.history, msg.nodeId, "done", msg.computeMs)
+        : pushAttempt(task.history, {
+            attempt: task.history.length + 1,
+            nodeId: msg.nodeId,
+            speculative: false,
+            outcome: "done",
+            at: now,
+            computeMs: msg.computeMs,
+            fromSnapshot: false,
+          });
+      const history = closed.map((a) =>
         a.outcome === "running" ? { ...a, outcome: "cancelled" as const } : a,
       );
       setTask(next, {
@@ -423,11 +482,14 @@ export function applyMessage(
         output: msg.output,
         place: msg.place ?? task.place,
         holders: [],
+        released: false,
+        settledAt: now,
         computeMs: msg.computeMs,
         log: msg.log ?? task.log,
         history,
       });
       next.doneAt = [...prune(next.doneAt, now), now];
+      next.doneLog = [...pruneTo(next.doneLog, now, CHART_WINDOW_MS), now];
       resultFrom(next, msg.nodeId, msg.computeMs);
       if (task.kind === "run") bumpStage(next, task.stage, { done: 1 });
       return next;
@@ -442,21 +504,28 @@ export function applyMessage(
         ...task,
         status: released ? "pending" : task.status,
         holders,
+        released: released || task.released,
         flashAt: now,
+        flashKind: "released",
         history: settle(task.history, msg.fromNode, "released", null),
       });
+      pulse(next, now, msg.taskId, "released", msg.fromNode);
       return note(next, now, "task", `${msg.taskId} taken back from ${msg.fromNode}`);
     }
     case "taskVerified": {
       const next = advance(state, msg.seq);
       bump(next, { verified: 1 });
       const task = next.tasks.get(msg.taskId);
-      if (task)
+      if (task) {
         setTask(next, {
           ...task,
           verified: true,
+          flashAt: now,
+          flashKind: "verified",
           history: settleOrRecord(task.history, msg.nodeId, "verified", now),
         });
+        pulse(next, now, msg.taskId, "verified", msg.nodeId);
+      }
       resultFrom(next, msg.nodeId, null);
       return next;
     }
@@ -481,9 +550,13 @@ export function applyMessage(
         holders: [],
         contested: true,
         verified: false,
+        released: false,
+        settledAt: null,
         flashAt: now,
+        flashKind: "mismatch",
         history,
       });
+      pulse(next, now, msg.taskId, "mismatch", msg.nodeId);
       resultFrom(next, msg.nodeId, null);
       return note(next, now, "task", `${msg.taskId} results disagree (${msg.nodeId}); recomputing`);
     }
@@ -597,6 +670,7 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
     machine: first ? (snap.machine ?? null) : state.machine,
     tasks,
     doneAt: prune(state.doneAt, now),
+    doneLog: pruneTo(state.doneLog, now, CHART_WINDOW_MS),
     rotation: first ? null : state.rotation,
     sleeping: first ? null : state.sleeping,
     programs,
@@ -614,6 +688,19 @@ function note(state: ClusterState, now: number, kind: ActivityKind, text: string
   const activity = [...state.activity, entry];
   if (activity.length > ACTIVITY_CAP) activity.splice(0, activity.length - ACTIVITY_CAP);
   return { ...state, activity };
+}
+
+/** A flash-worthy event: remembered for the pulse list beside the grid. */
+function pulse(
+  next: ClusterState,
+  now: number,
+  taskId: string,
+  kind: FlashKind,
+  nodeId: string,
+): void {
+  const pulses = [...next.pulses, { at: now, seq: next.seq, taskId, kind, nodeId }];
+  if (pulses.length > PULSE_CAP) pulses.splice(0, pulses.length - PULSE_CAP);
+  next.pulses = pulses;
 }
 
 function toExecutionState(view: ExecutionView): ExecutionState {
@@ -688,6 +775,9 @@ function toTaskState(view: TaskView, now: number, fromSnapshot = false): TaskSta
     ...view,
     verified: false,
     flashAt: null,
+    flashKind: null,
+    released: false,
+    settledAt: null,
     computeMs: null,
     failure: null,
     history,
@@ -742,6 +832,9 @@ function ensureTask(next: ClusterState, taskId: string, _now: number): TaskState
     contested: false,
     verified: false,
     flashAt: null,
+    flashKind: null,
+    released: false,
+    settledAt: null,
     computeMs: null,
     failure: null,
     history: [],
@@ -852,7 +945,11 @@ function resultFrom(next: ClusterState, nodeId: string, computeMs: number | null
 }
 
 function prune(times: readonly number[], now: number): number[] {
-  const floor = now - THROUGHPUT_WINDOW_MS;
+  return pruneTo(times, now, THROUGHPUT_WINDOW_MS);
+}
+
+function pruneTo(times: readonly number[], now: number, windowMs: number): number[] {
+  const floor = now - windowMs;
   let i = 0;
   while (i < times.length && (times[i] as number) <= floor) i++;
   return i === 0 ? [...times] : times.slice(i);
@@ -898,7 +995,7 @@ export function taskColor(task: TaskState): TaskColor {
     case "assigned":
       return task.holders.length > 1 ? "speculated" : "assigned";
     default:
-      return task.contested ? "mismatch" : "pending";
+      return task.contested ? "mismatch" : task.released ? "released" : "pending";
   }
 }
 
@@ -909,6 +1006,77 @@ export function isFlashing(at: number | null, now: number): boolean {
 /** Tasks per second over the window, from arrival times. */
 export function throughput(state: ClusterState, now: number): number {
   return prune(state.doneAt, now).length / (THROUGHPUT_WINDOW_MS / 1000);
+}
+
+/**
+ * Tasks done per second over the chart window, oldest bucket first; the last bucket is the
+ * current second. Sixty numbers for the default window.
+ */
+export function throughputSeries(
+  state: ClusterState,
+  now: number,
+  seconds = CHART_WINDOW_MS / 1000,
+): number[] {
+  const buckets = new Array<number>(seconds).fill(0);
+  for (const t of state.doneLog) {
+    const i = seconds - 1 - Math.floor((now - t) / 1000);
+    if (i >= 0 && i < seconds) buckets[i] = (buckets[i] as number) + 1;
+  }
+  return buckets;
+}
+
+/** Milliseconds until the reconnect a rotation announced, floored at zero; null when none is on. */
+export function rotationCountdown(rotation: ClusterState["rotation"], now: number): number | null {
+  return rotation ? Math.max(0, rotation.at + rotation.reconnectAfterMs - now) : null;
+}
+
+/** What stands between the visitor and a plainly live machine, or null when nothing does. */
+export type MachineBanner =
+  | { kind: "rotating"; next: number; msLeft: number }
+  | { kind: "sleeping"; reason: string }
+  | { kind: "asleep"; reason: string | null };
+
+export function machineBanner(state: ClusterState, now: number): MachineBanner | null {
+  const msLeft = rotationCountdown(state.rotation, now);
+  if (state.rotation && msLeft !== null)
+    return { kind: "rotating", next: state.rotation.next, msLeft };
+  if (state.sleeping) return { kind: "sleeping", reason: state.sleeping };
+  if (state.machine && !state.machine.awake)
+    return { kind: "asleep", reason: state.machine.reason };
+  return null;
+}
+
+/** A settled task's line in the ledger: what the control plane holds about its output. */
+export interface LedgerRow {
+  taskId: string;
+  index: number;
+  output: string;
+  /** Known for placed tiles (w × h × 4 bytes of RGBA); null until a manifest names the size. */
+  size: number | null;
+  nodeId: string | null;
+  computeMs: number | null;
+  verified: boolean;
+}
+
+/** The most recently settled tasks of the current stage, newest first. */
+export function ledgerRows(state: ClusterState, limit = 8): LedgerRow[] {
+  const rows: Array<LedgerRow & { at: number }> = [];
+  for (const t of state.tasks.values()) {
+    if (t.status !== "done" || !t.output) continue;
+    const winner = [...t.history].reverse().find((a) => a.outcome === "done");
+    rows.push({
+      taskId: t.taskId,
+      index: t.index,
+      output: t.output,
+      size: t.place ? t.place.w * t.place.h * 4 : null,
+      nodeId: winner?.nodeId ?? null,
+      computeMs: t.computeMs,
+      verified: t.verified,
+      at: t.settledAt ?? -1,
+    });
+  }
+  rows.sort((a, b) => b.at - a.at || b.index - a.index);
+  return rows.slice(0, limit).map(({ at: _at, ...row }) => row);
 }
 
 /** Open attempts per node, derived from task holders so it never drifts from the grid. */

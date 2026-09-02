@@ -4,6 +4,7 @@ import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import {
   ACTIVITY_CAP,
   applyMessage,
+  CHART_WINDOW_MS,
   type ClusterState,
   emptyState,
   FLASH_MS,
@@ -11,14 +12,20 @@ import {
   hostCount,
   inFlightByNode,
   isFlashing,
+  ledgerRows,
+  machineBanner,
+  PULSE_CAP,
   planTask,
   programList,
   progress,
+  rotationCountdown,
   stageStrip,
   stageTasks,
+  TASK_COLOR_LABELS,
   THROUGHPUT_WINDOW_MS,
   taskColor,
   throughput,
+  throughputSeries,
   withRedundancy,
 } from "./state.ts";
 
@@ -804,5 +811,204 @@ describe("dashboard v2: programs, stages, attempts, failures", () => {
     expect(sc.state.lastFailure?.executionId).toBe("e1");
     sc.send({ t: "executionDone", executionId: "e2", root: null, followUp: null });
     expect(sc.state.lastFailure).toBeNull();
+  });
+});
+
+describe("dashboard polish: flash kinds, the released colour, the chart, banners, the ledger", () => {
+  test("every event that moves a task flashes it with its kind and leaves a pulse", () => {
+    const sc = new Script();
+    sc.startStage(2);
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n1", attempt: 1 });
+    expect(sc.state.tasks.get("t1")?.flashKind).toBeNull();
+    sc.send({ t: "taskReassigned", taskId: "t1", fromNode: "n1" });
+    let t1 = sc.state.tasks.get("t1");
+    expect(t1).toMatchObject({ status: "pending", released: true, flashKind: "released" });
+    expect(taskColor(t1 as never)).toBe("released");
+    expect(sc.state.pulses.at(-1)).toMatchObject({
+      taskId: "t1",
+      kind: "released",
+      nodeId: "n1",
+      at: sc.now,
+    });
+    // Handed out again: the colour follows the holder; the kind stays as the last thing that happened.
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n2", attempt: 2 });
+    t1 = sc.state.tasks.get("t1");
+    expect(t1?.released).toBe(false);
+    expect(taskColor(t1 as never)).toBe("assigned");
+    expect(t1?.flashKind).toBe("released");
+    sc.send({ t: "taskSpeculated", taskId: "t1", nodeId: "n1" });
+    expect(sc.state.tasks.get("t1")?.flashKind).toBe("speculated");
+    expect(isFlashing(sc.state.tasks.get("t1")?.flashAt ?? null, sc.now)).toBe(true);
+    sc.send({ t: "taskDone", taskId: "t1", nodeId: "n2", output: HASH, place: null, computeMs: 3 });
+    expect(sc.state.tasks.get("t1")?.settledAt).toBe(sc.now);
+    sc.send({ t: "taskVerified", taskId: "t1", nodeId: "n1" });
+    expect(sc.state.tasks.get("t1")?.flashKind).toBe("verified");
+    sc.send({ t: "taskMismatch", taskId: "t1", nodeId: "n3" });
+    expect(sc.state.tasks.get("t1")).toMatchObject({
+      flashKind: "mismatch",
+      released: false,
+      settledAt: null,
+    });
+    expect(taskColor(sc.state.tasks.get("t1") as never)).toBe("mismatch");
+    expect(sc.state.pulses.map((p) => p.kind)).toEqual([
+      "released",
+      "speculated",
+      "verified",
+      "mismatch",
+    ]);
+    // A verification for a task never seen leaves no pulse; the list is capped.
+    sc.send({ t: "taskVerified", taskId: "ghost", nodeId: "n1" });
+    expect(sc.state.pulses).toHaveLength(4);
+    for (let i = 0; i < PULSE_CAP + 3; i++) {
+      sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n1", attempt: i + 1 });
+      sc.send({ t: "taskReassigned", taskId: "t2", fromNode: "n1" });
+    }
+    expect(sc.state.pulses).toHaveLength(PULSE_CAP);
+    expect(sc.state.pulses.every((p) => p.taskId === "t2")).toBe(true);
+    // A released task whose twin is still running keeps its holder's colour.
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n1", attempt: 30 });
+    sc.send({ t: "taskSpeculated", taskId: "t2", nodeId: "n2" });
+    sc.send({ t: "taskReassigned", taskId: "t2", fromNode: "n1" });
+    expect(sc.state.tasks.get("t2")).toMatchObject({ status: "assigned", released: false });
+    expect(taskColor(sc.state.tasks.get("t2") as never)).toBe("assigned");
+  });
+
+  test("the legend names every colour once, in the order a task passes through them", () => {
+    const keys = TASK_COLOR_LABELS.map(([k]) => k);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toEqual([
+      "pending",
+      "assigned",
+      "speculated",
+      "released",
+      "done",
+      "verified",
+      "mismatch",
+      "failed",
+    ]);
+    expect(TASK_COLOR_LABELS.every(([, label]) => label.length > 0)).toBe(true);
+  });
+
+  test("the chart buckets taskDone arrivals per second over the last minute", () => {
+    const sc = new Script(10, 200_000);
+    sc.startStage(4);
+    const land = (dt: number, id: string) => {
+      sc.send({ t: "taskAssigned", taskId: id, nodeId: "n1", attempt: 1 }, dt);
+      sc.send(
+        { t: "taskDone", taskId: id, nodeId: "n1", output: HASH, place: null, computeMs: 1 },
+        0,
+      );
+    };
+    land(0, "t1");
+    land(1_500, "t2");
+    land(500, "t3");
+    land(30_000, "t4");
+    const now = sc.now;
+    const series = throughputSeries(sc.state, now);
+    expect(series).toHaveLength(CHART_WINDOW_MS / 1000);
+    expect(series.reduce((a, b) => a + b, 0)).toBe(4);
+    expect(series[59]).toBe(1); // t4, this second
+    expect(series[29]).toBe(2); // t2 and t3, 30–31 s ago
+    expect(series[27]).toBe(1); // t1, 32 s ago
+    expect(throughputSeries(sc.state, now, 5)).toEqual([0, 0, 0, 0, 1]);
+    expect(throughputSeries(sc.state, now + CHART_WINDOW_MS).every((v) => v === 0)).toBe(true);
+    // The five-second rate has already forgotten the first three.
+    expect(sc.state.doneAt).toHaveLength(1);
+    expect(throughput(sc.state, now)).toBeCloseTo(0.2, 5);
+    // The next arrival prunes what fell out of the chart window.
+    land(CHART_WINDOW_MS + 1, "t5");
+    expect(sc.state.doneLog).toHaveLength(1);
+    expect(throughputSeries(sc.state, sc.now).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  test("the rotation countdown and the machine banner", () => {
+    const sc = new Script();
+    expect(machineBanner(sc.state, sc.now)).toBeNull();
+    expect(rotationCountdown(null, 5)).toBeNull();
+    sc.send({ t: "controlPlaneRotating", next: 3, reconnectAfterMs: 2_400 });
+    const at = sc.now;
+    expect(rotationCountdown(sc.state.rotation, at)).toBe(2_400);
+    expect(rotationCountdown(sc.state.rotation, at + 1_000)).toBe(1_400);
+    expect(rotationCountdown(sc.state.rotation, at + 9_000)).toBe(0);
+    expect(machineBanner(sc.state, at + 400)).toEqual({ kind: "rotating", next: 3, msLeft: 2_000 });
+    // Sleep is reported behind a rotation; the snapshot's asleep flag behind both.
+    sc.send({ t: "machineSleeping", reason: "ten minutes with nobody watching" });
+    expect(machineBanner(sc.state, sc.now)?.kind).toBe("rotating");
+    const rested = { ...sc.state, rotation: null };
+    expect(machineBanner(rested, sc.now)).toEqual({
+      kind: "sleeping",
+      reason: "ten minutes with nobody watching",
+    });
+    const asleep = applyMessage(
+      rested,
+      {
+        t: "snapshot",
+        ...env,
+        seq: sc.seq,
+        page: 0,
+        pages: 1,
+        nodes: [],
+        machine: {
+          awake: false,
+          reason: "an hour without anyone touching the dashboard",
+          redundancy: false,
+          nextRotationAt: null,
+          uptimeMs: 1,
+        },
+        tasks: [],
+        at: 0,
+      },
+      sc.now,
+    );
+    expect(asleep.sleeping).toBeNull();
+    expect(machineBanner(asleep, sc.now)).toEqual({
+      kind: "asleep",
+      reason: "an hour without anyone touching the dashboard",
+    });
+    expect(machineBanner({ ...asleep, machine: null }, sc.now)).toBeNull();
+  });
+
+  test("the ledger lists settled tasks newest first with their hashes and tile sizes", () => {
+    const sc = new Script();
+    sc.startStage(3);
+    expect(ledgerRows(sc.state)).toEqual([]);
+    sc.send({ t: "taskAssigned", taskId: "t1", nodeId: "n1", attempt: 1 });
+    sc.send({ t: "taskAssigned", taskId: "t2", nodeId: "n2", attempt: 1 });
+    sc.send({
+      t: "taskDone",
+      taskId: "t2",
+      nodeId: "n2",
+      output: "b".repeat(64),
+      place: { x: 64, y: 0, w: 64, h: 64 },
+      computeMs: 9,
+    });
+    sc.send({ t: "taskDone", taskId: "t1", nodeId: "n1", output: HASH, place: null, computeMs: 4 });
+    sc.send({ t: "taskAssigned", taskId: "t3", nodeId: "n1", attempt: 1 });
+    let rows = ledgerRows(sc.state);
+    expect(rows.map((r) => r.taskId)).toEqual(["t1", "t2"]);
+    expect(rows[0]).toMatchObject({
+      output: HASH,
+      size: 64 * 64 * 4,
+      nodeId: "n1",
+      computeMs: 4,
+      verified: false,
+    });
+    expect(rows[1]).toMatchObject({ output: "b".repeat(64), size: 64 * 64 * 4, nodeId: "n2" });
+    expect(ledgerRows(sc.state, 1).map((r) => r.taskId)).toEqual(["t1"]);
+    // A result without a placed tile has no size the dashboard can name; a twin's agreement shows.
+    sc.send({
+      t: "taskDone",
+      taskId: "t9",
+      nodeId: "n2",
+      output: "c".repeat(64),
+      place: null,
+      computeMs: 2,
+    });
+    sc.send({ t: "taskVerified", taskId: "t9", nodeId: "n1" });
+    rows = ledgerRows(sc.state);
+    expect(rows[0]).toMatchObject({ taskId: "t9", size: null, verified: true, nodeId: "n2" });
+    // A retraction drops the row.
+    sc.send({ t: "taskMismatch", taskId: "t1", nodeId: "n2" });
+    expect(ledgerRows(sc.state).map((r) => r.taskId)).toEqual(["t9", "t2"]);
   });
 });

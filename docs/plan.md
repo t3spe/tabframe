@@ -157,7 +157,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 
 **Goal:** the five-minute demo script runs unattended in Playwright; the dashboard explains itself.
 
-- [ ] **WP4.1 Dashboard polish.** Reassignment flashes, state colors and legend, rotation banner with countdown and generation, throughput chart, core-count hint on spawn, waking states, files and ledger panels finished.
+- [x] **WP4.1 Dashboard polish.** Reassignment flashes, state colors and legend, rotation banner with countdown and generation, throughput chart, core-count hint on spawn, waking states, files and ledger panels finished.
 - [ ] **WP4.2 Operations.** `/health` and `/diag` complete; log groups named; runbook `docs/runbook.md` (deploy, rotate, rollback, down, verify); budget confirmed firing on a test threshold.
 - [ ] **WP4.3 Performance and pacing.** Frame pacing about a minute per frame single-node; tile timing; reduce read batching if word count is slow; snapshot size and resume latency.
 - [ ] **WP4.4 Unattended demo.** Playwright runs the whole demo script; simulation long mode in CI nightly.

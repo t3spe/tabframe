@@ -7,8 +7,9 @@
 // The machine cycles through three programs: a Mandelbrot frame (the story of dashboard v1: a
 // straggler, a liar, a scrambled tile, kill half, a rotation), a word count (three stages, a
 // `bars` result, a filesystem to browse, logs on the tasks), and a broken program whose planner
-// traps (the failure banner). `?program=<name>` starts the cycle there; `?hold=1` pauses after the
-// first execution ends.
+// traps (the failure banner), after which the machine goes to sleep and wakes for the next frame
+// (the sleep banner). `?program=<name>` starts the cycle there; `?hold=1` pauses after the first
+// execution ends.
 import type {
   ControlPlaneToObserver,
   Counters,
@@ -35,6 +36,8 @@ const WORDCOUNT = "4d3b2a1908f7e6d5c4b3a2918070f6e5d4c3b2a1908f7e6d5c4b3a2918070
 const BROKEN = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
 /** The tile (in completion order) served under its true hash with the wrong bytes. */
 export const DEMO_SCRAMBLED_AT = 150;
+/** Why the demo machine sleeps after the broken program: the core's own wording (design §6.8). */
+export const DEMO_SLEEP_REASON = "an hour without anyone touching the dashboard";
 /** The programs the demo machine offers, in cycle order. */
 export const DEMO_CYCLE = ["mandelbrot", "wordcount", "mandelbrot", "broken"] as const;
 export type DemoProgram = (typeof DEMO_CYCLE)[number];
@@ -255,6 +258,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   let executionCounter = 40;
   let taskCounter = 3000;
   let redundancy = false;
+  let asleep = false;
   let done = 0;
   let execution: ExecutionView | null = null;
   let program: DemoProgram = "mandelbrot";
@@ -365,8 +369,8 @@ export function startDemo(opts: DemoOptions): DemoHandle {
                 },
               ],
               machine: {
-                awake: true,
-                reason: null,
+                awake: !asleep,
+                reason: asleep ? DEMO_SLEEP_REASON : null,
                 redundancy,
                 nextRotationAt: vnow + 19 * 60_000,
                 uptimeMs: 41 * 60_000,
@@ -393,6 +397,11 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   // ---- executions ------------------------------------------------------------------------------
 
   const startNext = (): void => {
+    // A machine that went to sleep wakes for the next execution; its snapshot says so.
+    if (asleep) {
+      asleep = false;
+      snapshot();
+    }
     program = DEMO_CYCLE[cycleAt % DEMO_CYCLE.length] as DemoProgram;
     cycleAt += 1;
     if (program === "mandelbrot") startFrame();
@@ -616,6 +625,10 @@ export function startDemo(opts: DemoOptions): DemoHandle {
         emit({ t: "taskFailed", taskId: planId, reason });
         emit({ t: "executionFailed", executionId, reason: `task ${planId} failed: ${reason}` });
         execution = null;
+        // Nothing runs and nobody has touched the dashboard for an hour: the machine sleeps until
+        // the next execution wakes it (design §6.8).
+        asleep = true;
+        emit({ t: "machineSleeping", reason: DEMO_SLEEP_REASON });
         ended();
       });
     });

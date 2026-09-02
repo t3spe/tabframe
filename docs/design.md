@@ -847,3 +847,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   (§6.8). A fresh ledger's clocks now start at the real time; with the zero default a new control
   plane believed nobody had watched it for decades and started asleep.
 
+- **2026-09-02 (WP4.1).** The dashboard's flashes cover every event that moves a task — taken
+  back, twinned, verified, retracted — not only reassignments (§6.7), and each leaves a pulse the
+  page lists in words. Released work has its own colour, distinct from never-assigned work. A
+  rotation or a sleep is a banner with the next generation and a countdown to the reconnect rather
+  than a line in the notice strip, and the canvas stays on screen while the observer reconnects, as
+  §9.4 promises. A ledger panel shows, per settled task, the output hash, the size, and where the
+  bytes live, making the hashes-not-bytes claim visible on the page.

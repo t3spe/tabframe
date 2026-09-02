@@ -1,6 +1,6 @@
 // Dashboard v2 panels (design §5.1, §6.7, §8.3): programs, queue, the stage strip, the result of
-// a `bars` or `text` program, the files behind an execution's root, a task's detail, and failure
-// surfacing. The state comes from `state.ts`; bytes come from the store by hash; controls go back
+// a `bars` or `text` program, the files behind an execution's root, a task's detail, the ledger
+// of settled tasks (hashes and where their bytes live), and failure surfacing. The state comes from `state.ts`; bytes come from the store by hash; controls go back
 // through the observer socket. No framework: each panel is a render function over the state that
 // rebuilds its DOM only when what it shows has changed, so buttons stay put under a finger.
 import type { ControlRequest } from "./observer.ts";
@@ -22,6 +22,7 @@ import {
   type AttemptRecord,
   type ClusterState,
   type ExecutionState,
+  ledgerRows,
   programList,
   stageStrip,
   type TaskState,
@@ -31,6 +32,8 @@ import type { BlobSource } from "./tiles.ts";
 export interface PanelDeps {
   /** The store as the page reaches it right now (the demo's in-memory store, or the CDN). */
   blobs(): BlobSource;
+  /** Where the store's blobs are addressed from, `<base>/<hash>`; null for the demo's in-page store. */
+  storeBase(): string | null;
   /** Issue a control; false when the machine is not there to take it. */
   send(control: ControlRequest): boolean;
   /** Ask the page to render again once a fetch has landed or a panel's own state moved. */
@@ -125,6 +128,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     filesRoot: $<HTMLSpanElement>(root, "#filesRoot"),
     filePreview: $<HTMLDivElement>(root, "#filePreview"),
     taskDetail: $<HTMLDivElement>(root, "#taskDetail"),
+    ledger: $<HTMLTableSectionElement>(root, "#ledger tbody"),
+    ledgerNote: $<HTMLParagraphElement>(root, "#ledgerNote"),
     followUp: $<HTMLDivElement>(root, "#followUp"),
     killExecution: $<HTMLButtonElement>(root, "#killExecution"),
   };
@@ -697,6 +702,80 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     els.taskDetail.append(logBox);
   }
 
+  // ---- ledger ----------------------------------------------------------------------------------
+
+  /** Sizes the folded manifest knows, by hash, once the execution's root has been fetched. */
+  function manifestSizes(exec: ExecutionState | null): Map<string, number> {
+    const out = new Map<string, number>();
+    if (!exec?.root) return out;
+    const bytes = cache.get(exec.root);
+    if (bytes === "pending" || bytes === "error" || bytes === null) return out;
+    try {
+      for (const f of listFiles(parseManifest(bytes))) out.set(f.hash, f.size);
+    } catch {
+      /* not a manifest: nothing to size */
+    }
+    return out;
+  }
+
+  /**
+   * The ledger panel makes the point the architecture rests on: the control plane holds hashes,
+   * never bytes. Each settled task shows its output hash, the size when it is known, and where the
+   * bytes actually live.
+   */
+  function renderLedger(state: ClusterState): void {
+    const exec = state.execution;
+    const rows = ledgerRows(state);
+    const store = deps.storeBase();
+    const sig = JSON.stringify([exec?.executionId, exec?.stage, rows, store, cache.version]);
+    if (!changed("ledger", sig)) return;
+    const sizes = manifestSizes(exec);
+    let settled = 0;
+    for (const t of state.tasks.values()) if (t.status === "done") settled++;
+    els.ledgerNote.textContent = exec
+      ? `The control plane holds hashes, not bytes: for each of the ${settled} settled ${settled === 1 ? "task" : "tasks"} of stage ${exec.stage} it keeps a 64-hex output hash; the bytes live in ${store ? "the store behind the CDN" : "this page's demo store"} and are fetched by hash. The newest ${Math.min(rows.length, 8) || ""} settled:`
+      : "The control plane holds hashes, not bytes. No execution is running, so there is nothing settled to list.";
+    els.ledger.replaceChildren(
+      ...rows.map((r) => {
+        const tr = el("tr");
+        tr.dataset.task = r.taskId;
+        tr.dataset.hash = r.output;
+        const size = r.size ?? sizes.get(r.output) ?? null;
+        if (size !== null) tr.dataset.size = String(size);
+        const hash = el("td", "mono", short(r.output, 8));
+        hash.title = r.output;
+        const where = el("td");
+        if (store) {
+          const a = el("a", "mono", `store/${r.output.slice(0, 6)}…`);
+          a.href = `${store.replace(/\/$/, "")}/${r.output}`;
+          a.target = "_blank";
+          a.rel = "noreferrer";
+          a.title = "the bytes, by hash, from the store";
+          where.append(a);
+        } else {
+          const here = el("span", "muted", "demo store");
+          here.title = "this page's in-memory store; nothing is on the network";
+          where.append(here);
+        }
+        tr.append(
+          el("td", "mono", r.taskId + (r.verified ? " ✓" : "")),
+          el("td", "mono", r.nodeId ?? "—"),
+          hash,
+          el("td", "num", size === null ? "—" : fmtBytes(size)),
+          where,
+        );
+        return tr;
+      }),
+    );
+    if (rows.length === 0) {
+      const tr = el("tr");
+      const td = el("td", "muted", exec ? "nothing settled yet" : "—");
+      td.colSpan = 5;
+      tr.append(td);
+      els.ledger.append(tr);
+    }
+  }
+
   // ---- glue -----------------------------------------------------------------------------------
 
   function selectTask(taskId: string | null): void {
@@ -726,6 +805,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     renderResult(state);
     renderFiles(state);
     renderTask(state);
+    renderLedger(state);
   }
 
   return {
