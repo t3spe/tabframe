@@ -570,17 +570,36 @@ export async function createControlPlane(
       return sendJson(res, 200, { drained: clients, next });
     }
     if (url.pathname === "/health") {
+      // Everything an operator needs at a glance and nothing a browser could not learn from the
+      // dashboard: counts, phases, the fleet, and whether the snapshotter is keeping up.
+      const nodes = [...(ledger?.nodes.values() ?? [])];
       return sendJson(res, 200, {
         ok: true,
         role,
+        phase: role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral",
         mode: config.mode,
         generation,
         protocol: PROTOCOL_VERSION,
-        nodes: ledger?.nodes.size ?? 0,
+        awake: ledger?.meta.awake ?? null,
+        sleepReason: ledger?.meta.sleepReason ?? null,
+        nodes: nodes.length,
+        nodesByKind: {
+          tab: nodes.filter((n) => n.kind === "tab").length,
+          core: nodes.filter((n) => n.kind === "core").length,
+        },
+        cores: [...(ledger?.cores.values() ?? [])].map((c) => ({
+          microvmId: c.microvmId,
+          ageMs: clock.now() - c.launchedAt,
+          linked: c.nodeId !== null,
+        })),
+        cloudCores: ledger?.config.cloudCores ?? false,
         observers: ledger?.observers.size ?? 0,
-        programs: ledger?.programs.size ?? 0,
+        programs: [...(ledger?.programs.values() ?? [])].map((p) => p.manifest.name),
         running: ledger?.running ?? null,
         queue: ledger?.queue.length ?? 0,
+        executions: ledger?.executions.size ?? 0,
+        tasks: ledger?.tasks.size ?? 0,
+        loopBackoffMs: ledger?.meta.loopBackoffMs ?? 0,
         snapshots: snapshotter.status,
         uptimeMs: clock.now() - startedAt,
       });
@@ -599,13 +618,41 @@ export async function createControlPlane(
       } catch (err) {
         dnsResult = `failed: ${String(err)}`;
       }
+      // The store round trip proves credentials, the bucket, and the network in one call.
+      let storeResult: string;
+      const t1 = Date.now();
+      try {
+        const probe = new TextEncoder().encode(`diag ${generation}`);
+        const hash = await store.put(probe);
+        const back = await store.get(hash);
+        storeResult = back
+          ? `ok (put and get ${probe.length} bytes in ${Date.now() - t1} ms)`
+          : "put succeeded but get returned nothing";
+      } catch (err) {
+        storeResult = `failed: ${String(err).slice(0, 160)}`;
+      }
+      const mem = process.memoryUsage();
       return sendJson(res, 200, {
         dns: dnsResult,
+        store: storeResult,
         storeBase: ledger?.meta.storeBase ?? storeBase,
-        blobs: local.size,
+        storeDriver: store === local ? "local" : "s3",
+        localBlobs: local.size,
+        snapshots: snapshotter.status,
         role,
         generation,
+        phase: role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral",
         node: process.version,
+        memoryMiB: {
+          rss: Math.round(mem.rss / 1048576),
+          heapUsed: Math.round(mem.heapUsed / 1048576),
+        },
+        uptimeMs: clock.now() - startedAt,
+        env: {
+          programsDir: config.programsDir,
+          sandboxWorker: process.env.TABFRAME_SANDBOX_WORKER ?? null,
+          cloudCores: ledger?.config.cloudCores ?? false,
+        },
       });
     }
     sendJson(res, 404, { error: "not found" });

@@ -42,7 +42,21 @@ export class FleetStack extends cdk.Stack {
 
     // session references rotate by its fixed name, not by resource, so the graph stays acyclic:
     // rotate needs the session URL, session needs only rotate's ARN.
+    // Named log groups with a retention the budget can live with; without them Lambda creates
+    // groups that keep everything forever.
+    const logs = cdk.aws_logs;
+    const sessionLogs = new logs.LogGroup(this, "SessionLogs", {
+      logGroupName: `/aws/lambda/${NAMES.sessionFunction}`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const rotateLogs = new logs.LogGroup(this, "RotateLogs", {
+      logGroupName: `/aws/lambda/${NAMES.rotateFunction}`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     this.session = new nodejs.NodejsFunction(this, "Session", {
+      logGroup: sessionLogs,
       functionName: NAMES.sessionFunction,
       entry: `${props.fleetDir}/src/lambda/session.ts`,
       handler: "handler",
@@ -79,6 +93,7 @@ export class FleetStack extends cdk.Stack {
     this.sessionUrl = this.session.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
     this.rotate = new nodejs.NodejsFunction(this, "Rotate", {
+      logGroup: rotateLogs,
       functionName: NAMES.rotateFunction,
       entry: `${props.fleetDir}/src/lambda/rotate.ts`,
       handler: "handler",

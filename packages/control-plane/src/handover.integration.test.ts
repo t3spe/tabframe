@@ -274,7 +274,7 @@ describe("a handover between two processes", () => {
       )
     ).json()) as { generation: number; programs: number };
     expect(health.generation).toBe(2);
-    expect(health.programs).toBe(1); // adopted, not reseeded
+    expect(health.programs).toEqual(["mandelbrot"]); // adopted, not reseeded
 
     // ---- the nodes come back and the render carries on -----------------------------------------
     const newObserver = await observe(newPort, 2);

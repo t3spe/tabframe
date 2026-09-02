@@ -168,7 +168,7 @@ describe("adopt from snapshot on /run", () => {
     const health = (await (
       await fetch(`http://127.0.0.1:${cp.privateAddress.port}/health`)
     ).json()) as Record<string, unknown>;
-    expect(health.programs).toBe(1);
+    expect(health.programs).toEqual(["mandelbrot"]);
     expect((health.snapshots as { writes: number }).writes).toBe(writesBefore + 2);
   });
 
