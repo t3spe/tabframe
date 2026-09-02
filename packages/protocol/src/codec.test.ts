@@ -38,6 +38,7 @@ const samples = {
     page: 0,
     pages: 1,
     at: 1_756_700_000_000,
+    tasks: [],
     nodes: [
       {
         nodeId: "n1",

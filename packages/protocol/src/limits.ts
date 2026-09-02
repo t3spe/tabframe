@@ -19,6 +19,14 @@ export const LIMITS = {
   /** Rate limits, messages per second per connection. */
   nodeMessagesPerSecond: 20,
   observerMessagesPerSecond: 5,
+  /** Results and uploads (design §5.5, §8.4). */
+  maxWriteFiles: 256,
+  maxWriteBytes: 16 * 1024 * 1024,
+  maxOutputBytes: 16 * 1024 * 1024,
+  maxLogBytes: 64 * 1024,
+  maxInlineLogBytes: 4 * 1024,
+  maxPresignItems: 300,
+  maxModuleBytes: 8 * 1024 * 1024,
   /** Reconnect backoff window. */
   reconnectMinMs: 500,
   reconnectMaxMs: 30_000,

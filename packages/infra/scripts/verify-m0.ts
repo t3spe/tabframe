@@ -235,14 +235,19 @@ try {
   }
 
   if (!only || only === "connections") {
+    // Paced at 4 opens per second (the endpoint throttles bursts of HTTP requests, and an upgrade
+    // is one), so a failure here is a concurrency limit rather than a rate limit.
     const sockets: WebSocket[] = [];
     let failures = 0;
+    let firstFailureAt: number | null = null;
     for (let i = 0; i < 250; i++) {
       try {
         sockets.push(await nodeSocket(tok));
       } catch {
         failures++;
+        if (firstFailureAt === null) firstFailureAt = i;
       }
+      await sleep(250);
     }
     let closed = 0;
     for (const ws of sockets) ws.onclose = () => closed++;
@@ -252,7 +257,7 @@ try {
     }
     record(
       "concurrent WebSocket connections",
-      `${sockets.length - closed} of 250 open after 20 s (${failures} failed to open, ${closed} closed)`,
+      `${sockets.length - closed} of 250 open after 20 s (${failures} failed to open${firstFailureAt === null ? "" : `, first failure at #${firstFailureAt + 1}`}, ${closed} closed)`,
       sockets.length - closed >= 250,
     );
     for (const ws of sockets) ws.close();
