@@ -158,10 +158,19 @@ function resolveInherit(ledger: Ledger, req: LaunchRequest): ExecutionRecord | n
 /** Start the next queued execution when nothing is running; the first act is a plan task. */
 export function maybeStart(ledger: Ledger, now: number): Effect[] {
   if (ledger.running) return [];
-  const next = ledger.queue.shift();
-  if (!next) return [];
-  const exec = ledger.executions.get(next);
-  if (!exec) return maybeStart(ledger, now);
+  const nextId = ledger.queue[0];
+  if (nextId === undefined) return [];
+  const queued = ledger.executions.get(nextId);
+  if (!queued) {
+    ledger.queue.shift();
+    return maybeStart(ledger, now);
+  }
+  // The loop's pause holds its queued continuations too, not only new launches: after a person's
+  // launch ends, the follow-up the previous frame left in the queue would otherwise take the
+  // stage at once (WP4.4: word count's bars lasted a tick). A person's own launch never waits.
+  if (!queued.human && now < (ledger.meta.loopPausedUntil ?? 0)) return [];
+  ledger.queue.shift();
+  const exec = queued;
   exec.status = "running";
   exec.startedAt = now;
   ledger.running = exec.executionId;
