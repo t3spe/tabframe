@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0 tagged `m0`. M1 all but done: WP1.1–1.8 and WP1.10 merged, and the deployed machine renders a Mandelbrot frame from browser tabs that matches the goldens tile for tile while half the cluster is killed (`docs/m1-verification.md`). WP1.9 churn simulation is the last M1 work package; M2 next.
+**Where we are (2026-09-02):** M0 tagged `m0`; M1 complete and verified on AWS (`docs/m1-verification.md`), including the churn simulation. M2: filesystem, word count, launch path, and the in-page editor merged; dashboard v2 (WP2.5), Playwright v1 (WP2.6) and the M2 deploy (WP2.7) remain. M3: control-plane lifecycle and fleet v1 merged; cloud cores (WP3.3), handover tests (WP3.4) and the M3 deploy (WP3.5) remain.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
