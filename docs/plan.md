@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0 deployed and public (WP0.11 verification: all checks pass except the concurrent-connection count, being re-measured); M1 started — WP1.1 protocol v1 on `wp/1.1-protocol-v1`.
+**Where we are (2026-09-02):** M0 complete and tagged `m0` — deployed, public, verified. M1 in progress: WP1.1 merged; WP1.4 sandbox and WP1.5 SDK + Mandelbrot in parallel worktrees; WP1.2 core v1 next.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -73,7 +73,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
   *Acceptance:* tests against a fake client; `mise run deploy` ends with a session URL that returns a live endpoint.
 - [x] **WP0.10 First public hello.** Page from CloudFront connects to the MicroVM control plane through the session token; hello/heartbeat visible in the dashboard and in CloudWatch.
   *Acceptance:* a second browser on another network sees the first browser's node join.
-- [ ] **WP0.11 `mise run verify`.** `verify-m0.ts` with masked output, one check per unknown, each with a pass criterion and the design fallback:
+- [x] **WP0.11 `mise run verify`.** `verify-m0.ts` with masked output, one check per unknown, each with a pass criterion and the design fallback:
 
 | Check | Method | Pass | Fallback |
 |---|---|---|---|
@@ -141,7 +141,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 
 **Goal:** the control plane rotates hourly under load on AWS with the render continuing; two cloud cores come and go with the machine's sleep policy; deploys are rotations.
 
-- [ ] **WP3.1 Control-plane lifecycle for real.** `/run` reads role, generation, snapshot key; `/suspend` and `/terminate` flush snapshots; `/resume` revalidates; `/handover`, `/adopt`, `/drain` on port 8081, gated by a fleet token and the fleet secret from the payload; drain closes clients with the rotating code plus a jittered reconnect delay sized to the client count (~25 ms per client, ≥ 2 s); generation stamping and rejection; `controlPlaneRotating`; rotating-reconnect close code.
+- [ ] **WP3.1 Control-plane lifecycle for real.** `/run` reads role, generation, snapshot key; `/suspend` and `/terminate` flush snapshots; `/resume` revalidates; `/handover`, `/adopt`, `/drain` on port 8081, gated by a fleet token and the fleet secret from the payload; drain closes clients with the rotating code plus a jittered reconnect delay sized to the client count (30 ms per client, ≥ 2 s); generation stamping and rejection; `controlPlaneRotating`; rotating-reconnect close code.
 - [ ] **WP3.2 Fleet v1.** Full handover protocol with failure paths and repair-on-next-run; session heals through rotate unless the pointer says off; hourly schedule **enabled** (gate); reserved concurrency 1; idempotency under concurrent heal requests; `rotate.ts`, `up.ts`, `down.ts` finished.
   *Acceptance:* fake-client tests for every branch; a real rotation on AWS with a render in flight completes the frame with matching hashes.
 - [ ] **WP3.3 Cloud cores.** Node platform hardened (session fetch, reconnect, Atomics read path under load); core role in the image; fleet policy in the control plane (desired 2 while awake, one launch per second, replace on death or age, core ids kept in the ledger and inherited at adopt); sleep policy (10 min without observers; 60 min without interaction); `machineSleeping`; wake on first visitor; core killed by a demo control is replaced.
@@ -186,7 +186,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 | Frames don't count as idle traffic | control plane suspends mid-demo | observer ping becomes HTTP | WP0.11 → WP0.6 |
 | Sync XHR in workers changes | browser read path | declared-prefetch fallback in the sandbox glue | WP1.4 |
 | Token-mint throttling | wake with many visitors | one shared token per control plane, cached | WP0.9 |
-| Lambda concurrency default of 10 | session function during a rotation reconnect storm | drain-time jitter window (~25 ms per client, ≥ 2 s) plus the shared cached token make the design work at 10; the requested increase to 1000 is margin | WP3.1 → WP3.5 |
+| Lambda concurrency default of 10, endpoint ~50 req/s | session function and socket upgrades during a rotation reconnect storm | drain-time jitter window (30 ms per client, ≥ 2 s) plus the shared cached token; measured in M0 | WP3.1 → WP3.5 |
 | Rotation coincides with a live demo | reviewer confusion | banner with countdown; explained in the video | WP4.1 |
 | Word count reduce is slow | 150 reads per reducer | fewer, larger map chunks; batch reads | WP4.3 |
 | AssemblyScript compiler size (23 MB unminified) | editor first open | minify, split binaryen into its own asset, lazy load in a worker with progress | WP2.4 |

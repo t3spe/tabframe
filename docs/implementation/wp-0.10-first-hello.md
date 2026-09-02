@@ -81,4 +81,4 @@ Seven items above, mirrored in the design record's drift log.
 - The MicroVM log group has streams but no events yet for the running control plane; the process
   logs JSON lines to stdout. Tracked for M4 operations; `/health` and `/diag` through the proxy
   cover M0.
-- `mise run verify` (WP0.11) runs next against this deployment.
+- `mise run verify` (WP0.11) ran against this deployment; results in `docs/m0-verification.md`.
