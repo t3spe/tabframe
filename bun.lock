@@ -94,6 +94,13 @@
         "@tabframe/protocol": "workspace:*",
       },
     },
+    "packages/sdk-as": {
+      "name": "@tabframe/sdk-as",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/protocol": "workspace:*",
+      },
+    },
     "packages/store": {
       "name": "@tabframe/store",
       "version": "0.0.0",
@@ -112,6 +119,13 @@
       "dependencies": {
         "@tabframe/node": "workspace:*",
         "@tabframe/protocol": "workspace:*",
+      },
+    },
+    "programs/mandelbrot": {
+      "name": "@tabframe/program-mandelbrot",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/sdk-as": "workspace:*",
       },
     },
   },
@@ -284,9 +298,13 @@
 
     "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
+    "@tabframe/program-mandelbrot": ["@tabframe/program-mandelbrot@workspace:programs/mandelbrot"],
+
     "@tabframe/protocol": ["@tabframe/protocol@workspace:packages/protocol"],
 
     "@tabframe/sandbox": ["@tabframe/sandbox@workspace:packages/sandbox"],
+
+    "@tabframe/sdk-as": ["@tabframe/sdk-as@workspace:packages/sdk-as"],
 
     "@tabframe/store": ["@tabframe/store@workspace:packages/store"],
 

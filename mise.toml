@@ -65,8 +65,8 @@ run = [
 ]
 
 [tasks.build]
-description = "Build everything (build:programs joins the list in WP1.5)"
-depends = ["build:web", "build:image"]
+description = "Build everything"
+depends = ["build:programs", "build:web", "build:image"]
 
 [tasks.deploy]
 description = "Deploy the stacks, then bring the machine up (on + rotate; a running control plane is left alone until M3 hands over)"
