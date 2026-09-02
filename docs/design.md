@@ -692,4 +692,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   only work of the running execution, and an ended execution leaves nothing pending or assigned.
   Snapshot pages are packed by bytes as well as by row count, since 256 rows of done tiles exceed
   the message cap (§8.3). A result closes the attempt it names; a report for another attempt of
-  the same task is evidence only, so a stale report never closes a newer attempt (§6.5).
+  the same task is evidence only, so a stale report never closes a newer attempt (§6.5). D7's
+  "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
+  free slot; a tie after two contested rounds is not a majority and starts another round, up to
+  four, after which report order breaks it.

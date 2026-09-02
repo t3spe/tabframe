@@ -134,14 +134,22 @@ Each item is a control-plane fix in this branch with a focused test in `packages
    computing work the control plane thought finished and was handed a third task (long seed
    845, `v39/n160 assigned t3055 with 2 already in flight`). A result now closes only its own
    attempt and still counts as evidence for the task.
+9. **A tied vote went to whoever reported first.** After two contested rounds between one liar and
+   one honest node the tally was one to one and the liar, being faster, was first in the list;
+   its tile was painted two milliseconds before a third node's honest report arrived (long seed
+   144, task t185). A tie is no longer a majority: the task goes round once more, up to a cap of
+   four rounds. And "recompute from scratch" (D7) now means by nodes that have not reported on
+   the task, whenever one has a free slot, so a fast liar cannot keep answering its own contest;
+   with nobody fresh, anyone free takes it and a cluster of two still makes progress.
 
 ## Evidence
 
-- `bun test packages/core`: 50 tests (43 core, 7 simulation), among them the new ones: solicited
+- `bun test packages/core`: 52 tests (45 core, 7 simulation), among them the new ones: solicited
   messages under the rate limit; the second attempt never goes to the node that answered; a node
   cannot agree with itself; the vote counts nodes; the vote's outcome reaches nodes and observers;
   a mismatch after the fold withdraws nothing; snapshot pages of a full frame of done tiles stay
-  under the cap; a stale result closes no newer attempt. Full workspace: 254 tests
+  under the cap; a stale result closes no newer attempt; a contested task goes to a node that has
+  not reported; a tie starts another round. Full workspace: {{WORKSPACE_TESTS}} tests
   pass; all three `tsc` projects clean; Biome clean.
 - `node packages/core/sim/run.ts`: normal scenario, seeds 1–120 on 32- and 64-tile subsets, all
   pass (about a minute in total); long scenario, seeds 1–25 on the 64-tile subset (180 s);
@@ -178,6 +186,9 @@ Recorded in design §17 (2026-09-03, WP1.9):
   pages than `tasks / 256`.
 - §6.5: a result closes the attempt it names; a report for any other attempt of the task is
   evidence only.
+- D7: a contested task is recomputed by nodes that have not reported on it when one has a free
+  slot; after two contested rounds a strict majority of nodes settles it, a tie starts another
+  round, and the fourth round's tie is broken by report order.
 
 Simulation simplifications, stated so nobody mistakes them for the machine's behaviour: the
 default loop's follow-up is pinned to the frame's own params (preset 0), `--tiles` trims the plan,
