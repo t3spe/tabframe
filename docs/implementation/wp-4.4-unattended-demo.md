@@ -78,7 +78,33 @@ the background, so the browser tests carry no AWS SDK.
 
 ## Results
 
-_Filled by the runs below._
+`mise run demo -- --repeat 3` on 2026-09-02 at 21:43 UTC against generation 42 of the deployed
+machine: **three passes in a row** (2.4, 3.9, and 2.4 minutes; generations 42 → 43 → 44 → 45,
+one rotation per pass). Twelve runs of the suite preceded it, each failing on something the fixes
+above name. One pass's timeline, from the suite's own log:
+
+| Beat | When | What the page showed |
+|---|---|---|
+| open the dashboard | 0 s | live; 4 nodes on 4 hosts within 2 s (two cloud cores were already up) |
+| another tab, spawn four | 3–10 s | 9 nodes on 5 hosts |
+| kill half | 10–46 s | the first click was lost (see below); the second took 5 nodes, 8 tasks taken back |
+| freeze half | 46–47 s | two named victims left the node table |
+| throttle half | 51–58 s | twins seen within 7 s; resume |
+| redundancy on | 59 s | verified tiles within seconds, mismatches 0 |
+| editor | 70–89 s | compiled in the page, launched as `mandelbrot-palette`, rendering 19 s later |
+| word count | 89–97 s | map 32 → reduce 8 → merge 1 → done, 25 bars, corpus in the files panel |
+| rotation | 97–119 s | rotating banner ("Reconnecting in 0.9 s"), generation 43 in 22 s, 7 nodes back |
+| ledger and files | 119–144 s | hashes, sizes, and where the bytes live |
+
+Reported, not required, across the three passes: kill half took back 0–8 tasks (0 when the frame
+had just completed); twins were seen in every pass; the first `kill half` click of the first pass
+was not applied within 30 s and the script's second click was — the dashboard's own socket had
+been refused or was reconnecting for longer than the ten-second hold, which is the endpoint
+ceiling of WP4.5 showing itself under a fresh page plus four spawns (the later passes, which pause
+fifteen seconds before opening the page, applied the first click). That is the one soft spot left in
+the demo and it is the platform's, not the machine's; an EC2 control plane (WP4.6) would remove it.
+
+The demo runs against AWS only; CI runs the local suites and skips this one.
 
 ## Tests
 
