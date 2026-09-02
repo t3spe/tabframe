@@ -58,17 +58,23 @@ description = "Bundle the browser entry points and copy static files (--watch fo
 run = "bun packages/web/scripts/build.ts"
 
 [tasks."build:image"]
-description = "Bundle the control-plane process for the MicroVM image"
-run = "bun build packages/control-plane/src/main.ts --target=node --outfile packages/control-plane/dist/main.js"
+description = "Bundle the control-plane process and stage the MicroVM image directory"
+run = [
+  "bun build packages/control-plane/src/main.ts --target=node --format=esm --outfile packages/control-plane/dist/main.js",
+  "node packages/infra/scripts/stage-image.ts",
+]
 
 [tasks.build]
-description = "Build everything"
-depends = ["build:programs", "build:web", "build:image"]
+description = "Build everything (build:programs joins the list in WP1.5)"
+depends = ["build:web", "build:image"]
 
 [tasks.deploy]
-description = "Deploy the stacks and rotate onto the new image version"
+description = "Deploy the stacks, then bring the machine up (on + rotate; a running control plane is left alone until M3 hands over)"
 depends = ["whoami", "build", "test"]
-run = ["cdk deploy --all --require-approval never", "node packages/fleet/scripts/rotate.ts"]
+run = [
+  "TABFRAME_IMAGE_DIR=packages/infra/image-dist cdk deploy --all --require-approval never",
+  "node packages/fleet/scripts/up.ts",
+]
 
 [tasks.verify]
 description = "M0 runbook against the real account (masked output)"

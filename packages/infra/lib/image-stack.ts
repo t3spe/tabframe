@@ -94,9 +94,17 @@ export class ImageStack extends cdk.Stack {
     );
     this.controlPlaneRole.addToPolicy(
       new iam.PolicyStatement({
+        // The managed connectors live in the "aws" account; a wildcard on their ARN pattern was still
+        // denied at deploy, so this action is granted on "*".
+        actions: ["lambda:PassNetworkConnector"],
+        resources: ["*"],
+      }),
+    );
+    this.controlPlaneRole.addToPolicy(
+      new iam.PolicyStatement({
+        // PassRole is limited to the one role; a PassedToService condition is not honored by RunMicrovm.
         actions: ["iam:PassRole"],
         resources: [this.coreRole.roleArn],
-        conditions: { StringEquals: { "iam:PassedToService": "lambda.amazonaws.com" } },
       }),
     );
 
@@ -120,6 +128,8 @@ export class ImageStack extends cdk.Stack {
         { key: "TABFRAME_IMAGE_ARN", value: this.imageArn },
         { key: "TABFRAME_PUBLIC_PORT", value: String(PORTS.public) },
         { key: "TABFRAME_PRIVATE_PORT", value: String(PORTS.private) },
+        { key: "TABFRAME_MODE", value: "image" },
+        { key: "TABFRAME_HOST", value: "0.0.0.0" },
       ],
       // Hooks are ENABLED/DISABLED flags; the paths are fixed by the platform at
       // `${HOOK_BASE}/<hook>` on the configured port (private, 8081).

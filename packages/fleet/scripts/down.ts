@@ -2,5 +2,5 @@
 import { down } from "../src/ops.ts";
 import { mask, operatorDeps } from "./_deps.ts";
 
-const result = await down(operatorDeps());
+const result = await down(await operatorDeps());
 console.log(mask(JSON.stringify(result)));

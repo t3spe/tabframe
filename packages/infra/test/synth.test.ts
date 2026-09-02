@@ -6,6 +6,7 @@ import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { CoreStack } from "../lib/core-stack.ts";
 import { FleetStack } from "../lib/fleet-stack.ts";
 import { ImageStack } from "../lib/image-stack.ts";
+import { WebStack } from "../lib/web-stack.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -30,11 +31,19 @@ function synth(budgetEmail?: string) {
     image,
     fleetDir: resolve(repoRoot, "packages/fleet"),
   });
+  const web = new WebStack(app, "TabframeWeb", {
+    env,
+    core,
+    fleet,
+    // A directory that exists in the repo stands in for the built bundle.
+    distDir: resolve(repoRoot, "packages/web/public"),
+  });
   const assembly = app.synth();
   return {
     core: Template.fromStack(core),
     image: Template.fromStack(image),
     fleet: Template.fromStack(fleet),
+    web: Template.fromStack(web),
     assembly,
     coreStack: core,
   };
@@ -191,11 +200,9 @@ describe("Fleet stack", () => {
       FunctionName: "tabframe-session",
       Runtime: "nodejs22.x",
       Architectures: ["arm64"],
-      ReservedConcurrentExecutions: 5,
     });
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-rotate",
-      ReservedConcurrentExecutions: 1,
       Timeout: 300,
       Environment: {
         Variables: Match.objectLike({
@@ -206,11 +213,18 @@ describe("Fleet stack", () => {
     });
   });
 
-  test("a public function URL with CORS for GET, and an hourly rule created disabled", () => {
-    fleet.hasResourceProperties("AWS::Lambda::Url", {
-      AuthType: "NONE",
-      Cors: Match.objectLike({ AllowMethods: ["GET"] }),
-    });
+  test("a public function URL without URL-level CORS (the handler answers it), and an hourly rule created disabled", () => {
+    fleet.hasResourceProperties("AWS::Lambda::Url", { AuthType: "NONE" });
+    const urls = Object.values(fleet.findResources("AWS::Lambda::Url"));
+    expect(urls.length).toBe(1);
+    expect(urls[0]?.Properties?.Cors).toBeUndefined();
+    // The store base handed to clients is the blob prefix behind CloudFront.
+    const fns = Object.values(fleet.findResources("AWS::Lambda::Function"));
+    for (const fn of fns) {
+      const vars = fn.Properties?.Environment?.Variables as Record<string, unknown> | undefined;
+      if (vars?.TABFRAME_STORE_BASE)
+        expect(JSON.stringify(vars.TABFRAME_STORE_BASE)).toContain("/blob");
+    }
     fleet.hasResourceProperties("AWS::Events::Rule", {
       Name: "tabframe-rotate-hourly",
       ScheduleExpression: "rate(1 hour)",
@@ -248,5 +262,33 @@ describe("assembly", () => {
     expect(deps.TabframeCore).toEqual([]);
     expect(deps.TabframeImage).toEqual(["TabframeCore"]);
     expect(deps.TabframeFleet).toEqual(["TabframeCore", "TabframeImage"]);
+    expect(deps.TabframeWeb).toEqual(["TabframeCore", "TabframeFleet"]);
+  });
+});
+
+describe("Web stack", () => {
+  const { web, image } = synth();
+  test("deploys the bundle plus a config.json naming the session URL and invalidates the distribution", () => {
+    web.hasResourceProperties("Custom::CDKBucketDeployment", {
+      DistributionPaths: ["/*"],
+      Prune: true,
+    });
+    const deployments = Object.values(web.findResources("Custom::CDKBucketDeployment"));
+    expect(deployments.length).toBe(1);
+    // Two sources: the bundle asset and the generated config.json, whose session URL is a deploy-time
+    // token substituted through SourceMarkers.
+    const props = deployments[0]?.Properties as { SourceObjectKeys?: unknown[] } | undefined;
+    expect(props?.SourceObjectKeys?.length).toBe(2);
+    expect(JSON.stringify(props)).toContain("SourceMarkers");
+  });
+  test("the image runs in image mode bound to all interfaces", () => {
+    const images = Object.values(image.findResources("AWS::Lambda::MicrovmImage"));
+    const vars = images[0]?.Properties?.EnvironmentVariables as Array<{
+      Key: string;
+      Value: string;
+    }>;
+    const byKey = Object.fromEntries(vars.map((v) => [v.Key, v.Value]));
+    expect(byKey.TABFRAME_MODE).toBe("image");
+    expect(byKey.TABFRAME_HOST).toBe("0.0.0.0");
   });
 });

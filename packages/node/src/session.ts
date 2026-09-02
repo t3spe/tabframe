@@ -36,8 +36,28 @@ export async function fetchSession(sessionUrl: string, fetchImpl: FetchLike): Pr
   ) {
     throw new Error("malformed session");
   }
-  const expiresAt = typeof body.expiresAt === "number" ? body.expiresAt : Date.now() + 25 * 60_000;
-  return { kind: "on", endpoint, token, expiresAt, storeBase, generation };
+  const expiresAt =
+    typeof body.expiresAt === "number"
+      ? body.expiresAt
+      : typeof body.expiresAt === "string" && !Number.isNaN(Date.parse(body.expiresAt))
+        ? Date.parse(body.expiresAt)
+        : Date.now() + 25 * 60_000;
+  return {
+    kind: "on",
+    endpoint: socketEndpoint(endpoint),
+    token,
+    expiresAt,
+    storeBase,
+    generation,
+  };
+}
+
+/** The session may hand out a bare host (MicroVM endpoints have no scheme); sockets need wss. */
+export function socketEndpoint(endpoint: string): string {
+  const trimmed = endpoint.replace(/\/$/, "");
+  if (/^wss?:\/\//.test(trimmed)) return trimmed;
+  if (/^https?:\/\//.test(trimmed)) return trimmed.replace(/^http/, "ws");
+  return `wss://${trimmed}`;
 }
 
 /** The subprotocols a browser passes the MicroVM proxy (design §9.1). A local token needs none. */

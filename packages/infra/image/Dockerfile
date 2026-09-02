@@ -4,6 +4,7 @@
 FROM public.ecr.aws/lambda/microvms:al2023-minimal
 RUN dnf install -y nodejs22 && dnf clean all
 WORKDIR /app
+COPY package.json /app/package.json
 COPY main.js /app/main.js
 COPY programs/ /app/programs/
 EXPOSE 8080 8081
