@@ -483,7 +483,11 @@ over a few connections — an API Gateway WebSocket API (`PostToConnection` for 
 integration for inbound), IoT Core, or a relay tier of MicroVMs (each relay is itself capped at 16
 clients, so a relay tier caps out around 240 before the control plane's own budget is spent). The
 protocol survives any of them unchanged: the core already speaks to connections through a `Transport`
-seam. Which edge, and whether at all, is an open decision recorded in the plan (WP4.6).
+seam. **Decided 2026-09-02 (Mircea):** document the ceiling for now and scope the demo to it; after
+M5, evaluate hosting the control plane on an **EC2 instance** instead of a MicroVM — no per-VM
+connection quota, thousands of sockets on one host, the same process and protocol — at the cost of
+the MicroVM story (snapshot boot, hooks, suspend/resume) and a different rotation mechanism. The
+plan's WP4.6 keeps the alternatives.
 
 ### 9.5 Costs
 
@@ -612,7 +616,7 @@ Three stacks in dependency order — **Core** (buckets for artifacts, blobs, sna
 
 ### 11.5 Repo policy
 
-Created by Mircea at `github.com/t3spe/tabframe`; **private until the end, then public.** License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the plan, the time log, architecture, rationale, and transcripts — export mechanism to be decided later). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
+Created by Mircea at `github.com/t3spe/tabframe`; **private until the end, then public.** License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the plan, the time log, architecture, rationale, and transcripts — export mechanism to be decided later). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
 
 ---
 
@@ -825,4 +829,8 @@ Dated deviations discovered while building, recorded before the code landed (pla
   Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
   historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the
   options are in §9.7 and the plan's WP4.6.
+- **2026-09-02 (WP4.8).** CI is a gate, not a report: `main` must be green in CI before the next
+  work package starts (§11). The churn simulation builds the demo programs on demand when
+  `programs/*/dist` is absent, so `bun test` works on a fresh checkout; CI also builds them
+  explicitly.
 

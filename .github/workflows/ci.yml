@@ -61,6 +61,10 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install chromium
 
+      - name: Build the demo programs
+        # The simulation and the browser suites need programs/*/dist, which is not committed.
+        run: mise run build:programs
+
       - name: Lint and type check
         run: mise run lint
 

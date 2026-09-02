@@ -2,7 +2,8 @@
 // the fake store as a bundle, and run through the real sandbox. Task computations are memoized
 // per process: the bytes of a task are a pure function of module, kind, input, and filesystem
 // root, so twins, retries, and later seeds reuse them instead of paying the WebAssembly time again.
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -37,12 +38,22 @@ export interface LoadedProgram {
 
 export function loadProgram(name = "mandelbrot"): LoadedProgram {
   const dir = path.join(ROOT, "programs", name);
+  const built = path.join(dir, "dist", "program.wasm");
+  if (!existsSync(built)) {
+    // A fresh checkout has no built programs (dist/ is not committed). Build them here, once, the
+    // way `mise run build:programs` does, so `bun test` needs no step before it — this is what CI
+    // was missing for a day (WP4.8).
+    execFileSync("node", [path.join(ROOT, "packages/sdk-as/scripts/build-programs.ts")], {
+      cwd: ROOT,
+      stdio: "ignore",
+    });
+  }
   let wasm: Uint8Array;
   try {
-    wasm = new Uint8Array(readFileSync(path.join(dir, "dist", "program.wasm")));
+    wasm = new Uint8Array(readFileSync(built));
   } catch {
     throw new Error(
-      `programs/${name}/dist/program.wasm is missing; run \`mise run build:programs\``,
+      `programs/${name}/dist/program.wasm is missing and could not be built; run \`mise run build:programs\``,
     );
   }
   const manifest = programManifest.parse(
