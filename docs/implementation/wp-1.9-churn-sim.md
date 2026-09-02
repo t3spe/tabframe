@@ -190,9 +190,10 @@ turned up the `commandHalf` bug above, which is a real one.
 - **The acceptance line — 1 000 seeds in long mode:** seeds 1–1000 of the long scenario on the
   64-tile subset, six parallel shards, **1 000 passed, 0 failed**, on the merged core with every
   fix above (about 33 minutes per shard; 18–28 thousand real task computations each). The matrix
-  was run three times: on the branch's own core before the merge with main (1 000 passed), on the
-  merged core (999 passed, seed 381 stalled — the model bug and the `commandHalf` bug above), and
-  again after fixing both, which is the run quoted here.
+  was run four times: on the branch's own core before the merge with main (1 000 passed), on the
+  merged core (999 passed, seed 381 stalled — the model bug and the `commandHalf` bug above),
+  again after fixing both (1 000 passed), and once more on top of WP3.3 and WP3.4, which is the
+  run quoted here.
 - A typical line: `seed 24 ok frames 48 done, 4 cancelled, 0 failed nodes 216 joins (peak 28), 34
   leaves, 54 crashes, 37 freezes tasks 5015 attempts, 3360 done, 44 reassigned, 155 speculated,
   6 verified, 0 mismatched closes declaredGone 109 lies 6 told, 5 accepted virtual 5.0 min, wall
