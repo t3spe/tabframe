@@ -246,6 +246,18 @@ a close.
   former self. Agreement by host id would not help, since the host id is self-reported; the
   design's answer to a malicious host is the toggle plus verification at the dashboard, not sybil
   resistance, and the simulation counts such tiles as accepted lies rather than violations.
+- **The cloud-core fleet is not simulated yet (WP3.3).** The core now emits `launchCore` and
+  `terminateCore` and accepts `coreLaunched`/`coreGone`, and the merge added those to the
+  simulation's trace formatter — but not to its effect executor, so the sim never answers a
+  `launchCore` and no cloud core ever joins. Everything below the fleet is still covered (a node
+  of kind `core` is drawn by the chaos generator like any other), but the fleet policy of §6.8
+  — two cores while awake, replacement on death, the sleep timers — is unexercised here and rests
+  on its own unit tests. Closing it is small and worth doing: answer `launchCore` by spawning a
+  `VirtualNode` of kind `core` after a launch delay, remember its `microvmId`, dispatch
+  `coreLaunched`, and on `terminateCore` make that node leave and dispatch `coreGone`; then assert
+  the machine keeps two cores while an observer is connected and none once it sleeps. It belongs
+  to whoever owns WP3.3's policy, since the assertions are that policy's.
+
 - The virtual node models what WP1.6's orchestrator must do on the wire (one presign per task's
   new hashes, then the result; reconnect as a new node; the four commands). The simulation can host
   the real orchestrator later by swapping the node model for it behind the same socket interface.
