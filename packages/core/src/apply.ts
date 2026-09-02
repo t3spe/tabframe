@@ -28,6 +28,7 @@ import {
 } from "./executions.ts";
 import {
   type ConnRole,
+  type ConnState,
   executionView,
   type Ledger,
   type NodeRecord,
@@ -133,18 +134,16 @@ function onMessage(
   const conn = ledger.conns.get(connId);
   if (!conn) return [];
 
-  const rate =
-    conn.role === "node" ? LIMITS.nodeMessagesPerSecond : LIMITS.observerMessagesPerSecond;
-  const b = conn.bucket;
-  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
-  b.refilledAt = now;
-  if (b.tokens < 1) return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
-  b.tokens -= 1;
-
   const opts = { expectGen: ledger.meta.generation };
   if (conn.role === "node") {
     const d = decode(nodeToControlPlane, raw, opts);
     if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+    // Results and presigns answer assignments, which maxInFlight already paces (a fast node on
+    // small tiles legitimately sends dozens a second); the bucket covers what a node sends on
+    // its own initiative.
+    const solicited = d.msg.t === "result" || d.msg.t === "presign";
+    if (!solicited && !takeToken(conn, LIMITS.nodeMessagesPerSecond, now))
+      return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
     switch (d.msg.t) {
       case "hello":
         return onHello(ledger, connId, d.msg, now);
@@ -170,6 +169,8 @@ function onMessage(
   }
   const d = decode(observerToControlPlane, raw, opts);
   if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+  if (!takeToken(conn, LIMITS.observerMessagesPerSecond, now))
+    return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
   switch (d.msg.t) {
     case "subscribe":
       return onSubscribe(ledger, connId, now);
@@ -185,6 +186,16 @@ function onMessage(
       ledger.meta.lastInteractionAt = now;
       return onControl(ledger, connId, d.msg, now, rng);
   }
+}
+
+/** The per-connection token bucket: refill at the rate, spend one; false when it is empty. */
+function takeToken(conn: ConnState, rate: number, now: number): boolean {
+  const b = conn.bucket;
+  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
+  b.refilledAt = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
 }
 
 function onControl(

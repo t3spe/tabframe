@@ -32,13 +32,18 @@ export function wanted(task: TaskRecord): number {
   return Math.max(0, task.requiredAgreement - currentRoundResults(task) - runningAttempts(task));
 }
 
+/** The node already reported this round: a second attempt there could only agree with itself. */
+function answered(task: TaskRecord, nodeId: string): boolean {
+  return task.results.some((r) => r.round === task.contestedRounds && r.nodeId === nodeId);
+}
+
 function fillable(task: TaskRecord, nodeId: string): boolean {
-  return wanted(task) > 0 && !holds(task, nodeId);
+  return wanted(task) > 0 && !holds(task, nodeId) && !answered(task, nodeId);
 }
 
 /** Overdue with exactly one open attempt, nothing wanted: a speculative twin may join (tier three). */
 function speculatable(task: TaskRecord, nodeId: string, now: number): boolean {
-  if (task.status !== "assigned" || wanted(task) > 0) return false;
+  if (task.status !== "assigned" || wanted(task) > 0 || answered(task, nodeId)) return false;
   const running = task.attempts.filter((a) => a.outcome === "running");
   if (running.length !== 1) return false;
   const a = running[0];

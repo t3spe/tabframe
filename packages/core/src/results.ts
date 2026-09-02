@@ -79,6 +79,14 @@ export function onResult(
           round: task.contestedRounds,
         };
 
+  // One report per node per round: a repeat of what the node already said adds no evidence
+  // (agreement means two nodes, D7); a node that contradicts itself goes through the mismatch path.
+  const earlier = task.results.find(
+    (r) => r.round === task.contestedRounds && r.nodeId === node.nodeId,
+  );
+  if (earlier && earlier.identity === record.identity)
+    return { effects, settlement: { kind: "none" } };
+
   // A result for a settled task is a duplicate: verify or contest it.
   if (task.status === "done" && task.accepted) {
     if (record.identity === task.accepted.identity) {
@@ -89,10 +97,18 @@ export function onResult(
       return { effects, settlement: { kind: "none" } };
     }
     task.results.push(record);
-    return {
-      effects: [...effects, ...contest(ledger, exec, task, node.nodeId)],
-      settlement: settleContested(ledger, exec, task, now, effects),
-    };
+    if (sealed(exec, task)) {
+      // The stage is folded (or the plan consumed): the result is committed. The disagreement is
+      // announced and counted, but nothing is withdrawn.
+      exec.counters.mismatched += 1;
+      effects.push(
+        ...broadcast(ledger, { t: "taskMismatch", taskId: task.taskId, nodeId: node.nodeId }),
+      );
+      return { effects, settlement: { kind: "none" } };
+    }
+    effects.push(...contest(ledger, exec, task, node.nodeId));
+    const settlement = settleContested(ledger, exec, task, now, effects);
+    return { effects, settlement };
   }
   if (task.status === "failed") return { effects, settlement: { kind: "none" } };
 
@@ -112,6 +128,15 @@ export function onResult(
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };
+}
+
+/**
+ * A done task whose result the execution has already built on: a plan task once its spec was
+ * fetched, a run task once its stage was folded. Retracting it would unwind a manifest that
+ * later stages may read, so a late mismatch there is recorded, not acted on.
+ */
+function sealed(exec: ExecutionRecord, task: TaskRecord): boolean {
+  return task.kind === "plan" || task.stage <= (exec.sealedStage ?? -1);
 }
 
 function settlementFor(task: TaskRecord, result: ResultRecord): Settlement {
@@ -184,7 +209,10 @@ function contest(
   return effects;
 }
 
-/** After the second contested round, the majority identity across every result wins (D7). */
+/**
+ * After the second contested round, the identity reported by the most nodes wins (D7). Votes are
+ * nodes, not reports: a node that keeps reporting the same bytes round after round counts once.
+ */
 function settleContested(
   ledger: Ledger,
   exec: ExecutionRecord,
@@ -193,17 +221,17 @@ function settleContested(
   effects: Effect[],
 ): Settlement {
   if (task.contestedRounds < 2) return { kind: "contested", task };
-  const votes = new Map<string, { count: number; first: ResultRecord }>();
+  const votes = new Map<string, { nodes: Set<string>; first: ResultRecord }>();
   for (const r of task.results) {
     const v = votes.get(r.identity);
-    if (v) v.count += 1;
-    else votes.set(r.identity, { count: 1, first: r });
+    if (v) v.nodes.add(r.nodeId);
+    else votes.set(r.identity, { nodes: new Set([r.nodeId]), first: r });
   }
   let winner: ResultRecord | null = null;
   let best = -1;
-  for (const { count, first } of votes.values()) {
-    if (count > best) {
-      best = count;
+  for (const { nodes, first } of votes.values()) {
+    if (nodes.size > best) {
+      best = nodes.size;
       winner = first;
     }
   }

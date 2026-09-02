@@ -148,7 +148,8 @@ describe("deadlines and speculation", () => {
 
 describe("verification", () => {
   test("a disagreeing duplicate contests the tile: retracted, recomputed, and voted on after two rounds", () => {
-    const { h, spec } = machine(2, 1);
+    // Two tasks, so the stage is still open (unsealed) when the late duplicate arrives.
+    const { h, spec } = machine(2, 2);
     const [a] = h.assigns(spec);
     if (!a) throw new Error("no assign");
     h.result(a.connId, a.taskId, a.attempt, H("1"));
@@ -176,6 +177,56 @@ describe("verification", () => {
     expect(h.invariants()).toEqual([]);
   });
 
+  test("the vote's outcome reaches nodes and observers when a late duplicate triggers it", () => {
+    const { h, spec } = machine(2, 2);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    const other = a.connId === "c1" ? "c2" : "c1";
+    h.result(a.connId, a.taskId, a.attempt, H("1"));
+    const contested = h.result(other, a.taskId, 9, H("2"));
+    const [again] = h.assigns(contested);
+    if (!again) throw new Error("no reassignment");
+    h.result(again.connId, again.taskId, again.attempt, H("2"));
+    const seqBefore = h.ledger.meta.seq;
+    const voted = h.result(again.connId === "c1" ? "c2" : "c1", a.taskId, 9, H("3"));
+    // The mismatch and the vote's taskDone are both announced, with consecutive sequence numbers.
+    const events = eventsOf(voted, "o1");
+    expect(events).toEqual(["taskMismatch", "taskDone"]);
+    const seqs = voted
+      .filter((e) => e.kind === "send" && e.connId === "o1")
+      .map((e) => (e.kind === "send" && "seq" in e.msg ? e.msg.seq : -1));
+    expect(seqs).toEqual([seqBefore + 1, seqBefore + 2]);
+    expect(h.ledger.tasks.get(a.taskId)).toMatchObject({ status: "done", resolvedByVote: true });
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("a mismatch after the fold is announced but withdraws nothing", () => {
+    const { h, spec } = machine(2, 1);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    const folded = h.result(a.connId, a.taskId, a.attempt, H("1"));
+    expect(folded.some((e) => e.kind === "putBlob")).toBe(true);
+    const other = a.connId === "c1" ? "c2" : "c1";
+    const late = h.result(other, a.taskId, 9, H("2"));
+    expect(eventsOf(late, "o1")).toEqual(["taskMismatch"]);
+    expect(h.assigns(late)).toEqual([]);
+    const task = h.ledger.tasks.get(a.taskId);
+    expect(task).toMatchObject({ status: "done", contestedRounds: 0 });
+    expect(task?.accepted?.output).toBe(H("1"));
+    expect(h.ledger.executions.get("e1")?.counters.mismatched).toBe(1);
+    // The stage advances on the manifest that was folded; the execution finishes cleanly.
+    const stored = h.manifestStored(folded);
+    const [plan] = h.assigns(stored);
+    if (!plan) throw new Error("no plan task");
+    expect(plan.kind).toBe("plan");
+    const done = h.result(plan.connId, plan.taskId, plan.attempt, H("9"));
+    const finished = h.planSpec(done, doneSpec());
+    expect(eventsOf(finished, "o1")).toContain("executionDone");
+    expect(h.ledger.executions.get("e1")?.status).toBe("done");
+    for (const n of h.ledger.nodes.values()) expect(n.inFlight).toEqual([]);
+    expect(h.invariants()).toEqual([]);
+  });
+
   test("with redundancy on, a task needs two agreeing results before it is done", () => {
     const { h, spec } = machine(2, 1, { redundancy: true });
     const a = h.assigns(spec);
@@ -187,6 +238,65 @@ describe("verification", () => {
     expect(h.ledger.tasks.get(x.taskId)?.status).toBe("assigned");
     const second = h.result(y.connId, y.taskId, y.attempt, H("7"));
     expect(eventsOf(second, "o1")).toContain("taskDone");
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("under redundancy the second attempt never goes to the node that already answered", () => {
+    const { h, spec } = machine(2, 1, { redundancy: true });
+    const [x, y] = h.assigns(spec) as [
+      NonNullable<ReturnType<typeof h.assigns>[0]>,
+      NonNullable<ReturnType<typeof h.assigns>[0]>,
+    ];
+    // The twin's node dies before reporting; the first node reports and has a free slot.
+    h.disconnect(y.connId);
+    const effects = h.result(x.connId, x.taskId, x.attempt, H("7"));
+    expect(h.assigns(effects)).toEqual([]);
+    expect(h.assigns(h.tick())).toEqual([]);
+    const task = h.ledger.tasks.get(x.taskId);
+    expect(task?.status).toBe("assigned");
+    expect(task?.results.length).toBe(1);
+    // A third node brings the independent computation the toggle promises.
+    const [z] = h.assigns(h.hello("c3", "h3"));
+    if (!z) throw new Error("no assign for the newcomer");
+    expect(z.taskId).toBe(x.taskId);
+    expect(z.connId).toBe("c3");
+    const done = h.result("c3", z.taskId, z.attempt, H("7"));
+    expect(eventsOf(done, "o1")).toContain("taskDone");
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("a node cannot agree with itself: a repeat report in the same round adds nothing", () => {
+    const { h, spec } = machine(2, 1, { redundancy: true });
+    const [x, y] = h.assigns(spec) as [
+      NonNullable<ReturnType<typeof h.assigns>[0]>,
+      NonNullable<ReturnType<typeof h.assigns>[0]>,
+    ];
+    h.result(x.connId, x.taskId, x.attempt, H("7"));
+    const repeat = h.result(x.connId, x.taskId, 9, H("7"));
+    expect(eventsOf(repeat, "o1")).not.toContain("taskDone");
+    expect(h.ledger.tasks.get(x.taskId)?.results.length).toBe(1);
+    expect(h.ledger.executions.get("e1")?.counters.verified).toBe(0);
+    const done = h.result(y.connId, y.taskId, y.attempt, H("7"));
+    expect(eventsOf(done, "o1")).toContain("taskDone");
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("the vote counts nodes, not reports: a persistent liar is outvoted by two honest nodes", () => {
+    const { h, spec } = machine(3, 2);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    // c1 lies, c2 disagrees late: contested. c1 (first free node) recomputes and lies again.
+    h.result(a.connId, a.taskId, a.attempt, H("a"));
+    const contested = h.result("c2", a.taskId, 9, H("b"));
+    const [again] = h.assigns(contested);
+    if (!again) throw new Error("no reassignment");
+    expect(again.connId).toBe(a.connId);
+    h.result(again.connId, again.taskId, again.attempt, H("a"));
+    // c3 disagrees late as well: second contested round, and the vote counts two nodes for b.
+    h.result("c3", a.taskId, 9, H("b"));
+    const task = h.ledger.tasks.get(a.taskId);
+    expect(task).toMatchObject({ status: "done", resolvedByVote: true });
+    expect(task?.accepted?.output).toBe(H("b"));
     expect(h.invariants()).toEqual([]);
   });
 
