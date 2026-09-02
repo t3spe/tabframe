@@ -90,6 +90,11 @@ description = "M0 runbook against the real account (masked output)"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m0.ts"
 
+[tasks."verify:m2"]
+description = "M2 runbook: edit and compile a program in the deployed page, run word count, make a program fault"
+depends = ["whoami"]
+run = "node packages/infra/scripts/verify-m2.ts"
+
 [tasks."verify:m3"]
 description = "M3 runbook: a real rotation under load — churn seconds, drain jitter, session-function concurrency"
 depends = ["whoami"]

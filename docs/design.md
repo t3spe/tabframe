@@ -790,3 +790,8 @@ Dated deviations discovered while building, recorded before the code landed (pla
   four, after which report order breaks it. Freeze is terminal on the node **record** too: a later
   `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a
   worker that computes nothing until the silence window declares it gone (§4, §6.7).
+- **2026-09-02 (WP2.7).** Seeding is idempotent by bundle hash rather than "only when the ledger
+  has no programs": a control plane that adopts a predecessor's ledger still adds programs the
+  image ships that the ledger does not have, which is what lets a deploy-as-rotation deliver a new
+  program (§5.6, §9.4).
+

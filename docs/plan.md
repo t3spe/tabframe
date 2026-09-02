@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0 tagged `m0`; M1 complete and verified on AWS (`docs/m1-verification.md`), including the churn simulation. M2: filesystem, word count, launch path, and the in-page editor merged; dashboard v2 (WP2.5), Playwright v1 (WP2.6) and the M2 deploy (WP2.7) remain. M3: control-plane lifecycle and fleet v1 merged; cloud cores (WP3.3), handover tests (WP3.4) and the M3 deploy (WP3.5) remain.
+**Where we are (2026-09-02):** M0, M1 and M3 tagged; M2 complete and verified on AWS (`docs/m2-verification.md`): an edited program compiles in the page and runs on the cluster, word count matches the goldens exactly, a program fault fails visibly. M3 verified too (`docs/m3-verification.md`): a rotation with a render in flight costs about 8.4 s. M4 (polish, runbook, unattended demo) and M5 (packaging) remain.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -131,7 +131,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 - [x] **WP2.4 Editor.** AssemblyScript compiler bundled for the browser with its Node-only imports stubbed (verified in Chromium in preflight: ~7 s load unminified, ~0.4 s compile), minified and split from binaryen, loaded lazily in a worker; prefilled Mandelbrot source with the SDK; diagnostics panel; params editor seeded from manifest defaults; compile → bundle → launch; the drop-a-`.wasm` door.
 - [x] **WP2.5 Dashboard v2.** Programs panel, queue view, stage strip, `bars` and `text` views, files panel (browse an execution's filesystem by root), task detail with log and attempts, execution failure surfacing.
 - [x] **WP2.6 Playwright v1.** Money shot; editor compile and launch; web sandbox adapter tests. Chromium is installed; three optional font packages missing on the dev machine only affect non-Latin glyphs.
-- [ ] **WP2.7 Deploy M2.**
+- [x] **WP2.7 Deploy M2.**
 
 **M2 done when:** an edited program runs on AWS from the page; word count completes with the right top-K; a program fault fails its execution visibly and the machine moves on.
 

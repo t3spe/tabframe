@@ -3,7 +3,9 @@
   "compilerOptions": {
     // aws-cdk-lib's own optional properties are not declared with `| undefined`, so the strictest
     // optional-property mode rejects CDK's types against each other. Everything else stays strict.
-    "exactOptionalPropertyTypes": false
+    "exactOptionalPropertyTypes": false,
+    // The M2 and M3 runbooks drive a real browser; their page callbacks are DOM code.
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["bin/**/*.ts", "lib/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
   "exclude": ["**/node_modules", "**/dist", "cdk.out"]

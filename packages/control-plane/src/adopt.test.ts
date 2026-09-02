@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
-import { createLedger, serializeLedger } from "@tabframe/core";
+import { createLedger, type Ledger, serializeLedger } from "@tabframe/core";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
 import type { Config } from "./config.ts";
 import { buildFixturePrograms } from "./fixtures.ts";
-import { discoverPrograms } from "./seed.ts";
+import { type DiscoveredProgram, discoverPrograms } from "./seed.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
 import { LATEST_KEY, snapshotKey } from "./snapshotter.ts";
 
@@ -185,4 +185,62 @@ describe("adopt from snapshot on /run", () => {
     expect(cp.role).toBe("control-plane");
     expect(cp.ledger?.programs.size).toBe(0);
   });
+});
+
+/** The same module under a different program manifest: a different bundle, and so a new program. */
+function secondProgram(base: DiscoveredProgram): DiscoveredProgram {
+  const manifest = { ...base.manifest, name: "second", description: "a second program" };
+  return {
+    ...base,
+    name: "second",
+    manifest,
+    manifestBytes: new TextEncoder().encode(JSON.stringify(manifest)),
+  };
+}
+
+describe("seeding an adopted ledger", () => {
+  const planes: ControlPlane[] = [];
+  afterAll(async () => {
+    for (const cp of planes) await cp.close();
+  });
+
+  test("a program the adopted ledger has not seen is added; one it has is left alone", async () => {
+    const snapshots = new MemorySnapshots();
+    const programs = discoverPrograms(programsDir);
+    // A first machine seeds mandelbrot and hands its ledger on.
+    const first = await createControlPlane(imageConfig, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs,
+    });
+    const r1 = await run(first, {
+      role: "control-plane",
+      generation: 20,
+      snapshotKey: null,
+    });
+    expect(r1.status).toBe(200);
+    await first.seeded();
+    expect(first.ledger?.programs.size).toBe(1);
+    const handed = serializeLedger(first.ledger as Ledger);
+    await first.close();
+
+    // The next one ships a second program: adopting must not hide it.
+    const second = await createControlPlane({ ...imageConfig, generation: 21 }, undefined, {
+      store: new LocalStore("http://s/blob"),
+      snapshots,
+      programs: [...programs, secondProgram(programs[0] as DiscoveredProgram)],
+    });
+    planes.push(second);
+    await run(second, { role: "control-plane", generation: 21, snapshotKey: null });
+    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+      method: "POST",
+      body: handed,
+    });
+    expect(adopt.status).toBe(200);
+    await second.seeded();
+    // Both programs are there, and the one that was adopted was not added twice.
+    expect(second.ledger?.programs.size).toBe(2);
+    const bundles = [...(second.ledger?.programs.keys() ?? [])];
+    expect(new Set(bundles).size).toBe(2);
+  }, 30_000);
 });
