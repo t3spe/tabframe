@@ -20,7 +20,7 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 
 | Task | Command | What it does |
 |---|---|---|
-| Is the machine up? | `mise run health` | `/health` and `/diag` of the active control plane through the proxy on the private port, masked. Counts, phase, fleet, snapshotter status, a store round trip, memory. |
+| Is the machine up? | `mise run health` (`-- --cores` asks each cloud core too) | `/health` and `/diag` of the active control plane through the proxy on the private port, masked. Counts, phase, fleet, snapshotter status, a store round trip, memory. |
 | Bring it up | `mise run up` | Sets the pointer to *on*, enables the hourly rule, invokes rotate once. Idempotent: a running control plane is rotated, not duplicated. |
 | Take it down | `mise run down` | Disables the rule, terminates every MicroVM from our image, writes *off*. The page shows an off screen; the session function heals nothing. **Destructive; ask first.** |
 | Deploy | `mise run deploy` | Builds programs, page, and image; runs lint and every test; `cdk deploy --all`; then `up`, which rotates the running control plane onto the new image. A deploy is a rotation. |
@@ -109,4 +109,5 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 | The session function returns `starting` for minutes | no control plane and the heal did not complete | `mise run logs:fleet`; `mise run up` |
 | The machine is up but nothing renders | asleep (ten minutes without an observer) or no nodes | open the page; the first visitor wakes it, cores follow within seconds |
 | After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed in WP4.9: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
+| `/health` shows a core with `linked: false` for minutes | its node closed (a kill half picked it) or never connected | since WP4.4 the control plane terminates a killed or frozen core at once and replaces any core unlinked for two minutes; `mise run health -- --cores` asks each core's own `/health` |
 | RSS climbs in the first half hour after a launch | heap growth to the working set, not a leak: 312 → 370 → 372 MiB over 7 → 33 min on a 1 GB control plane, flat after | `mise run health` shows `memoryMiB`; worry above ~700 MiB |

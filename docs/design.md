@@ -829,6 +829,15 @@ Dated deviations discovered while building, recorded before the code landed (pla
   Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
   historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the
   options are in §9.7 and the plan's WP4.6.
+- **2026-09-02 (WP4.4).** The demo script runs unattended against the deployed machine
+  (`mise run demo`), and its first runs fixed the fleet policy: a killed or frozen cloud core has
+  its MicroVM terminated with the command, and a core with no node for two minutes — never said
+  hello, or its node left — is retired and replaced (§6.8). Before, a `kill half` that picked a
+  core left a live, unlinked MicroVM that the policy (which counts records) never replaced.
+  Seeding also retires unshipped drops nobody has run in the ledger's memory after an hour, so
+  runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
+  own, not only with the tasks.
+
 - **2026-09-02 (WP4.9).** The image owns the names it ships: seeding retires a record under a
   shipped name whose bundle is not the shipped one and moves the default loop to the shipped
   program when the loop's bundle is gone or retired (§6.8, §9.4). A retired program is hidden,

@@ -4,6 +4,7 @@
 import { GetFunctionConfigurationCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   CreateMicrovmAuthTokenCommand,
+  GetMicrovmCommand,
   LambdaMicrovmsClient,
 } from "@aws-sdk/client-lambda-microvms";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -51,6 +52,8 @@ if (secretArn) {
   secret = sv.SecretString ?? "";
 }
 const host = pointer.endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
+const mask = (text: string) => maskAccount(text).replace(/microvm-[0-9a-f-]{36}/g, "<microvm-id>");
+let cores: Array<{ microvmId: string; ageMs: number; linked: boolean }> = [];
 for (const path of ["/health", "/diag"]) {
   const res = await fetch(`https://${host}${path}`, {
     method: path === "/diag" ? "POST" : "GET",
@@ -62,5 +65,45 @@ for (const path of ["/health", "/diag"]) {
   });
   const text = await res.text();
   console.log(`${path} ${res.status} (generation ${pointer.generation ?? "?"})`);
-  console.log(maskAccount(text).replace(/microvm-[0-9a-f-]{36}/g, "<microvm-id>"));
+  console.log(mask(text));
+  if (path === "/health" && res.ok) {
+    try {
+      cores = (JSON.parse(text) as { cores?: typeof cores }).cores ?? [];
+    } catch {
+      /* not json */
+    }
+  }
+}
+
+// `--cores`: ask each cloud core's own /health (the core role serves it, open, on the private
+// port), which is how an unlinked core — launched, alive, never said hello — is told apart from a
+// dead one. Each MicroVM needs a token of its own.
+if (process.argv.includes("--cores")) {
+  for (const core of cores) {
+    const t = await mv.send(
+      new CreateMicrovmAuthTokenCommand({
+        microvmIdentifier: core.microvmId,
+        expirationInMinutes: 1,
+        allowedPorts: [{ port: 8081 }],
+      }),
+    );
+    const coreToken = t.authToken?.["X-aws-proxy-auth"] ?? "";
+    const g = await mv.send(new GetMicrovmCommand({ microvmIdentifier: core.microvmId }));
+    const coreHost = (g.endpoint ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+    let line = `state ${g.state}, no endpoint`;
+    if (coreHost) {
+      try {
+        const res = await fetch(`https://${coreHost}/health`, {
+          headers: { "X-aws-proxy-auth": coreToken, "X-aws-proxy-port": "8081" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        line = `state ${g.state}, /health ${res.status}: ${mask(await res.text()).slice(0, 400)}`;
+      } catch (err) {
+        line = `state ${g.state}, /health unreachable: ${String(err).slice(0, 120)}`;
+      }
+    }
+    console.log(
+      `core <microvm-id> age ${Math.round(core.ageMs / 1000)} s linked ${core.linked}: ${line}`,
+    );
+  }
 }

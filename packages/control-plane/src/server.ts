@@ -36,6 +36,9 @@ import { type DiscoveredProgram, discoverPrograms, seedPrograms } from "./seed.t
 import { type SnapshotStatus, Snapshotter } from "./snapshotter.ts";
 import { readBody, send, sendJson, serveStatic } from "./static.ts";
 
+/** An unshipped program nobody has run in the ledger's memory is retired at seeding after this long. */
+const STALE_DROP_MS = 60 * 60 * 1000;
+
 const MAX_BLOB_BYTES = 8 * 1024 * 1024;
 /** A serialized ledger: tasks carry base64 inputs, so it is bigger than the blob cap. */
 const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
@@ -207,7 +210,19 @@ export async function createControlPlane(
     const retired = [...target.programs.values()].filter(
       (p) => !p.retired && !shipped.has(p.bundle) && names.has(p.manifest.name),
     );
-    for (const p of retired) dispatch({ kind: "programRetired", bundle: p.bundle });
+    // Drops stay as long as they are used: an unshipped program that no remaining execution refers
+    // to (the ledger keeps the last 32) and that is over an hour old is retired too, so runbook
+    // uploads and abandoned experiments do not clutter the list for ever.
+    const referenced = new Set([...target.executions.values()].map((e) => e.bundle));
+    const stale = [...target.programs.values()].filter(
+      (p) =>
+        !p.retired &&
+        !shipped.has(p.bundle) &&
+        !names.has(p.manifest.name) &&
+        !referenced.has(p.bundle) &&
+        clock.now() - p.addedAt > STALE_DROP_MS,
+    );
+    for (const p of [...retired, ...stale]) dispatch({ kind: "programRetired", bundle: p.bundle });
     // The machine's own loop follows the shipped program: set when there is none, moved when the
     // one it points at was just retired or is gone (the old frame kept rendering forever before).
     const loop = seeded.find((p) => p.name === config.defaultProgram) ?? seeded[0] ?? null;
@@ -224,6 +239,7 @@ export async function createControlPlane(
       programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
       added: added.map((p) => p.name),
       retired: retired.map((p) => `${p.manifest.name}@${p.bundle.slice(0, 12)}`),
+      stale: stale.map((p) => `${p.manifest.name}@${p.bundle.slice(0, 12)}`),
       defaultLoop: loop?.name ?? null,
       loopMoved: moved,
     });

@@ -1,0 +1,61 @@
+# WP4.4 — The unattended demo
+
+**Branch** `wp/4.4-demo` · **Milestone** M4 · **Date** 2026-09-02
+
+## What
+
+`e2e/demo.e2e.ts` runs the demo script of design §13 against the deployed machine, in the order
+the video follows, with no one at the keyboard: one tab and the two cloud cores the machine
+launches for it → two more tabs → spawn ten (bounded by what the browser reports, said on screen)
+→ kill half → freeze half → throttle half (twins, then resume) → redundancy on (verified tiles,
+zero mismatches) → the editor: change the palette cycle, compile in the browser, launch under a
+name of its own → word count: three stages and the bar chart → a rotation started while the page
+watches: banner, new generation, the picture stays, the machine keeps working → the ledger and
+files panels. Every beat is an assertion on the stable hooks WP4.1 gave the page.
+
+`mise run demo [-- --repeat 3] [--video]` resolves the web origin from the `TabframeCore` stack and
+runs the suite; `--video` records the browser (WP5.3's fallback footage). The suite skips itself
+without `TABFRAME_URL`: it wants the seeded programs, cloud cores, and a real rotation, none of which
+the Playwright control plane in CI has. The rotation is the fleet script (`mise run rotate`) run in
+the background, so the browser tests carry no AWS SDK.
+
+## What the first runs found
+
+- **A killed core stayed dead and unlinked for ever.** `kill half` had picked a cloud core; the
+  node closed "for good" (a closed node never reconnects, by design), but the MicroVM stayed
+  `RUNNING` with a live server and no node, and the fleet policy — which counts records, not links
+  — never replaced it. The first demo run waited 150 s for a third host that could not come.
+  Fixed twice over: `commandHalf` terminates the MicroVM of a killed or frozen core with the command
+  (a frozen core computes nothing either; throttle is reversible and leaves it), and the fleet policy
+  now retires any core that has had no node for `CORE_LINK_TIMEOUT_MS` (two minutes) — since its
+  launch, or since its node left — so a core whose process never says hello is replaced too.
+  `CoreRecord.unlinkedAt` carries the moment; snapshots from before read as "since launch".
+- **`mise run health --cores`** asks every cloud core's own `/health` through the proxy (a token
+  per MicroVM), which is how the dead-but-running core was told apart from a dead one.
+- **The snapshot diet had a gap:** WP4.9 cleared an ended execution's file map only together with
+  its tasks, so a ledger adopted from before, whose tasks were already gone, kept its maps (the
+  first `/health` after the deploy still read 927 KB). The clearing is now judged on its own.
+- **Runbook drops accumulated:** two `mandelbrot-edited` and a `verify-m2-trap` from the M2
+  runbook sat in the program list for ever. Seeding now also retires an unshipped program that no
+  remaining execution refers to and that is over an hour old — drops stay as long as they are used.
+
+## Results
+
+_Filled by the runs below._
+
+## Tests
+
+- `packages/core/src/fleet.test.ts`: a core that never says hello is terminated after the link
+  timeout and replaced; a core whose node left gets the same grace; kill half or freeze half landing
+  on a core terminates its MicroVM and the fleet launches another, throttle leaves it; the sleep test
+  links its core so only the sleep retires it.
+- `packages/core/src/loop.test.ts`: an adopted record whose tasks are long gone still loses its map.
+- `packages/control-plane/src/adopt.test.ts`: an unshipped drop nobody has run is retired after an
+  hour, a fresh one stays.
+- The demo suite itself, against AWS, three times in a row (below).
+
+## Drift
+
+- `CORE_LINK_TIMEOUT_MS`; `CoreRecord.unlinkedAt`; kill/freeze half terminate victim cores.
+- Seeding retires stale unshipped drops (`STALE_DROP_MS`, one hour, unreferenced).
+- `mise run demo`, `mise run health --cores`.

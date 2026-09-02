@@ -76,7 +76,7 @@ export function apply(
     case "message":
       return onMessage(ledger, event.connId, event.raw, now, rng);
     case "disconnected":
-      return removeConnection(ledger, event.connId, "closed");
+      return removeConnection(ledger, event.connId, "closed", now);
     case "tick":
       return tick(ledger, now);
     case "coreLaunched":
@@ -176,13 +176,13 @@ function onMessage(
   const opts = { expectGen: ledger.meta.generation };
   if (conn.role === "node") {
     const d = decode(nodeToControlPlane, raw, opts);
-    if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+    if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason, now);
     // Results and presigns answer assignments, which maxInFlight already paces (a fast node on
     // small tiles legitimately sends dozens a second); the bucket covers what a node sends on
     // its own initiative.
     const solicited = d.msg.t === "result" || d.msg.t === "presign";
     if (!solicited && !takeToken(conn, LIMITS.nodeMessagesPerSecond, now))
-      return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
+      return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
     switch (d.msg.t) {
       case "hello":
         return onHello(ledger, connId, d.msg, now);
@@ -190,7 +190,7 @@ function onMessage(
         return onHeartbeat(ledger, connId, d.msg, now);
       case "result": {
         const node = nodeOf(ledger, connId);
-        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "result before hello");
+        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "result before hello", now);
         node.lastSeen = now;
         const { effects, settlement } = onResult(ledger, node, d.msg, now);
         if (settlement.kind === "done" || settlement.kind === "failed")
@@ -200,16 +200,16 @@ function onMessage(
       }
       case "presign": {
         const node = nodeOf(ledger, connId);
-        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello");
+        if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello", now);
         node.lastSeen = now;
         return [{ kind: "presign", connId, items: d.msg.items }];
       }
     }
   }
   const d = decode(observerToControlPlane, raw, opts);
-  if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason);
+  if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason, now);
   if (!takeToken(conn, LIMITS.observerMessagesPerSecond, now))
-    return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded");
+    return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
   switch (d.msg.t) {
     case "subscribe":
       return onSubscribe(ledger, connId, now);
@@ -217,11 +217,11 @@ function onMessage(
       return onPing(ledger, connId, now);
     case "presign":
       if (!ledger.observers.has(connId))
-        return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe");
+        return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe", now);
       return [{ kind: "presign", connId, items: d.msg.items }];
     default:
       if (!ledger.observers.has(connId))
-        return refuse(ledger, connId, CLOSE.invalidMessage, "control before subscribe");
+        return refuse(ledger, connId, CLOSE.invalidMessage, "control before subscribe", now);
       ledger.meta.lastInteractionAt = now;
       return onControl(ledger, connId, d.msg, now, rng);
   }
@@ -365,9 +365,9 @@ function errorMsg(ledger: Ledger, code: string, message: string): ControlPlaneTo
 
 function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effect[] {
   if (ledger.nodeByConn.has(connId))
-    return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate hello");
+    return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate hello", now);
   if (ledger.nodes.size >= LIMITS.nodeCap)
-    return refuse(ledger, connId, CLOSE.nodeCap, "node cap reached");
+    return refuse(ledger, connId, CLOSE.nodeCap, "node cap reached", now);
 
   const nodeId = `n${++ledger.meta.nodeCounter}`;
   const node: NodeRecord = {
@@ -393,8 +393,10 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
   const microvmId = microvmIdOfHost(msg.hostId);
   if (microvmId) {
     const core = ledger.cores.get(microvmId);
-    if (core) core.nodeId = nodeId;
-    else ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId });
+    if (core) {
+      core.nodeId = nodeId;
+      core.unlinkedAt = undefined;
+    } else ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId });
   }
 
   const effects: Effect[] = [
@@ -419,7 +421,7 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
 
 function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number): Effect[] {
   const node = nodeOf(ledger, connId);
-  if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "heartbeat before hello");
+  if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "heartbeat before hello", now);
   node.lastSeen = now;
   node.visible = msg.visible;
   // Throttled is the one label the node's own evidence decides: its host tab is hidden.
@@ -436,9 +438,9 @@ function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number
 
 function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   if (ledger.observers.has(connId))
-    return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate subscribe");
+    return refuse(ledger, connId, CLOSE.invalidMessage, "duplicate subscribe", now);
   if (ledger.observers.size >= LIMITS.observerCap)
-    return refuse(ledger, connId, CLOSE.observerCap, "observer cap reached");
+    return refuse(ledger, connId, CLOSE.observerCap, "observer cap reached", now);
   ledger.observers.set(connId, { connId, subscribedAt: now, lastSeen: now, launchedAt: [] });
   ledger.meta.lastInteractionAt = now;
   const effects = snapshotPages(ledger, connId, now);
@@ -520,7 +522,7 @@ const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
 
 function onPing(ledger: Ledger, connId: string, now: number): Effect[] {
   const observer = ledger.observers.get(connId);
-  if (!observer) return refuse(ledger, connId, CLOSE.invalidMessage, "ping before subscribe");
+  if (!observer) return refuse(ledger, connId, CLOSE.invalidMessage, "ping before subscribe", now);
   observer.lastSeen = now;
   return [
     {
@@ -542,7 +544,7 @@ export function sweep(ledger: Ledger, now: number): Effect[] {
         code: CLOSE.declaredGone,
         reason: "silent",
       });
-      effects.push(...removeConnection(ledger, node.connId, "silent"));
+      effects.push(...removeConnection(ledger, node.connId, "silent", now));
     }
   }
   for (const observer of [...ledger.observers.values()]) {
@@ -553,7 +555,7 @@ export function sweep(ledger: Ledger, now: number): Effect[] {
         code: CLOSE.declaredGone,
         reason: "silent",
       });
-      effects.push(...removeConnection(ledger, observer.connId, "silent"));
+      effects.push(...removeConnection(ledger, observer.connId, "silent", now));
     }
   }
   for (const conn of [...ledger.conns.values()]) {
@@ -572,22 +574,34 @@ export function sweep(ledger: Ledger, now: number): Effect[] {
 }
 
 /** Close a connection with a reason code and forget everything about it. */
-function refuse(ledger: Ledger, connId: string, code: number, reason: string): Effect[] {
+function refuse(
+  ledger: Ledger,
+  connId: string,
+  code: number,
+  reason: string,
+  now: number,
+): Effect[] {
   const effects: Effect[] = [{ kind: "close", connId, code, reason }];
-  effects.push(...removeConnection(ledger, connId, "closed"));
+  effects.push(...removeConnection(ledger, connId, "closed", now));
   return effects;
 }
 
 /** Forget a connection. A node's departure releases its work and is announced; an observer's is not. */
 /** A node has gone: if it was a cloud core, the core is free to be replaced. */
-function unlinkCore(ledger: Ledger, nodeId: string): void {
-  for (const core of ledger.cores.values()) if (core.nodeId === nodeId) core.nodeId = null;
+function unlinkCore(ledger: Ledger, nodeId: string, now: number): void {
+  for (const core of ledger.cores.values()) {
+    if (core.nodeId === nodeId) {
+      core.nodeId = null;
+      core.unlinkedAt = now;
+    }
+  }
 }
 
 export function removeConnection(
   ledger: Ledger,
   connId: string,
   reason: "closed" | "silent",
+  now: number,
 ): Effect[] {
   const effects: Effect[] = [];
   const nodeId = ledger.nodeByConn.get(connId);
@@ -596,7 +610,7 @@ export function removeConnection(
     ledger.nodes.delete(nodeId);
     ledger.nodeByConn.delete(connId);
     ledger.conns.delete(connId);
-    unlinkCore(ledger, nodeId);
+    unlinkCore(ledger, nodeId, now);
     effects.push(...broadcast(ledger, { t: "nodeLeft", nodeId, reason }));
     if (node) effects.push(...releaseNode(ledger, node));
     return effects;

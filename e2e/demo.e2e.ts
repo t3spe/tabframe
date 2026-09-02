@@ -1,0 +1,226 @@
+import { spawn } from "node:child_process";
+import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+
+// WP4.4: the demo script of design §13, run unattended against the deployed machine in the order
+// the video follows: one tab plus two cloud cores rendering → two more tabs → spawn ten (bounded by
+// cores, said on screen) → kill half → freeze half → throttle half → redundancy on → editor: change
+// the palette, compile in the browser, launch → word count: three stages and a bar chart → a
+// rotation: banner, reconnect, render continues → ledger and files panels. Skipped locally: it
+// wants the seeded programs, cloud cores, and a real rotation, none of which the Playwright control
+// plane has. `mise run demo` points it at the machine; TABFRAME_VIDEO=1 records the browser.
+const url = process.env.TABFRAME_URL;
+test.skip(!url, "needs a deployed machine (TABFRAME_URL)");
+test.use({
+  video: process.env.TABFRAME_VIDEO ? "on" : "off",
+  viewport: { width: 1440, height: 1000 },
+});
+
+const counter = (page: Page, name: string): Promise<number> =>
+  page
+    .locator(`[data-counter="${name}"] b`)
+    .textContent()
+    .then((t) => Number((t ?? "0").replace(/[^\d]/g, "") || "0"));
+const counts = (page: Page): Promise<{ nodes: number; hosts: number }> =>
+  page
+    .locator("#counts")
+    .textContent()
+    .then((t) => {
+      const m = /(\d+) nodes · (\d+) hosts/.exec(t ?? "");
+      return { nodes: Number(m?.[1] ?? 0), hosts: Number(m?.[2] ?? 0) };
+    });
+const generation = (page: Page): Promise<number> =>
+  page
+    .locator("#gen")
+    .textContent()
+    .then((t) => Number(/gen (\d+)/.exec(t ?? "")?.[1] ?? "0"));
+const beat = (name: string) =>
+  console.log(`[demo] ${new Date().toISOString().slice(11, 19)} ${name}`);
+
+async function openTab(context: BrowserContext): Promise<Page> {
+  const page = await context.newPage();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
+  return page;
+}
+
+/** The same rotation the hourly rule runs (`mise run rotate`), started while the page watches. */
+function rotateInBackground(): Promise<number | null> {
+  return new Promise((resolve) => {
+    const child = spawn("node", ["packages/fleet/scripts/rotate.ts"], {
+      stdio: "ignore",
+      env: process.env,
+    });
+    child.on("exit", (code) => resolve(code));
+    child.on("error", () => resolve(null));
+  });
+}
+
+test("the demo script runs unattended against the deployed machine", async ({ context, page }) => {
+  test.setTimeout(900_000);
+
+  // ---- 1. one tab, and the cloud cores the machine launches for it ------------------------------
+  beat("open the dashboard");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
+  await expect(page.locator("#gen")).toHaveText(/gen \d+/, { timeout: 30_000 });
+  const startGeneration = await generation(page);
+  // The default loop starts a frame as soon as someone watches; the fleet adds two cores.
+  await expect(page.locator("#exec")).toContainText("mandelbrot", { timeout: 120_000 });
+  await expect
+    .poll(() => counts(page).then((c) => c.hosts), { timeout: 150_000 })
+    .toBeGreaterThanOrEqual(3);
+  beat(`rendering with ${JSON.stringify(await counts(page))}`);
+  await expect.poll(() => counter(page, "done"), { timeout: 120_000 }).toBeGreaterThan(10);
+
+  // ---- 2. two more real tabs ---------------------------------------------------------------------
+  beat("two more tabs");
+  const before = await counts(page);
+  const tab2 = await openTab(context);
+  const tab3 = await openTab(context);
+  await expect
+    .poll(() => counts(page).then((c) => c.hosts), { timeout: 60_000 })
+    .toBeGreaterThanOrEqual(before.hosts + 2);
+
+  // ---- 3. spawn ten, bounded by what this browser reports ---------------------------------------
+  beat("spawn ten");
+  const hint = page.locator("#spawnHint");
+  await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
+  await expect(hint).toContainText(/This browser reports \d+ cores?/);
+  const nodesBefore = (await counts(page)).nodes;
+  for (let i = 0; i < 10; i++) await page.click("#spawn1");
+  await expect
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
+    .toBeGreaterThanOrEqual(nodesBefore + 3);
+  beat(`cluster ${JSON.stringify(await counts(page))}`);
+
+  // ---- 4. kill half: work is taken back or its twins carry on -------------------------------------
+  beat("kill half");
+  const alive = (await counts(page)).nodes;
+  await page.click("#killHalf");
+  await expect(page.locator("#activity")).toContainText(/killHalf: \S+/, { timeout: 20_000 });
+  await expect
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 30_000 })
+    .toBeLessThan(alive);
+  await expect
+    .poll(async () => (await counter(page, "reassigned")) + (await counter(page, "speculated")), {
+      timeout: 60_000,
+    })
+    .toBeGreaterThanOrEqual(1);
+  await expect(page.locator('#legend .legend-item[data-state="released"]')).toBeVisible();
+
+  // ---- 5. freeze half: frozen workers fall silent and are declared gone ----------------------------
+  beat("freeze half");
+  const beforeFreeze = (await counts(page)).nodes;
+  await page.click("#freezeHalf");
+  await expect(page.locator("#activity")).toContainText(/freezeHalf: \S+/, { timeout: 20_000 });
+  await expect
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
+    .toBeLessThan(beforeFreeze);
+
+  // ---- 6. throttle half: slow workers get twins, and the picture still completes ------------------
+  beat("throttle half");
+  // Replace what was lost so there is something to throttle and something to race it.
+  for (let i = 0; i < 4; i++) await page.click("#spawn1");
+  await expect
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 60_000 })
+    .toBeGreaterThanOrEqual(4);
+  await page.click("#throttleHalf");
+  await expect(page.locator("#activity")).toContainText(/throttleHalf: \S+/, { timeout: 20_000 });
+  await expect
+    .poll(() => counter(page, "speculated"), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(1);
+  await expect(page.locator('#pulses li[data-kind="speculated"]').first()).toBeVisible();
+  await page.click("#resumeAll");
+  await expect(page.locator("#activity")).toContainText("resumeAll", { timeout: 20_000 });
+
+  // ---- 7. redundancy on: every tile computed twice, the bytes agree ----------------------------------
+  beat("redundancy on");
+  await page.click("#redundancy");
+  await expect(page.locator("#redundancy")).toBeChecked();
+  await expect(page.locator("#activity")).toContainText("setRedundancy", { timeout: 20_000 });
+  await expect
+    .poll(() => counter(page, "verified"), { timeout: 180_000 })
+    .toBeGreaterThanOrEqual(1);
+  await expect(page.locator('[data-counter="mismatched"] b')).toHaveText("0");
+  await page.click("#redundancy");
+  await expect(page.locator("#redundancy")).not.toBeChecked();
+
+  // ---- 8. the editor: change the palette cycle, compile in the browser, launch ---------------------
+  beat("editor");
+  await page.click("#openEditor");
+  await expect(page.locator("#editor")).toBeVisible();
+  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  const source = await page.locator("#source").inputValue();
+  expect(source).toContain("const CYCLE: f64 = 48.0;");
+  await page
+    .locator("#source")
+    .fill(source.replace("const CYCLE: f64 = 48.0;", "const CYCLE: f64 = 24.0;"));
+  await page.click("#compile");
+  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+    timeout: 180_000,
+  });
+  await expect(page.locator("#diagnostics li")).toHaveCount(0);
+  await expect(page.locator("#launch")).toBeEnabled();
+  // Its own name: the shipped one is reserved for the image (WP4.9).
+  await page.locator("#programName").fill("mandelbrot-palette");
+  await page.locator("#programView").selectOption("tiles");
+  await page.locator("#programParams").fill('{"palette":"fire","preset":0}');
+  await page.click("#launch");
+  await expect(page.locator("#launchInfo")).toContainText(/queued as|running as/, {
+    timeout: 60_000,
+  });
+  await page.click("#closeEditor");
+  // A person's launch goes ahead of the loop's continuations and runs next.
+  await expect(page.locator("#exec")).toContainText("mandelbrot-palette", { timeout: 240_000 });
+  await expect.poll(() => counter(page, "done"), { timeout: 180_000 }).toBeGreaterThan(50);
+  beat("the edited program renders");
+
+  // ---- 9. word count: three stages and a bar chart ----------------------------------------------------
+  beat("word count");
+  await expect(page.locator('[data-launch="wordcount"]')).toBeVisible({ timeout: 30_000 });
+  await page.click('[data-launch="wordcount"]');
+  await page.click('[data-launch-go="wordcount"]');
+  await expect(page.locator("#exec")).toContainText("wordcount", { timeout: 300_000 });
+  await expect(page.locator("#strip .stage")).toHaveCount(3, { timeout: 180_000 });
+  await expect(page.locator("#exec")).toContainText("done", { timeout: 180_000 });
+  await expect(page.locator("#result .bars .bar-row").first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", /\w+/);
+  beat("word count drew its bars");
+
+  // ---- 10. a rotation: banner, reconnect, the render continues --------------------------------------
+  beat("rotation");
+  const rotation = rotateInBackground();
+  const banner = page.locator("#machineBanner");
+  await expect(banner).toBeVisible({ timeout: 240_000 });
+  await expect(banner).toHaveAttribute("data-kind", "rotating");
+  await expect(banner).toContainText("fresh MicroVM");
+  await expect.poll(() => generation(page), { timeout: 240_000 }).toBeGreaterThan(startGeneration);
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
+  await expect(banner).toBeHidden({ timeout: 120_000 });
+  // The picture stayed on screen, the tabs are back, and the machine keeps working.
+  await expect(page.locator("#tiles")).toBeVisible();
+  await expect
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(1);
+  await expect(page.locator("#exec")).not.toHaveText("idle", { timeout: 180_000 });
+  expect(await rotation).toBe(0);
+  beat(`generation ${await generation(page)}, ${JSON.stringify(await counts(page))}`);
+
+  // ---- 11. the ledger and files panels: hashes everywhere, no bytes in the control plane -----------
+  beat("ledger and files");
+  await expect(page.locator("#ledgerNote")).toContainText("hashes, not bytes");
+  await expect(page.locator("#ledger tbody tr[data-hash]").first()).toBeVisible({
+    timeout: 120_000,
+  });
+  await expect(page.locator("#ledger tbody tr[data-hash]").first()).toHaveAttribute(
+    "data-hash",
+    /^[0-9a-f]{64}$/,
+  );
+  await expect(page.locator("#filesNote")).toContainText("named by its hash");
+  await expect(page.locator("#filesRoot")).not.toHaveText("—", { timeout: 120_000 });
+  await expect(page.locator("#files")).toContainText("/program.wasm", { timeout: 60_000 });
+
+  await tab2.close();
+  await tab3.close();
+  beat("done");
+});

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ensureDefaultLoop } from "./executions.ts";
 import {
   CORE_LAUNCH_GAP_MS,
+  CORE_LINK_TIMEOUT_MS,
   CORE_MAX_AGE_MS,
   coreGone,
   coreLaunched,
@@ -75,6 +76,70 @@ describe("the cloud-core fleet", () => {
     expect(kinds(h.tick())).toContain("launchCore");
   });
 
+  test("a core that never says hello is terminated after the link timeout and replaced", () => {
+    const h = cloud();
+    h.subscribe("obs");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.event({ kind: "coreLaunched", microvmId: "microvm-b" });
+    h.hello("c2", "core-microvm-b", "core");
+    h.advance(CORE_LINK_TIMEOUT_MS - 1_000);
+    expect(kinds(h.tick())).not.toContain("terminateCore");
+    h.advance(1_000);
+    const effects = h.tick();
+    expect(effects.filter((e) => e.kind === "terminateCore")).toEqual([
+      { kind: "terminateCore", microvmId: "microvm-a" },
+    ]);
+    expect(h.ledger.cores.has("microvm-a")).toBe(false);
+    expect(h.ledger.cores.has("microvm-b")).toBe(true);
+    h.advance(CORE_LAUNCH_GAP_MS);
+    expect(kinds(h.tick())).toContain("launchCore");
+  });
+
+  test("a core whose node left gets the same grace to come back before it is replaced", () => {
+    const h = cloud();
+    h.subscribe("obs");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.hello("c1", "core-microvm-a", "core");
+    h.advance(CORE_LINK_TIMEOUT_MS * 3);
+    expect(kinds(h.tick())).not.toContain("terminateCore"); // linked all along
+    h.disconnect("c1");
+    h.advance(CORE_LINK_TIMEOUT_MS - 1_000);
+    expect(kinds(h.tick())).not.toContain("terminateCore");
+    h.advance(1_000);
+    expect(kinds(h.tick())).toContain("terminateCore");
+    expect(h.ledger.cores.size).toBe(0);
+  });
+
+  test("kill half or freeze half landing on a core terminates its MicroVM, and the fleet launches another", () => {
+    const h = cloud();
+    h.subscribe("obs");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.hello("c1", "core-microvm-a", "core");
+    const killed = h.send("obs", { t: "killHalf" });
+    expect(killed.filter((e) => e.kind === "terminateCore")).toEqual([
+      { kind: "terminateCore", microvmId: "microvm-a" },
+    ]);
+    expect(h.ledger.cores.size).toBe(0);
+    h.advance(CORE_LAUNCH_GAP_MS);
+    expect(kinds(h.tick())).toContain("launchCore");
+
+    const g = cloud();
+    g.subscribe("obs");
+    g.event({ kind: "coreLaunched", microvmId: "microvm-b" });
+    g.hello("c2", "core-microvm-b", "core");
+    const frozen = g.send("obs", { t: "freezeHalf" });
+    expect(frozen.filter((e) => e.kind === "terminateCore")).toEqual([
+      { kind: "terminateCore", microvmId: "microvm-b" },
+    ]);
+    // Throttle is reversible: the core stays.
+    const t = cloud();
+    t.subscribe("obs");
+    t.event({ kind: "coreLaunched", microvmId: "microvm-c" });
+    t.hello("c3", "core-microvm-c", "core");
+    expect(kinds(t.send("obs", { t: "throttleHalf" }))).not.toContain("terminateCore");
+    expect(t.ledger.cores.size).toBe(1);
+  });
+
   test("a core near its ceiling is retired and replaced", () => {
     const h = cloud();
     h.subscribe("obs");
@@ -110,6 +175,7 @@ describe("the sleep policy", () => {
     const h = cloud();
     h.subscribe("obs");
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
+    h.hello("c1", "core-microvm-a", "core"); // linked, so only the sleep can retire it
     h.disconnect("obs");
     h.advance(SLEEP_AFTER_NO_OBSERVER_MS - 1);
     expect(kinds(h.tick())).not.toContain("terminateCore");
