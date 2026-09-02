@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { chromium } from "@playwright/test";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { fetchSession, type Session, socketProtocols } from "../../node/src/session.ts";
@@ -119,7 +119,7 @@ const send = (msg: Record<string, unknown>) =>
   ws.send(JSON.stringify({ ...msg, v: PROTOCOL_VERSION, gen: on.generation }));
 
 const snapshot = (await waitFor((e) => e.t === "snapshot", 15_000, "snapshot")) as Ev & {
-  programs?: Array<{ name: string; view: string; bundle: string }>;
+  programs?: Array<{ name: string; view: string; bundle: string; addedAt?: number }>;
   execution?: unknown;
   nodes?: unknown[];
 };
@@ -157,7 +157,11 @@ record(
 // ---- 4. our own frame, with kill half in the middle ---------------------------------------------
 // The machine may already be looping; launch the golden frame ourselves so the run is comparable
 // whatever it was doing (a human launch goes ahead of automatic continuations, design §6.7).
-const bundle = (snapshot.programs ?? []).find((p) => p.name === "mandelbrot")?.bundle as string;
+// A deploy that changed the program seeds a second "mandelbrot" (a new bundle hash); the goldens
+// belong to the newest one, so pick by name and the latest addedAt.
+const bundle = [...(snapshot.programs ?? [])]
+  .filter((p) => p.name === "mandelbrot")
+  .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))[0]?.bundle as string;
 const loopRunning =
   events.some((e) => e.t === "executionStarted") || (snapshot.execution ?? null) !== null;
 record(
@@ -261,17 +265,28 @@ record(
 );
 
 // ---- 6. the snapshot in S3 -----------------------------------------------------------------------
+// The bucket holds a snapshot every five seconds for a day, so a plain listing pages; ask for the
+// pointer and this generation's prefix directly.
 const s3 = new S3Client({ region });
-const list = await s3.send(new ListObjectsV2Command({ Bucket: snapshotBucket, Prefix: "" }));
-const objects = list.Contents ?? [];
-const latestObj = objects.find((o: { Key?: string }) => o.Key === "latest.json.gz");
-const ageS = latestObj?.LastModified
-  ? (Date.now() - latestObj.LastModified.getTime()) / 1000
-  : Number.NaN;
+let latestSize = 0;
+let ageS = Number.NaN;
+try {
+  const head = await s3.send(
+    new HeadObjectCommand({ Bucket: snapshotBucket, Key: "latest.json.gz" }),
+  );
+  latestSize = head.ContentLength ?? 0;
+  ageS = head.LastModified ? (Date.now() - head.LastModified.getTime()) / 1000 : Number.NaN;
+} catch {
+  /* missing */
+}
+const thisGen = await s3.send(
+  new ListObjectsV2Command({ Bucket: snapshotBucket, Prefix: `g${on.generation}/`, MaxKeys: 5 }),
+);
+const genCount = thisGen.KeyCount ?? 0;
 record(
   "S3 snapshots",
-  `${objects.length} objects, latest.json.gz ${latestObj ? `${latestObj.Size} bytes, ${ageS.toFixed(0)} s old` : "missing"}, generation prefix ${objects.some((o: { Key?: string }) => o.Key?.startsWith(`g${on.generation}/`)) ? "present" : "absent"}`,
-  latestObj !== undefined && ageS < 120,
+  `latest.json.gz ${latestSize ? `${latestSize} bytes, ${ageS.toFixed(0)} s old` : "missing"}; generation prefix g${on.generation}/ ${genCount ? "present" : "absent"}`,
+  latestSize > 0 && ageS < 120 && genCount > 0,
 );
 
 // ---- 7. continuation while we watch ------------------------------------------------------------
