@@ -119,7 +119,8 @@ const send = (msg: Record<string, unknown>) =>
   ws.send(JSON.stringify({ ...msg, v: PROTOCOL_VERSION, gen: on.generation }));
 
 const snapshot = (await waitFor((e) => e.t === "snapshot", 15_000, "snapshot")) as Ev & {
-  programs?: Array<{ name: string; view: string }>;
+  programs?: Array<{ name: string; view: string; bundle: string }>;
+  execution?: unknown;
   nodes?: unknown[];
 };
 record(
@@ -153,26 +154,46 @@ record(
   joined >= wanted,
 );
 
-// ---- 4. the frame, with kill half in the middle -------------------------------------------------
+// ---- 4. our own frame, with kill half in the middle ---------------------------------------------
+// The machine may already be looping; launch the golden frame ourselves so the run is comparable
+// whatever it was doing (a human launch goes ahead of automatic continuations, design §6.7).
+const bundle = (snapshot.programs ?? []).find((p) => p.name === "mandelbrot")?.bundle as string;
+const loopRunning =
+  events.some((e) => e.t === "executionStarted") || (snapshot.execution ?? null) !== null;
+record(
+  "default loop",
+  loopRunning ? "the machine was already rendering when we arrived" : "idle until our launch",
+  null,
+);
+send({ t: "launch", bundle, params: golden.params, inherit: null });
 const started = (await waitFor(
-  (e) => e.t === "executionStarted",
-  60_000,
-  "executionStarted",
+  (e) =>
+    e.t === "executionStarted" &&
+    (e as Ev & { execution: { human: boolean } }).execution.human === true,
+  120_000,
+  "our execution to start",
 )) as Ev & { execution: { executionId: string; params: Record<string, unknown> } };
 const executionId = started.execution.executionId;
+const startedAtEvent = events.indexOf(started);
 record(
-  "default loop launched",
+  "launch accepted",
   `execution ${executionId} with params ${JSON.stringify(started.execution.params)}`,
   JSON.stringify(Object.entries(started.execution.params).sort()) ===
     JSON.stringify(Object.entries(golden.params).sort()),
 );
-const tilesDone = () =>
-  new Set(
-    events.filter((e) => e.t === "taskDone" && e.place !== null).map((e) => e.taskId as string),
-  ).size;
+/** Tiles settled by our execution: task ids first seen after it started. */
+const ourTiles = (upTo = events.length): Map<string, string> => {
+  const tiles = new Map<string, string>();
+  for (const e of events.slice(startedAtEvent, upTo)) {
+    if (e.t === "taskDone" && e.place !== null) tiles.set(e.taskId as string, e.output as string);
+  }
+  return tiles;
+};
 const killDeadline = Date.now() + timeoutS * 1000;
-while (tilesDone() < killAt && Date.now() < killDeadline) await sleep(250);
-const beforeKill = tilesDone();
+while (ourTiles().size < killAt && Date.now() < killDeadline) await sleep(250);
+const beforeKill = ourTiles().size;
+const leftBefore = events.filter((e) => e.t === "nodeLeft").length;
+const reassignedBefore = events.filter((e) => e.t === "taskReassigned").length;
 send({ t: "killHalf" });
 const applied = (await waitFor(
   (e) => e.t === "controlApplied" && e.op === "killHalf",
@@ -180,8 +201,8 @@ const applied = (await waitFor(
   "killHalf applied",
 )) as Ev & { nodeIds: string[] };
 await sleep(6_000);
-const left = events.filter((e) => e.t === "nodeLeft").length;
-const reassigned = events.filter((e) => e.t === "taskReassigned").length;
+const left = events.filter((e) => e.t === "nodeLeft").length - leftBefore;
+const reassigned = events.filter((e) => e.t === "taskReassigned").length - reassignedBefore;
 record(
   "kill half",
   `${applied.nodeIds.length} victims at ${beforeKill} tiles; ${left} nodeLeft, ${reassigned} taskReassigned within 6 s`,
@@ -190,8 +211,8 @@ record(
 
 const outcome = await waitFor(
   (e) => (e.t === "executionDone" || e.t === "executionFailed") && e.executionId === executionId,
-  killDeadline - Date.now(),
-  "the execution to end",
+  Math.max(30_000, killDeadline - Date.now()),
+  "our execution to end",
 );
 if (outcome.t === "executionFailed") {
   const reasons = [
@@ -208,25 +229,25 @@ if (outcome.t === "executionFailed") {
   process.exit(1);
 }
 const done = outcome as Ev & { followUp: Record<string, unknown> | null };
-const latest = new Map<string, string>();
-for (const e of events)
-  if (e.t === "taskDone" && e.place !== null) latest.set(e.taskId as string, e.output as string);
-const hashes = new Set(latest.values());
-const goldenSet = new Set(golden.hashes);
-const matching = [...hashes].filter((h) => goldenSet.has(h)).length;
-const failed = events.filter((e) => e.t === "taskFailed" || e.t === "executionFailed").length;
+const tiles = ourTiles(events.indexOf(outcome));
+// The frame repeats tiles (flat regions), so compare multisets, not sets.
+const sorted = [...tiles.values()].sort();
+const goldenSorted = [...golden.hashes].sort();
+const matching = sorted.filter((h, i) => h === goldenSorted[i]).length;
+const failed = events.filter((e) => e.t === "taskFailed").length;
 record(
   "frame complete",
-  `${latest.size} tiles settled in ${elapsed()}, ${matching} of ${golden.taskCount} golden hashes present, ${failed} failures, follow-up ${JSON.stringify(done.followUp)}`,
-  latest.size === golden.taskCount && matching === golden.taskCount && failed === 0,
+  `${tiles.size} tiles settled in ${elapsed()}, ${matching} of ${golden.taskCount} match the goldens tile for tile, ${failed} task failures, follow-up ${JSON.stringify(done.followUp)}`,
+  tiles.size === golden.taskCount && matching === golden.taskCount && failed === 0,
 );
 const speculated = events.filter((e) => e.t === "taskSpeculated").length;
 const verified = events.filter((e) => e.t === "taskVerified").length;
 record(
   "scheduler activity",
-  `${speculated} speculated, ${verified} verified, ${reassigned} reassigned (before the kill settled) → ${events.filter((e) => e.t === "taskReassigned").length} total`,
+  `${speculated} speculated, ${verified} verified, ${reassigned} reassigned after the kill`,
   null,
 );
+const hashes = new Set(tiles.values());
 
 // ---- 5. a tile reads back through CloudFront with its hash ---------------------------------------
 const sample = [...hashes][0] as string;
@@ -258,17 +279,19 @@ try {
   const next = (await waitFor(
     (e) =>
       e.t === "executionStarted" &&
-      (e as Ev & { execution: { executionId: string } }).execution.executionId !== executionId,
-    30_000,
-    "the next execution",
+      (e as Ev & { execution: { executionId: string; human: boolean } }).execution.executionId !==
+        executionId &&
+      (e as Ev & { execution: { human: boolean } }).execution.human === false,
+    60_000,
+    "the machine to return to its default loop",
   )) as Ev & { execution: { params: Record<string, unknown>; human: boolean } };
   record(
-    "automatic continuation",
+    "back to the default loop",
     `next execution started with ${JSON.stringify(next.execution.params)}, human ${next.execution.human}`,
     next.execution.human === false,
   );
 } catch (err) {
-  record("automatic continuation", String(err), false);
+  record("back to the default loop", String(err), false);
 }
 
 clearInterval(ping);

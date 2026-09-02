@@ -3,7 +3,7 @@
 **Status:** written 2026-09-01 from [`design.md`](design.md). The design record is the contract; this
 plan is the order of work. When the two disagree, fix the design record first, then the plan.
 
-**Where we are (2026-09-02):** M0 complete and tagged `m0` — deployed, public, verified. M1 in progress: WP1.1–1.7 merged (protocol, core, store, sandbox, SDK + Mandelbrot, node orchestrator, control plane with seeding and snapshots; the Mandelbrot pipeline passes end to end locally); WP1.8 dashboard v1 ready to merge; WP1.9 churn simulation in a worktree; WP1.10 deploy next.
+**Where we are (2026-09-02):** M0 tagged `m0`. M1 all but done: WP1.1–1.8 and WP1.10 merged, and the deployed machine renders a Mandelbrot frame from browser tabs that matches the goldens tile for tile while half the cluster is killed (`docs/m1-verification.md`). WP1.9 churn simulation is the last M1 work package; M2 next.
 
 **Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
@@ -115,7 +115,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 - [x] **WP1.8 `web` dashboard v1.** Canvas for the tiles view (offscreen at computed size, drawn at half); task grid with the seven states; node table with health; throughput from `taskDone` timestamps; counters; controls (spawn local; kill/freeze/throttle/resume cluster-wide; restart; redundancy toggle); "your nodes" panel; consent banner with stop-lending; waking and starting states.
 - [ ] **WP1.9 Churn simulation.** Harness in `core`: virtual nodes running real WASM through the node sandbox adapter, seeded event generator (join, leave, freeze, throttle, kill), virtual clock, fake store, invariants after every event, goldens comparison, lying-node and redundancy-on scenarios, `mise run sim --seed N`, default few seeds and a long mode.
   *Acceptance:* 1 000 seeds pass in long mode.
-- [ ] **WP1.10 Deploy M1.** Image with programs; on AWS with tabs only (cloud cores arrive in M3): kill half, image completes, canvas hash equals golden.
+- [x] **WP1.10 Deploy M1.** Image with programs; on AWS with tabs only (cloud cores arrive in M3): kill half, image completes, canvas hash equals golden.
 
 **M1 done when:** the money shot works on a laptop with local cores and on AWS with real tabs; the simulation passes; the dashboard shows reassignment, speculation, and verification live.
 
