@@ -14,4 +14,10 @@ coveragePathIgnorePatterns = [
   "packages/control-plane/src/main.ts",
   "packages/control-plane/src/static.ts",
   "packages/control-plane/src/log.ts",
+  # Sandbox worker entries run inside a worker thread (exercised by a spawned Node driver) or a
+  # browser worker (exercised from Playwright in WP2.6); the host and glue are measured in-process.
+  "packages/sandbox/src/adapters/node-worker.ts",
+  "packages/sandbox/src/adapters/node-host.ts",
+  "packages/sandbox/src/adapters/web-worker.ts",
+  "packages/sandbox/test/driver-node.ts",
 ]

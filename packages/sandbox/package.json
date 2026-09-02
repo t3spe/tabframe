@@ -1,0 +1,17 @@
+{
+  "name": "@tabframe/sandbox",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Runs one task of a Tabframe program in a fresh WebAssembly instance: validation, the tf imports, filesystem glue, two adapters",
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapters/node-host": "./src/adapters/node-host.ts",
+    "./adapters/node-worker": "./src/adapters/node-worker.ts",
+    "./adapters/web-host": "./src/adapters/web-host.ts",
+    "./adapters/web-worker": "./src/adapters/web-worker.ts"
+  },
+  "dependencies": {
+    "@tabframe/protocol": "workspace:*"
+  }
+}
