@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import {
   AbiError,
+  BARS_LIMITS,
+  type Bar,
+  decodeBars,
   decodePlanInput,
   decodeRunInput,
   decodeStageSpec,
+  encodeBars,
   encodePlanInput,
   encodeRunInput,
   encodeStageSpec,
@@ -168,6 +172,57 @@ describe("stage specs", () => {
         expect(decodeStageSpec(encodeStageSpec(spec))).toEqual(spec);
       }),
       { numRuns: 150 },
+    );
+  });
+});
+
+describe("bars payloads", () => {
+  test("round-trips labels and values and starts with the magic", () => {
+    const bars: Bar[] = [
+      { label: "the", value: 14535 },
+      { label: "ünïcödé", value: -1.5 },
+      { label: "", value: 0 },
+    ];
+    const encoded = encodeBars(bars);
+    expect(Array.from(encoded.subarray(0, 4))).toEqual([0x54, 0x46, 0x42, 0x52]); // "TFBR"
+    expect(decodeBars(encoded)).toEqual(bars);
+    expect(decodeBars(encodeBars([]))).toEqual([]);
+  });
+
+  test("caps and validity: count, label bytes, total size, finite values, trailing bytes, magic", () => {
+    const one = encodeBars([{ label: "a", value: 1 }]);
+    expect(() => decodeBars(one, { ...BARS_LIMITS, maxBars: 0 })).toThrow(AbiError);
+    const longLabel = encodeBars([{ label: "x".repeat(BARS_LIMITS.maxLabelBytes + 1), value: 1 }]);
+    expect(() => decodeBars(longLabel)).toThrow(/label exceeds/);
+    expect(() => decodeBars(one, { ...BARS_LIMITS, maxBytes: 8 })).toThrow(/cap/);
+    expect(() => decodeBars(encodeBars([{ label: "nan", value: Number.NaN }]))).toThrow(
+      /not finite/,
+    );
+    expect(() =>
+      decodeBars(encodeBars([{ label: "inf", value: Number.POSITIVE_INFINITY }])),
+    ).toThrow(/not finite/);
+    const trailing = new Uint8Array(one.length + 1);
+    trailing.set(one);
+    expect(() => decodeBars(trailing)).toThrow(/trailing/);
+    expect(() => decodeBars(encodeStageSpec({ kind: "done", next: null }))).toThrow(/not a bars/);
+    expect(() => decodeBars(one.subarray(0, one.length - 3))).toThrow(/truncated/);
+  });
+
+  test("any list of finite bars survives a round trip (property)", () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            label: fc.string({ maxLength: 40 }),
+            value: fc.double({ noNaN: true, noDefaultInfinity: true }),
+          }),
+          { maxLength: 50 },
+        ),
+        (bars) => {
+          expect(decodeBars(encodeBars(bars))).toEqual(bars);
+        },
+      ),
+      { numRuns: 100 },
     );
   });
 });

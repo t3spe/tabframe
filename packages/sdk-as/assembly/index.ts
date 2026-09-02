@@ -12,6 +12,7 @@
 // and anything else are rejected by the sandbox. AssemblyScript's Math is compiled to WASM and is
 // deterministic; never write NaN into an output.
 export { ABI_VERSION, alloc, done, emit, PlanInput, readPlanInput, readRunInput, RunInput, Stage, stage } from "./abi";
+export { Bars, bars } from "./bars";
 export { ByteReader, ByteWriter } from "./bytes";
 export { fs, log } from "./host";
 export { Params, quote, unquote } from "./params";

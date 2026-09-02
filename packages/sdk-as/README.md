@@ -48,6 +48,15 @@ export function run(ptr: usize, len: i32): usize {
 - **ByteWriter / ByteReader** are for your own compact task inputs (u8/u32/i32/f32/f64, blobs,
   strings), little-endian.
 
+- **bars()** builds the payload a `bars` program's final task returns:
+  `bars().bar("the", 14529).bar("of", 6620).toBytes()`. Values must be finite (NaN payload bits
+  differ between engines); the builder aborts otherwise. The dashboard decodes it with
+  `decodeBars` from `@tabframe/protocol`.
+
+Multi-stage programs read the previous stage's results as files: `fs.list("/out/0/")` names every
+task output of stage 0, `fs.readRange` reads a slice of one. See `programs/wordcount` for a
+three-stage map/reduce/merge that does exactly this.
+
 ## Compiling
 
 Programs depend on `@tabframe/sdk-as` (workspace) and import it by the subpath above; asc resolves
@@ -74,14 +83,19 @@ machines; never write NaN into an output, because NaN payload bits are not.
 ## Byte formats
 
 The SDK mirrors `packages/protocol/src/abi.ts` byte for byte; that file is the contract. Magics
-`TFRN` (run input), `TFPL` (plan input), `TFSS` (stage spec); little-endian; `str` = u32 length +
-UTF-8; `table` = u32 count + (str key, str JSON value) with keys sorted. Entry points return a
-pointer to an 8-byte `{outPtr: u32, outLen: u32}` pair, which `emit` produces.
+`TFRN` (run input), `TFPL` (plan input), `TFSS` (stage spec), `TFBR` (bars payload); little-endian;
+`str` = u32 length + UTF-8; `table` = u32 count + (str key, str JSON value) with keys sorted. Entry
+points return a pointer to an 8-byte `{outPtr: u32, outLen: u32}` pair, which `emit` produces.
 
 ## Tooling
 
 - `scripts/build-programs.ts` — `mise run build:programs`.
 - `scripts/goldens.ts` — `mise run goldens` writes `programs/<name>/goldens.json` from a single-node
-  run (params from the manifest); `--all --sample 16` times every preset; `--preset N` times one.
-- `scripts/host.ts` — instantiate a module under Node with in-memory files; used by the goldens
-  script, the tests, and (from WP1.9) the churn simulation.
+  run (params from the manifest): per-tile hashes for `tiles` programs, every stage's hashes plus
+  the decoded final payload for staged ones (`--program wordcount`); `--all --sample 16` times every
+  Mandelbrot preset; `--preset N` times one.
+- `scripts/host.ts` — instantiate a module under Node with in-memory files, and `runStaged` to run
+  a whole execution stage by stage the way the control plane would; used by the goldens script,
+  the tests, and (from WP1.9) the churn simulation.
+- `scripts/corpus.ts` — `mise run corpus` fetches and normalizes the word-count corpus into
+  `programs/wordcount/in/corpus.txt` (committed; the script is for reproducibility).

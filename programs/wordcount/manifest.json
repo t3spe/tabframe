@@ -1,0 +1,7 @@
+{
+  "name": "wordcount",
+  "view": "bars",
+  "persist": false,
+  "defaultParams": { "k": 25, "mapTasks": 32 },
+  "description": "Three-stage word count over Moby-Dick: map byte ranges into eight hashed partitions, reduce each partition, merge into the global top-K."
+}

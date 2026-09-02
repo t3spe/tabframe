@@ -1,0 +1,172 @@
+{
+  "params": {
+    "k": 25,
+    "mapTasks": 32
+  },
+  "stages": [
+    {
+      "name": "map",
+      "taskCount": 32,
+      "hashes": [
+        "1b1a1be9494eeccdd1275a1189303c167d4666c2ba2bd80a22b42def58a514a8",
+        "efc4946cc510d2c135802c8fc881bd57bf0838b6fb16349bb1f855e89ac1b786",
+        "73cce26592c88a3879cb868eb26e34680b8e69225e9ce0bc43e74a19c933178f",
+        "002fa2acb712cd7bb4de066f24c871f50c3e4a7138cfa80896a3ee725ae4e953",
+        "37a1d85617585dae7685e11410cd8ddfbcdade7e348e86ebcc68132611913283",
+        "25bfdf2fc9981b33ad5ae25f1b563e939782d07f910b05f893a991efacedfe22",
+        "ebb8ca8b299305c768a7f99bc795bf9af48736bea9ec4700fcb965e9ef5b5d5c",
+        "8bd97db8042d95dd7f9292a093397db15d456d7fa0f32dd7611c4e0ad5a1519b",
+        "2a5d8c3783f9c7b2c8b8451fdd6f0d12e91ed2c3d1b54dda7c8ba75f8c29b085",
+        "77d6f671dfa94077b106e6e4edbb00c0dad581def2c7ad10c75da94b2452553a",
+        "bbe6225520fb189f1078358118168b23662a4aec73d8ebb4bb55635c8df4cc5f",
+        "21f8344023eb3c1bb648eec020d5bf2e9ec2bcb5a425f6d4afc5f1bebb060036",
+        "40fa227c91d01786513c9fcb934e804058324d9fc3696a281443dc3bccc543d7",
+        "3301aed0eb117a7ed255fd4defccaa2c9d5beb5509c89c455d4135bba95e7fa3",
+        "8463588af542542cacb0c9a916709832108b06eea983711b70450148ca1b0ee0",
+        "8e596554788012653bdb553db880468981801d17eca3a6f268816e93d5109d24",
+        "21ebec5b23ebea858cc89089836a1b35baf624fc75b0150732272273fc4dd4e0",
+        "53deaebd1a77387b22b9c013cbd78ce1e7873e0ad4e5f9f41542f1c2c2c90327",
+        "a92b0a2c55fe1075231192b49600a2073df699c533d954bf60f3cc5dbd9835b7",
+        "23b348374aa03d7b35a246e438c79b4ca4e10f7b6bd4456697f9bbab3e8f2d23",
+        "3177c194e0153e1bc668049e492a83670083ffa2f165dde1c813c9d7b5ca072b",
+        "ecfcc81b69fb76e8e6c99e8ec95d10cf3050dbbf332212485933abce485e7ddf",
+        "4414c85b64f60eeb91748140c906995539d09343c3b8652d910bed8b837777a8",
+        "9813282c2400b9f624aef65c5c51ff36c2648fe0128c5717c073580b059e8b3f",
+        "e3f6c55491e748f48e0f6a3035d64e696b52456c9807b03a47d0e0a9899d4228",
+        "7784f179bf34c2e2af59eb76ec45302af93dd636a2a53009578243b0ff723495",
+        "e536b97695165f3f5e5fd365df2ff191a93c1863a53bb48a412e45db94f238e0",
+        "f0f6a7443e3aaeef92a9191189d01d5bb171286df5a61432e25c661f39e12208",
+        "730d0fd8a0bf0612d2bc4fd96fd76466d9706a0fe28c3baffe23bd5922e3a86a",
+        "386dfa1d0e67e23dd77f91c84f74b77fc57f9601d5019f55f35c4ee2a494fa4a",
+        "d01be5e24407423df236bba592a30ff7646895d204944099029832fc96e15757",
+        "345c5d13135230485bdff0d14776828a0da0a6935e332b62a6f5cc7f734d8ce4"
+      ]
+    },
+    {
+      "name": "reduce",
+      "taskCount": 8,
+      "hashes": [
+        "49bc5954a6cee74a7b45dd7a2da6cb2759c67f298c347d9e1d963223c33ec35f",
+        "c5f20b5a71d44e63c76fb0240012143f1b41fe333c8e2cf949842e50cf6c0ebf",
+        "d7b6a4b9f18a909a7279622c21dcbc3c31f2fe6b16d51edbef1244642f45a617",
+        "a7328f87c95a37fad22038b1ff0ca4191430faffa7f77a89f68617ac857feb19",
+        "b4e1ae6be6c88d08b97a18c41eb431ac219dc833c839d3b5380f3dd11675ad8a",
+        "da3e955a96c6c43cae54383835d484ba93499567ae7c9aeb18c9440e840ef3f1",
+        "661ff7bab15c853ed33a0bb89fdac913c52fadd205896d34a085aed0f0cb0fc1",
+        "5d577c6548d64105c08930ae3a229583ecef48078e6d60e0adf9e219ecdc74d9"
+      ]
+    },
+    {
+      "name": "merge",
+      "taskCount": 1,
+      "hashes": ["e371118a0b55d0c4ad7dfcf1421fbdc59890c66749e9c343bf8b437be97e0408"]
+    }
+  ],
+  "final": {
+    "hash": "e371118a0b55d0c4ad7dfcf1421fbdc59890c66749e9c343bf8b437be97e0408",
+    "bars": [
+      {
+        "label": "the",
+        "value": 14529
+      },
+      {
+        "label": "of",
+        "value": 6620
+      },
+      {
+        "label": "and",
+        "value": 6446
+      },
+      {
+        "label": "a",
+        "value": 4737
+      },
+      {
+        "label": "to",
+        "value": 4626
+      },
+      {
+        "label": "in",
+        "value": 4184
+      },
+      {
+        "label": "that",
+        "value": 2990
+      },
+      {
+        "label": "his",
+        "value": 2532
+      },
+      {
+        "label": "it",
+        "value": 2420
+      },
+      {
+        "label": "i",
+        "value": 1993
+      },
+      {
+        "label": "but",
+        "value": 1818
+      },
+      {
+        "label": "he",
+        "value": 1778
+      },
+      {
+        "label": "as",
+        "value": 1742
+      },
+      {
+        "label": "is",
+        "value": 1722
+      },
+      {
+        "label": "with",
+        "value": 1722
+      },
+      {
+        "label": "was",
+        "value": 1644
+      },
+      {
+        "label": "for",
+        "value": 1617
+      },
+      {
+        "label": "all",
+        "value": 1526
+      },
+      {
+        "label": "this",
+        "value": 1394
+      },
+      {
+        "label": "at",
+        "value": 1319
+      },
+      {
+        "label": "by",
+        "value": 1205
+      },
+      {
+        "label": "not",
+        "value": 1150
+      },
+      {
+        "label": "whale",
+        "value": 1110
+      },
+      {
+        "label": "from",
+        "value": 1088
+      },
+      {
+        "label": "him",
+        "value": 1069
+      }
+    ]
+  },
+  "followUp": null,
+  "msTotal": 181.5
+}

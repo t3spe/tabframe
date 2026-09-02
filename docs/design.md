@@ -724,4 +724,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   terminates it. Rotate has **no reserved concurrency** (the account cannot spare it); overlapping
   runs are made safe by the per-generation client token, the pointer, and idempotent
   handover/adopt instead (§9.2).
+- **2026-09-02 (WP2.2).** The `bars` view has a byte format:
+  `"TFBR" u32 version | u32 count | count × (str label | f64 value)`, values finite (§5.1, §5.3).
+  Word count's map tasks own the words that *start* inside their byte range — they skip a word
+  straddling the start and read past the end to finish one straddling the end — which is the
+  precise form of "extended to whitespace on both ends" (§5.6). The corpus is normalized at build
+  time beyond stripping the boilerplate: typographic apostrophes, quotation marks, dashes, and a
+  few accented letters become ASCII, and the edition's transcriber's notes go; the word rule is a
+  byte rule (ASCII letters and apostrophes) and non-ASCII bytes separate words. The attribution
+  file ships inside the bundle as `/in/ATTRIBUTION.txt`.
 
