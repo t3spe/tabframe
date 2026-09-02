@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // aws-cdk-lib's own optional properties are not declared with `| undefined`, so the strictest
+    // optional-property mode rejects CDK's types against each other. Everything else stays strict.
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
+  "exclude": ["**/node_modules", "**/dist", "cdk.out"]
+}

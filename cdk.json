@@ -1,0 +1,14 @@
+{
+  "app": "node packages/infra/bin/tabframe.ts",
+  "output": "cdk.out",
+  "watch": { "include": ["packages/infra/**/*.ts"], "exclude": ["**/node_modules", "cdk.out"] },
+  "context": {
+    "baseImageVersion": "1",
+    "@aws-cdk/core:defaultCrossStackReferences": "strong",
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/aws-lambda:useCdkManagedLogGroup": false
+  }
+}

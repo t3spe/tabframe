@@ -20,8 +20,12 @@ description = "Assert the AWS identity is the Tabframe account; every AWS task d
 run = "node packages/infra/scripts/whoami.ts"
 
 [tasks.lint]
-description = "Biome lint and format check, then a TypeScript type check"
-run = ["bunx biome check .", "bunx tsc -p tsconfig.json --noEmit"]
+description = "Biome lint and format check, then TypeScript type checks (root, and infra with its CDK-friendly config)"
+run = [
+  "bunx biome check .",
+  "bunx tsc -p tsconfig.json --noEmit",
+  "bunx tsc -p packages/infra/tsconfig.json --noEmit",
+]
 
 [tasks.test]
 description = "Unit and integration tests, then browser tests"
