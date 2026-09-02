@@ -1,0 +1,18 @@
+{
+  "name": "@tabframe/control-plane",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The control-plane process: sockets, lifecycle hooks, store routes, presign, snapshots",
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "dependencies": {
+    "@tabframe/core": "workspace:*",
+    "@tabframe/protocol": "workspace:*",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}
