@@ -33,29 +33,38 @@ time.
   instead. Both rotations completed correctly with the same churn; the only cost was the work of
   the last few seconds being recomputed, which idempotent tasks make safe.
 
-## The endpoint's concurrency ceiling
+## The endpoint's concurrency ceiling — resolved
 
-Measured while preparing this run, and the reason the runbook simulates no extra clients by
-default:
+Measured while preparing this run, then isolated afterwards (WP4.5,
+`packages/infra/scripts/socket-ceiling.ts`):
 
-- One client process could hold about **16 concurrent WebSocket connections** through the MicroVM
-  endpoint. Beyond that the endpoint answers **429** to the upgrade. The ceiling did not move with
-  the pacing: 0.5, 2, and 10 opens per second all stopped at 16, and 3125 retries over 150 seconds
-  did not get a seventeenth through.
-- While those sockets are open, the **fleet's own calls to the private port are refused with 429
-  too** — `/handover` and `/drain` both. With no extra sockets, the same calls succeed. So client
-  connections and fleet requests share one budget at the endpoint.
-- This contradicts the M0 measurement of 250 sustained sockets against a throwaway MicroVM
-  (`docs/m0-verification.md`). The difference has not been isolated: candidates are the VM's size,
-  the token's scope, or a per-source limit that the M0 run did not reach. It is recorded here
-  rather than explained.
+| Experiment | Sockets before 429 |
+|---|---|
+| live control plane, one client, one token | 16 |
+| fresh throwaway MicroVM, 1 GB, nothing else connected | 16 |
+| fresh MicroVM, three independent tokens | 16 in total |
+| fresh MicroVM, three client processes on one machine | 16 in total (6 + 5 + 5) |
+| fresh MicroVM, 512 MiB | 16 |
+| fresh MicroVM, 4 GB | 16 |
+| fresh MicroVM, 6 GB | 16 |
 
-What follows for the design: the ledger's 256-node cap is not the binding constraint, the endpoint
-is, and the machine's real capacity through one control plane is on the order of tens of
-connections from one source. The fleet already tolerates this — the retry added in this work
-package gives a throttled call three more goes, and a handover that still fails falls back to the
-snapshot — but a fleet path that does not share the clients' endpoint would be the honest fix.
-Noted for M4.
+Pacing did not matter (0.5, 2 and 10 opens a second all stopped at 16) and 3125 retries over 150
+seconds never got a seventeenth through. The account's Service Quotas name the cause: **Concurrent
+connections per 2 vCPU MicroVM = 16**, not adjustable, alongside 8 / 32 / 64 / 128 for the 1 / 4 / 8
+/ 16 vCPU classes. The class is not ours to choose — `RunMicrovm` takes only a minimum memory, and
+every size we can launch under the account's 8 GB memory quota behaves as the 2-vCPU class.
+
+While the sixteen sockets are open, the fleet's calls to the private port are refused too; with no
+extra sockets the same calls succeed. Client connections and fleet requests share one budget at the
+endpoint, which is why two of the four rotations above fell back to the snapshot.
+
+The M0 record's "250 sustained sockets" was a counting error, corrected in `docs/m0-verification.md`.
+
+What follows for the design: one control plane holds about fifteen browser tabs; the ledger's
+256-node cap is a scheduler property, not a deployment one; and thousands of concurrent clients need
+an edge tier that is not a MicroVM endpoint — design §9.7 sets out the options, and the plan's WP4.6
+carries the decision. The system as built tolerates the limit: a rotation that cannot hand over
+adopts the snapshot instead, with the same churn.
 
 ## Notes
 
