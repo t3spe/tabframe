@@ -27,15 +27,24 @@ seed, so a violation is replayable to the event.
   observers coming and going, and the controls (`killHalf`, `freezeHalf`, `throttleHalf`,
   `resumeAll`, `restart`, `skip`, `launch`, `killExecution`, `runFollowUp`, `setRedundancy`),
   weighted and paced (one control a second and one launch a minute per observer, one
-  frame-ending control per observer per 45 s so frames can finish). Two phases: chaos until enough
+  frame-ending control per observer per 45 s so frames can finish), plus `killCore`, which destroys
+  a cloud core's MicroVM. Cloud cores are exempt from the client-side churn — a MicroVM does not
+  close its own tab — but the controls reach them like any other node. Two phases: chaos until enough
   frames completed and a minimum virtual duration passed (or a cap), then calm: liars retired,
   everyone thawed, at least two honest nodes and one observer, and the machine must finish a frame
   within a bounded time.
+- `fleet.ts` — the cloud-core fleet (§6.8) as the process runs it: `launchCore` becomes a MicroVM
+  that answers RunMicrovm in a few hundred milliseconds, boots for two or three seconds, and dials
+  in as an ordinary node named `core-<microvmId>`; `terminateCore` destroys one; a reconciler asks
+  every five seconds which cores are still serving and reports the rest. It also holds the policy
+  checks — never more cores than wanted, launches a second apart, no cores and no automatic
+  continuation while asleep, one `machineSleeping` per sleep — and `FleetDrill`, the scripted
+  ending described below.
 - `clock.ts` (a timer heap), `store.ts` (SHA-256 content-addressed bytes, the sandbox's
   `BlobReader`), `program.ts` (loads and validates `programs/mandelbrot/dist/program.wasm`, seeds
   it as a bundle, memoizes task computations per process), `types.ts`.
 - `run.ts` — `mise run sim`: `--seed N | --seeds A..B`, `--long`, `--tiles N`, `--frames N`,
-  `--liar | --honest`, `--verbose`, `--keep-going`. Default: seeds 1..3 of the normal scenario over
+  `--liar | --honest`, `--drill`, `--verbose`, `--keep-going`. Default: seeds 1..3 of the normal scenario over
   whole frames; `--long` runs seeds 1..1000 of the long scenario. Exit 1 names the first failing
   seed, lists its violations, and prints the replay command.
 - `sim.test.ts` — the suite runs honest seeds, a determinism check (same seed, same trace), the
@@ -79,6 +88,14 @@ seed, so a violation is replayable to the event.
   the store, and in the execution's files; the root manifest
   in the store equals the ledger's files. In the calm phase a frame must complete within a window
   sized from the tile count; otherwise the run is reported as stalled.
+- **The fleet and the sleep policy (§6.8).** The simulated ledger has `cloudCores: true`, so every
+  run keeps two cloud cores: they boot, join, take tasks, get killed by `killCore`, and are
+  replaced. A record with no node behind it is timed rather than failed — a few seconds is a boot
+  or a reconnect, and the longest seen across the matrix is 3.1 s. What the runs cannot reach on
+  their own is the sleep, which needs ten quiet minutes, so `--drill` scripts an ending after the
+  calm frame: destroy a serving core and wait for its replacement, send every observer away and
+  watch the machine sleep and hand its cores back, then bring a visitor in and watch it wake,
+  launch cores again, and start rendering. Each step has a budget and missing one is a violation.
 - **Determinism.** No real clock or random source anywhere; the core takes the seeded rng through
   the harness (which gained an optional random source). The trace hash covers every event and its
   effects; the test asserts two runs of one seed hash the same and a different seed does not.
@@ -201,6 +218,10 @@ turned up the `commandHalf` bug above, which is a real one.
 - Coverage: `packages/core/sim` is exercised by its tests but excluded from the gate (it is a
   tool, and its worker-like loops are measured through the core it drives); the core's own line
   coverage stays above 95 %.
+- **The fleet (added later, see below):** 40 seeds of the normal scenario and 6 long seeds pass
+  with cloud cores running, and 8 seeds pass the fleet drill. A drill run reads
+  `cores 8 launched, 4 killed, 2 terminated, adrift up to 2.9 s, 1 sleeps/1 wakes`. Full
+  workspace: 454 tests pass, 95 % of lines; lint and the three `tsc` projects clean.
 
 ## Dependencies introduced
 
@@ -231,11 +252,16 @@ Recorded in design §17 (2026-09-03, WP1.9):
   later `throttleHalf` does not downgrade a frozen node to throttled, so `fill` keeps skipping it
   until the silence window declares it gone.
 
+Nothing in the design changed for the fleet: the simulation runs §6.8 as written and found it
+sound. `checkInvariants` gained one ledger invariant with it — a core's node link, when set, names
+a live node whose host id is that core's own.
+
 Simulation simplifications, stated so nobody mistakes them for the machine's behaviour: the
 default loop's follow-up is pinned to the frame's own params (preset 0), `--tiles` trims the plan,
 compute time is drawn rather than measured, a node commanded to freeze reconnects after the
-control plane hangs up (the host restarts its worker), and a node crash drops its socket without
-a close.
+control plane hangs up (the host restarts its worker), a node crash drops its socket without a
+close, and a MicroVM boots in two to three seconds with RunMicrovm answering in a few hundred
+milliseconds (design §9.6's measurements).
 
 ## Open
 
@@ -247,17 +273,14 @@ a close.
   former self. Agreement by host id would not help, since the host id is self-reported; the
   design's answer to a malicious host is the toggle plus verification at the dashboard, not sybil
   resistance, and the simulation counts such tiles as accepted lies rather than violations.
-- **The cloud-core fleet is not simulated yet (WP3.3).** The core now emits `launchCore` and
-  `terminateCore` and accepts `coreLaunched`/`coreGone`, and the merge added those to the
-  simulation's trace formatter — but not to its effect executor, so the sim never answers a
-  `launchCore` and no cloud core ever joins. Everything below the fleet is still covered (a node
-  of kind `core` is drawn by the chaos generator like any other), but the fleet policy of §6.8
-  — two cores while awake, replacement on death, the sleep timers — is unexercised here and rests
-  on its own unit tests. Closing it is small and worth doing: answer `launchCore` by spawning a
-  `VirtualNode` of kind `core` after a launch delay, remember its `microvmId`, dispatch
-  `coreLaunched`, and on `terminateCore` make that node leave and dispatch `coreGone`; then assert
-  the machine keeps two cores while an observer is connected and none once it sleeps. It belongs
-  to whoever owns WP3.3's policy, since the assertions are that policy's.
+- **The reconciler the simulation assumes and the process does not have.** The fleet layer below
+  answers `launchCore` and `terminateCore`, and it also does one thing
+  `packages/control-plane/src/cores.ts` does not: every five seconds it asks which of the ledger's
+  cores are still serving and dispatches `coreGone` for the rest. `CoreFleet.gone()` exists for
+  exactly that and **nothing calls it** (WP3.3 left it for M4). Without it, a core whose MicroVM
+  dies keeps its record until the four-hour ceiling and is never replaced, which is less than §6.8
+  promises. The simulation shows the policy is right once something reports the death; the process
+  still needs the poller.
 
 - The virtual node models what WP1.6's orchestrator must do on the wire (one presign per task's
   new hashes, then the result; reconnect as a new node; the four commands). The simulation can host

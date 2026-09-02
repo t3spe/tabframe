@@ -29,6 +29,7 @@ import {
   type TaskRecord,
 } from "../src/ledger.ts";
 import { stageTasks, wanted } from "../src/scheduler.ts";
+import { adoptLedger, deserializeLedger, serializeLedger } from "../src/snapshot.ts";
 import {
   Chaos,
   type ChaosWorld,
@@ -37,6 +38,7 @@ import {
   scenarioFor,
 } from "./chaos.ts";
 import { Timeline } from "./clock.ts";
+import { FleetDrill, SimFleet } from "./fleet.ts";
 import { closeName, type NodeProfile, VirtualNode } from "./node.ts";
 import { VirtualObserver } from "./observer.ts";
 import { computeCacheStats, type LoadedProgram, loadProgram, seedProgram } from "./program.ts";
@@ -52,6 +54,11 @@ export interface SimOptions extends ScenarioOverrides {
   program?: LoadedProgram;
   /** Keep running after the first violation to collect more of them. */
   keepGoing?: boolean;
+  /**
+   * After the calm frame, run the fleet drill (design §6.8): destroy a cloud core and watch it
+   * come back, let everyone leave and watch the machine sleep, then bring a visitor back.
+   */
+  drill?: boolean;
 }
 
 export interface SimReport {
@@ -99,6 +106,7 @@ class World implements ChaosWorld {
   private readonly start: number;
   private readonly h: Harness;
   private readonly chaos: Chaos;
+  readonly fleet: SimFleet;
   private readonly sockets = new Map<string, Socket>();
   private connCounter = 0;
   private readonly costs = new Map<string, number>();
@@ -125,6 +133,8 @@ class World implements ChaosWorld {
       {
         storeBase: "https://store.sim/blob",
         defaultLoop: { bundle: this.bundle, params: program.manifest.defaultParams },
+        // A cloud control plane: it has the MicroVM API and keeps a fleet (design §6.8).
+        cloudCores: true,
       },
       this.gen,
       () => this.random(),
@@ -132,6 +142,7 @@ class World implements ChaosWorld {
     this.ledger = this.h.ledger;
     this.start = this.timeline.now;
     this.chaos = new Chaos(this, this.scenario);
+    this.fleet = new SimFleet(this);
   }
 
   // --- WorldApi ---
@@ -246,6 +257,14 @@ class World implements ChaosWorld {
     return observer;
   }
 
+  liveCores(): string[] {
+    return this.fleet.liveCores();
+  }
+
+  killCore(microvmId: string): void {
+    this.fleet.killMicrovm(microvmId);
+  }
+
   runningExecution(): string | null {
     return this.ledger.running;
   }
@@ -282,9 +301,10 @@ class World implements ChaosWorld {
     const chaosEndAt = this.now + this.scenario.chaosLimitMs;
     const chaosMinEndAt = this.now + this.scenario.chaosMinMs;
     const settleWindow = this.settleWindow();
-    let phase: "chaos" | "calm" = "chaos";
+    let phase: "chaos" | "calm" | "drill" = "chaos";
     let framesAtCalm = 0;
     let settleAt = 0;
+    let drill: FleetDrill | null = null;
     while (this.timeline.step()) {
       if (this.violations.length > 0 && this.opts.keepGoing !== true) break;
       if (this.stats.events > MAX_EVENTS) {
@@ -302,13 +322,22 @@ class World implements ChaosWorld {
           this.note(`calm: ${framesAtCalm} frames done, settle window ${settleWindow} ms`);
           this.chaos.calm();
         }
-      } else if (this.stats.framesDone > framesAtCalm) {
-        break;
-      } else if (this.now > settleAt) {
-        this.violation(
-          `stalled: no frame completed within ${settleWindow} ms of calm (${this.machineState()})`,
-        );
-        break;
+      } else if (phase === "calm") {
+        if (this.stats.framesDone > framesAtCalm) {
+          // The machine works. The fleet drill, when asked for, is the last thing a run does.
+          if (this.opts.drill !== true) break;
+          phase = "drill";
+          drill = new FleetDrill(this, this.fleet);
+          this.note("drill: starting");
+        } else if (this.now > settleAt) {
+          this.violation(
+            `stalled: no frame completed within ${settleWindow} ms of calm (${this.machineState()})`,
+          );
+          break;
+        }
+      } else if (drill) {
+        drill.poll();
+        if (drill.done) break;
       }
     }
     this.finalChecks();
@@ -402,7 +431,7 @@ class World implements ChaosWorld {
 
   // --- the process around the core ---
 
-  private dispatch(event: Event): void {
+  dispatch(event: Event): void {
     this.h.advance(this.timeline.now - this.h.now);
     let effects: Effect[];
     try {
@@ -475,6 +504,12 @@ class World implements ChaosWorld {
           );
           break;
         }
+        case "launchCore":
+          this.fleet.launch();
+          break;
+        case "terminateCore":
+          this.fleet.terminate(e.microvmId);
+          break;
         case "presign": {
           const { connId, items } = e;
           this.timeline.after(this.storeLatency(), () => {
@@ -612,14 +647,19 @@ class World implements ChaosWorld {
     }
 
     const painted = new Set<string>();
+    let sleepingAnnouncements = 0;
     for (const e of effects) {
       if (e.kind !== "send") continue;
       if (e.msg.t === "assign") this.checkAssign(e.connId, e.msg.taskId, e.msg.attempt);
+      // One broadcast reaches every observer; the announcement is the batch, not the message.
+      else if (e.msg.t === "machineSleeping") sleepingAnnouncements = 1;
       else if (e.msg.t === "taskDone" && !painted.has(e.msg.taskId)) {
         painted.add(e.msg.taskId);
         this.checkPainted(e.msg.taskId, e.msg.output);
       }
     }
+    // The fleet and sleep policies (§6.8).
+    this.fleet.check(sleepingAnnouncements);
   }
 
   /** An assignment: to the right socket, of the running execution, in tier order (§6.3). */
@@ -780,8 +820,37 @@ class World implements ChaosWorld {
     for (const t of this.tasksOf(exec.executionId)) this.stats.assigned += t.attempts.length;
   }
 
+  /**
+   * A handover in miniature (design §9.4): the ledger is serialized, read back, and adopted by the
+   * next generation. The cloud cores must come across — their MicroVMs are still running out there
+   * — with their node links cleared, because those sockets belonged to the generation that left.
+   */
+  private checkSnapshotRoundTrip(): void {
+    const before = [...this.ledger.cores.values()].map((c) => c.microvmId).sort();
+    let next: Ledger;
+    try {
+      next = deserializeLedger(serializeLedger(this.ledger));
+    } catch (err) {
+      this.violation(`the ledger does not survive a snapshot: ${String(err)}`);
+      return;
+    }
+    adoptLedger(next, this.ledger.meta.generation + 1, this.now);
+    const after = [...next.cores.values()].map((c) => c.microvmId).sort();
+    if (canonicalStringify(before) !== canonicalStringify(after))
+      this.violation(
+        `cores after a snapshot and adopt: ${after.join(",")}, before: ${before.join(",")}`,
+      );
+    for (const core of next.cores.values()) {
+      if (core.nodeId !== null)
+        this.violation(`adopted core ${core.microvmId} still links to node ${core.nodeId}`);
+    }
+    if (next.nodes.size !== 0) this.violation(`adopt left ${next.nodes.size} nodes behind`);
+    for (const v of checkInvariants(next)) this.violation(`invariant after adopt: ${v}`);
+  }
+
   private finalChecks(): void {
     for (const v of checkInvariants(this.ledger)) this.violation(`final invariant: ${v}`);
+    this.checkSnapshotRoundTrip();
     for (const e of this.ledger.executions.values()) {
       if (e.status === "running" || e.status === "queued") this.absorbCounters(e);
     }

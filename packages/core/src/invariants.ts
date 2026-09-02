@@ -54,6 +54,14 @@ export function checkInvariants(ledger: Ledger): string[] {
     )
       v.push(`task ${t.taskId} assigned with nothing running`);
   }
+  // A core's node link names a live node of that core's own MicroVM (design §6.8).
+  for (const c of ledger.cores.values()) {
+    if (c.nodeId === null) continue;
+    const n = ledger.nodes.get(c.nodeId);
+    if (!n) v.push(`core ${c.microvmId} links to gone node ${c.nodeId}`);
+    else if (n.hostId !== `core-${c.microvmId}`)
+      v.push(`core ${c.microvmId} links to ${c.nodeId}, whose host is ${n.hostId}`);
+  }
   if (ledger.running) {
     const e = ledger.executions.get(ledger.running);
     if (!e) v.push("running points at a missing execution");

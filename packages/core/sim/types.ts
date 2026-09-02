@@ -70,6 +70,16 @@ export interface SimStats {
   liesAccepted: number;
   peakNodes: number;
   computeMisses: number;
+  /** Cloud cores (design §6.8): what the fleet did and what became of it. */
+  coresLaunched: number;
+  coresTerminated: number;
+  coresKilled: number;
+  coreJoins: number;
+  /** The longest a core record went without a node behind it (boot, death, or a wedged core). */
+  coresAdriftMs: number;
+  sleeps: number;
+  wakes: number;
+  sleepAnnouncements: number;
 }
 
 export function emptyStats(): SimStats {
@@ -103,6 +113,14 @@ export function emptyStats(): SimStats {
     liesAccepted: 0,
     peakNodes: 0,
     computeMisses: 0,
+    coresLaunched: 0,
+    coresTerminated: 0,
+    coresKilled: 0,
+    coreJoins: 0,
+    coresAdriftMs: 0,
+    sleeps: 0,
+    wakes: 0,
+    sleepAnnouncements: 0,
   };
 }
 

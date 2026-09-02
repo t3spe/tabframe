@@ -1,7 +1,7 @@
 // `mise run sim`: the churn simulation from the command line.
 //
 //   node packages/core/sim/run.ts [--seed N | --seeds A..B] [--long] [--tiles N] [--frames N]
-//                                 [--liar | --honest] [--verbose] [--keep-going]
+//                                 [--liar | --honest] [--drill] [--verbose] [--keep-going]
 //
 // Default: seeds 1..3 of the normal scenario over whole frames. `--long` runs the long scenario
 // over seeds 1..1000 (the WP1.9 acceptance). `--tiles N` keeps only the N outermost tiles of each
@@ -23,6 +23,7 @@ const tiles = tilesFlag === null ? null : Number(tilesFlag);
 const liar = has("--liar") ? true : has("--honest") ? false : null;
 const verbose = has("--verbose");
 const keepGoing = has("--keep-going");
+const drill = has("--drill");
 const framesFlag = flag("--frames");
 const frames = framesFlag === null ? undefined : Number(framesFlag);
 
@@ -47,12 +48,14 @@ export function formatReport(r: SimReport): string {
     .map(([k, v]) => `${k} ${v}`)
     .join(", ");
   const lies = r.scenario.liars > 0 ? `  lies ${s.liesTold} told, ${s.liesAccepted} accepted` : "";
+  const fleet = `cores ${s.coresLaunched} launched, ${s.coresKilled} killed, ${s.coresTerminated} terminated${s.coresAdriftMs > 0 ? `, adrift up to ${(s.coresAdriftMs / 1000).toFixed(1)} s` : ""}${s.sleeps > 0 ? `, ${s.sleeps} sleeps/${s.wakes} wakes` : ""}`;
   return [
     `seed ${r.seed}`.padEnd(10),
     r.ok ? "ok  " : "FAIL",
     `frames ${s.framesDone} done, ${s.framesCancelled} cancelled, ${s.framesFailed} failed`,
     `nodes ${s.joins} joins (peak ${s.peakNodes}), ${s.leaves} leaves, ${s.crashes} crashes, ${s.freezes} freezes`,
     `tasks ${s.assigned} attempts, ${s.done} done, ${s.reassigned} reassigned, ${s.speculated} speculated, ${s.verified} verified, ${s.mismatched} mismatched`,
+    fleet,
     `closes ${closes || "none"}${lies}`,
     `virtual ${(r.virtualMs / 60_000).toFixed(1)} min, wall ${(r.wallMs / 1000).toFixed(1)} s`,
   ].join("  ");
@@ -69,6 +72,7 @@ for (const seed of seeds) {
     verbose,
     liar,
     keepGoing,
+    drill,
     ...(frames === undefined ? {} : { frames }),
   });
   console.log(formatReport(report));

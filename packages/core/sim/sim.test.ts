@@ -48,6 +48,26 @@ describe("churn simulation", () => {
     expect(r.stats.liesTold).toBeGreaterThan(0);
   }, 120_000);
 
+  test("the fleet keeps two cloud cores, replaces one that dies, sleeps, and wakes", () => {
+    const r = runSim({ seed: 11, tiles: TILES, program, liar: false, drill: true });
+    expect(r.violations).toEqual([]);
+    // Two at boot, more as the chaos destroys them, and two again after waking.
+    expect(r.stats.coresLaunched).toBeGreaterThanOrEqual(4);
+    expect(r.stats.coreJoins).toBeGreaterThanOrEqual(2);
+    // The sleep gave the cores back, and the visitor woke the machine.
+    expect(r.stats.sleeps).toBe(1);
+    expect(r.stats.wakes).toBe(1);
+    expect(r.stats.coresTerminated).toBeGreaterThanOrEqual(2);
+    // No record sat without a node for longer than a boot and a reconcile.
+    expect(r.stats.coresAdriftMs).toBeLessThan(30_000);
+  }, 120_000);
+
+  test("cloud cores travel with the ledger: a snapshot round trip keeps them, unlinked", () => {
+    const r = runSim({ seed: 12, tiles: 16, program, liar: false });
+    expect(r.violations).toEqual([]);
+    expect(r.stats.coresLaunched).toBeGreaterThan(0);
+  }, 120_000);
+
   test("the long scenario shape runs", () => {
     const r = runSim({ seed: 10, tiles: 16, program, long: true, frames: 2 });
     expect(r.violations).toEqual([]);
