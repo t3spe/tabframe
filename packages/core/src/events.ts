@@ -41,6 +41,10 @@ export type Event =
     }
   /** The process finished checking an uploaded bundle (design §5.2, §5.5). */
   | { kind: "bundleRejected"; bundle: string; connId: string; reason: string }
+  /** Seeding found a newer bundle shipped under this program's name (WP4.9). */
+  | { kind: "programRetired"; bundle: string }
+  /** Seeding points the machine's own loop at the shipped program (design §6.8, WP4.9). */
+  | { kind: "setDefaultLoop"; loop: { bundle: string; params: Record<string, unknown> } | null }
   /** The process launched a cloud core, or found one gone (design §6.8). */
   | { kind: "coreLaunched"; microvmId: string }
   | { kind: "coreGone"; microvmId: string };

@@ -171,6 +171,11 @@ export interface ProgramRecord {
   /** The bundle's own files (design §5.1): the module, the manifest, and anything under `/in/`. */
   files: FsManifest["files"];
   addedAt: number;
+  /**
+   * Superseded by a newer bundle shipped under the same name (WP4.9): hidden from the program list,
+   * refused at launch, and kept only while an execution still refers to it.
+   */
+  retired?: boolean;
 }
 
 /**

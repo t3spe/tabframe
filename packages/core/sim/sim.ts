@@ -890,6 +890,10 @@ function describeEvent(event: Event): string {
       return "tick";
     case "blobFetched":
       return `blobFetched ${event.purpose.type} ${event.hash.slice(0, 8)} ${event.bytes ? event.bytes.length : "missing"}`;
+    case "programRetired":
+      return `programRetired ${event.bundle.slice(0, 8)}`;
+    case "setDefaultLoop":
+      return `setDefaultLoop ${event.loop?.bundle.slice(0, 8) ?? "none"}`;
     case "blobStored":
       return `blobStored ${event.purpose.type} ${event.hash.slice(0, 8)}`;
     case "programAdded":

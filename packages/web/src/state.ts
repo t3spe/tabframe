@@ -596,6 +596,13 @@ export function applyMessage(
       });
       return note(next, now, "system", `program ${msg.name} added (${msg.program.slice(0, 8)}…)`);
     }
+    case "programRetired": {
+      const next = advance(state, msg.seq);
+      const programs = new Map(next.programs);
+      programs.delete(msg.program);
+      next.programs = programs;
+      return note(next, now, "system", `program ${msg.name} retired (${msg.program.slice(0, 8)}…)`);
+    }
     case "controlPlaneRotating": {
       const next = advance(state, msg.seq);
       next.rotation = { next: msg.next, reconnectAfterMs: msg.reconnectAfterMs, at: now };

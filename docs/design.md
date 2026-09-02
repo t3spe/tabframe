@@ -829,6 +829,16 @@ Dated deviations discovered while building, recorded before the code landed (pla
   Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
   historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the
   options are in §9.7 and the plan's WP4.6.
+- **2026-09-02 (WP4.9).** The image owns the names it ships: seeding retires a record under a
+  shipped name whose bundle is not the shipped one and moves the default loop to the shipped
+  program when the loop's bundle is gone or retired (§6.8, §9.4). A retired program is hidden,
+  refuses launches (so its follow-up chain ends), and is dropped once no execution refers to it.
+  Found by the first verify-m1 on the paced image: the machine kept rendering the previous
+  Mandelbrot under a second `mandelbrot` record. Ended executions beyond the two most recent lose
+  their file maps with their tasks; inheritance reads the map from the inherited root's manifest
+  blob rather than the ledger's copy (§5.4), which is what let the maps go. Deployed snapshot
+  before: 917–967 KB gzipped; resume latency measured at 4.1 s to the first 200 via auto-resume.
+
 - **2026-09-02 (WP4.8).** CI is a gate, not a report: `main` must be green in CI before the next
   work package starts (§11). The churn simulation builds the demo programs on demand when
   `programs/*/dist` is absent, so `bun test` works on a fresh checkout; CI also builds them

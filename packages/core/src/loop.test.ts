@@ -206,6 +206,12 @@ describe("pruning ended executions' tasks", () => {
     // The records are all still there, with what they knew.
     expect(older.every((id) => h.ledger.executions.has(id))).toBe(true);
     expect(h.ledger.executions.get(older[0] as string)?.stageTaskIds.length).toBe(3);
+    // The file map goes with the tasks; the root stays, and the recent frames keep their maps.
+    expect(h.ledger.executions.get(older[0] as string)?.files).toEqual({});
+    expect(h.ledger.executions.get(older[0] as string)?.root).toBe(H("f"));
+    expect(
+      Object.keys(h.ledger.executions.get(recent[0] as string)?.files ?? {}).length,
+    ).toBeGreaterThan(0);
     expect(tasksOf(running.executionId)).toBe(before);
     expect(h.invariants()).toEqual([]);
     // Idempotent: a second pass finds nothing left to drop.

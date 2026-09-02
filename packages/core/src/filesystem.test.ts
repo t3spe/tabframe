@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { FsManifest } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
 import { BUNDLE, defaultBundleFiles, H, harness, renderSpec } from "./harness.ts";
 import type { Ledger } from "./ledger.ts";
@@ -178,6 +179,9 @@ describe("conflicts and caps", () => {
   });
 });
 
+const manifestBytes = (files: FsManifest["files"]) =>
+  new TextEncoder().encode(JSON.stringify({ version: 1, files }));
+
 describe("inheritance", () => {
   const finish = (h: ReturnType<typeof harness>, root: string) => {
     const exec = runningExec(h.ledger);
@@ -212,10 +216,11 @@ describe("inheritance", () => {
     expect(second.inheritedFrom).toBe(first.executionId);
     // The root is not the bundle: the merged filesystem is stored first.
     expect(second.root).toBeNull();
+    // The inherited map is read from the root's manifest blob, not from the ledger's copy.
     const fetched = h.event({
       kind: "blobFetched",
       hash: H("9"),
-      bytes: new TextEncoder().encode('{"version":1,"files":{}}'),
+      bytes: manifestBytes(first.files),
       purpose: { type: "inheritRoot", executionId: second.executionId },
     });
     const manifest = manifestOf(fetched);
@@ -225,6 +230,54 @@ describe("inheritance", () => {
     h.manifestStored(fetched, H("a"));
     expect(second.root).toBe(H("a"));
     expect(second.planTaskId).not.toBeNull();
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("an execution whose file map was pruned from the ledger is still inherited from its root blob", () => {
+    const h = harness();
+    h.hello("a", "h1");
+    h.addProgram("text", true);
+    h.launch({ preset: 0 }, true);
+    const first = finish(h, H("9"));
+    const blob = manifestBytes(first.files);
+    first.files = {}; // what pruneExecutions leaves behind (WP4.9)
+    h.launch({ preset: 1 }, true);
+    const second = runningExec(h.ledger);
+    expect(second.inheritedFrom).toBe(first.executionId);
+    const fetched = h.event({
+      kind: "blobFetched",
+      hash: H("9"),
+      bytes: blob,
+      purpose: { type: "inheritRoot", executionId: second.executionId },
+    });
+    const manifest = manifestOf(fetched);
+    expect(manifest.files["/state/acc"]).toEqual({ hash: H("7"), size: 12 });
+    expect(manifest.files["/in/data.txt"]).toEqual(defaultBundleFiles["/in/data.txt"] as never);
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("an inherited root that is not a manifest warns like a missing one", () => {
+    const h = harness();
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("text", true);
+    h.launch({ preset: 0 }, true);
+    finish(h, H("9"));
+    h.launch({ preset: 1 }, true);
+    const second = runningExec(h.ledger);
+    const effects = h.event({
+      kind: "blobFetched",
+      hash: H("9"),
+      bytes: new TextEncoder().encode("not a manifest"),
+      purpose: { type: "inheritRoot", executionId: second.executionId },
+    });
+    const warning = effects.find((e) => e.kind === "send" && e.msg.t === "executionWarning");
+    if (warning?.kind !== "send" || warning.msg.t !== "executionWarning")
+      throw new Error("no warning");
+    expect(warning.msg.code).toBe("expired-root");
+    expect(warning.msg.message).toContain("unreadable");
+    expect(second.root).toBe(BUNDLE);
+    expect(second.files).toEqual(defaultBundleFiles);
     expect(h.invariants()).toEqual([]);
   });
 

@@ -611,6 +611,10 @@ describe("dashboard v2: programs, stages, attempts, failures", () => {
     // An announcement for a known program keeps what the snapshot said.
     s = applyMessage(s, { t: "programAdded", ...env, seq: 3, program: HASH, name: "mandelbrot" });
     expect(s.programs.get(HASH)?.view).toBe("tiles");
+    // A retired program leaves the list and the activity says so.
+    s = applyMessage(s, { t: "programRetired", ...env, seq: 4, program: HASH, name: "mandelbrot" });
+    expect(programList(s).map((p) => p.name)).toEqual(["wc"]);
+    expect(s.activity.at(-1)?.text).toContain("program mandelbrot retired");
   });
 
   test("the stage strip: a plan step, then stages with tallies and roots, then done", () => {

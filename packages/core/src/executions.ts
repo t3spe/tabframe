@@ -4,6 +4,7 @@ import {
   decodeStageSpec,
   encodePlanInput,
   type FsManifest,
+  fsManifest,
   PROTOCOL_VERSION,
   type ProgramManifest,
 } from "@tabframe/protocol";
@@ -22,6 +23,7 @@ import { broadcast } from "./observers.ts";
 import { cancelOthers, fill } from "./scheduler.ts";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 export function addProgram(
   ledger: Ledger,
@@ -33,6 +35,38 @@ export function addProgram(
 ): Effect[] {
   ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
   return broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
+}
+
+/**
+ * A newer bundle ships under this program's name (WP4.9): the record is hidden and refuses
+ * launches, so the follow-up chain of the old frame ends, and it is dropped once no execution
+ * refers to it — `fill` and inheritance still need the module and files of one that does.
+ */
+export function retireProgram(ledger: Ledger, bundle: string): Effect[] {
+  const program = ledger.programs.get(bundle);
+  if (!program || program.retired) return [];
+  program.retired = true;
+  const effects = broadcast(ledger, {
+    t: "programRetired",
+    program: bundle,
+    name: program.manifest.name,
+  });
+  dropUnreferencedRetired(ledger);
+  return effects;
+}
+
+function dropUnreferencedRetired(ledger: Ledger): void {
+  for (const program of ledger.programs.values()) {
+    if (!program.retired) continue;
+    let referenced = false;
+    for (const e of ledger.executions.values()) {
+      if (e.bundle === program.bundle) {
+        referenced = true;
+        break;
+      }
+    }
+    if (!referenced) ledger.programs.delete(program.bundle);
+  }
 }
 
 export interface LaunchRequest {
@@ -50,6 +84,7 @@ export function enqueue(
 ): { effects: Effect[]; executionId: string | null; error?: string } {
   const program = ledger.programs.get(req.bundle);
   if (!program) return { effects: [], executionId: null, error: "unknown program" };
+  if (program.retired) return { effects: [], executionId: null, error: "program retired" };
   // A `persist` program inherits the latest finished run of itself unless told otherwise (D5).
   const inherit = req.inherit ?? (program.manifest.persist ? "latest" : null);
   const inherited = resolveInherit(ledger, { ...req, inherit });
@@ -71,10 +106,12 @@ export function enqueue(
     canvas: null,
     stageTaskIds: [],
     planTaskId: null,
-    // The filesystem starts from the bundle's own files, overlaid on whatever it inherits, so a
-    // relaunched bundle's inputs and module always win over stale copies (design §5.4).
+    // The filesystem starts from the bundle's own files; what it inherits is read back from the
+    // inherited root's manifest when the run starts (`onInheritRoot`), overlaid so a relaunched
+    // bundle's inputs and module always win over stale copies (design §5.4). The ledger's copy of
+    // an old execution's file map may be gone by then (`pruneExecutions`), the blob is not.
     root: inherited ? null : program.bundle,
-    files: { ...(inherited?.files ?? {}), ...program.files },
+    files: { ...program.files },
     sealedStage: -1,
     computeSamples: [],
     computeMsUsed: 0,
@@ -161,19 +198,21 @@ export function onInheritRoot(
   const exec = ledger.executions.get(executionId);
   if (exec?.status !== "running" || exec.root !== null) return [];
   const program = ledger.programs.get(exec.bundle);
-  if (bytes === null) {
+  const inherited = bytes === null ? null : parseManifest(bytes);
+  if (inherited === null) {
     exec.files = { ...(program?.files ?? {}) };
     exec.root = exec.bundle;
     const effects = broadcast(ledger, {
       t: "executionWarning",
       executionId,
       code: "expired-root",
-      message: `the filesystem inherited from ${exec.inheritedFrom} is gone; starting from the bundle`,
+      message: `the filesystem inherited from ${exec.inheritedFrom} is ${bytes === null ? "gone" : "unreadable"}; starting from the bundle`,
     });
     effects.push(...createPlanTask(ledger, exec, 0, now));
     effects.push(...fill(ledger, now));
     return effects;
   }
+  exec.files = { ...inherited, ...(program?.files ?? {}) };
   const manifest: FsManifest = { version: 1, files: exec.files };
   return [
     {
@@ -182,6 +221,16 @@ export function onInheritRoot(
       purpose: { type: "manifest", executionId, stage: -1 },
     },
   ];
+}
+
+/** The inherited root's manifest, or null when the blob is not one (design §5.4). */
+function parseManifest(bytes: Uint8Array): FsManifest["files"] | null {
+  try {
+    const parsed = fsManifest.safeParse(JSON.parse(decoder.decode(bytes)));
+    return parsed.success ? parsed.data.files : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The planner runs on a core like any task (D6); its input is frozen here. */
@@ -646,7 +695,12 @@ export function pruneExecutions(
     for (const [taskId, task] of ledger.tasks) {
       if (dropTasks.has(task.executionId)) ledger.tasks.delete(taskId);
     }
+    // The file map goes with the tasks (WP4.9): a frame's 640 entries of hash and size, 32 frames
+    // deep, was most of the deployed snapshot. The root hash stays, and inheritance reads the
+    // map back from the root's manifest blob.
+    for (const e of ended) if (dropTasks.has(e.executionId)) e.files = {};
   }
   for (const id of dropRecords) ledger.executions.delete(id);
+  dropUnreferencedRetired(ledger);
   return dropRecords;
 }

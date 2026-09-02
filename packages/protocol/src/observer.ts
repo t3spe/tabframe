@@ -253,6 +253,13 @@ export const programAdded = z.object({
   program: hash,
   name: z.string().min(1).max(64),
 });
+/** A newer bundle shipped under this name; the old one leaves the list (WP4.9). */
+export const programRetired = z.object({
+  t: z.literal("programRetired"),
+  ...event,
+  program: hash,
+  name: z.string().min(1).max(64),
+});
 export const controlPlaneRotating = z.object({
   t: z.literal("controlPlaneRotating"),
   ...event,
@@ -290,6 +297,7 @@ export const controlPlaneToObserver = z.discriminatedUnion("t", [
   taskFailed,
   controlApplied,
   programAdded,
+  programRetired,
   controlPlaneRotating,
   machineSleeping,
 ]);
