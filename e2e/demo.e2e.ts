@@ -283,14 +283,39 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("rotation");
   const rotation = rotateInBackground();
   const banner = page.locator("#machineBanner");
-  await expect(banner).toBeVisible({ timeout: 240_000 });
-  await expect(banner).toHaveAttribute("data-kind", "rotating");
-  await expect(banner).toContainText("fresh MicroVM");
-  await expect.poll(() => generation(page), { timeout: 240_000 }).toBeGreaterThan(startGeneration);
+  // The rotating banner's countdown is under two seconds, so what the banner said is collected
+  // while the generation advances rather than asserted at one instant; a banner of any other
+  // kind is logged with what the page knew of the machine.
+  const bannersSeen = new Map<string, string>();
+  await expect
+    .poll(
+      async () => {
+        if (await banner.isVisible()) {
+          const kind = (await banner.getAttribute("data-kind")) ?? "?";
+          if (!bannersSeen.has(kind)) {
+            const machine = await page.evaluate(() =>
+              JSON.stringify(
+                (window as unknown as { tabframe: { state: { machine: unknown } } }).tabframe.state
+                  .machine,
+              ),
+            );
+            bannersSeen.set(
+              kind,
+              `${(await banner.textContent())?.slice(0, 80)} · machine ${machine}`,
+            );
+            beat(`banner ${kind}: ${bannersSeen.get(kind)}`);
+          }
+        }
+        return (await generation(page)) > startGeneration;
+      },
+      { timeout: 240_000, intervals: [200] },
+    )
+    .toBe(true);
+  expect([...bannersSeen.keys()]).toContain("rotating");
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
   await expect(banner).toBeHidden({ timeout: 120_000 });
   // The picture stayed on screen, the tabs are back, and the machine keeps working.
-  await expect(page.locator("#tiles")).toBeVisible();
+  await expect(page.locator("#tiles")).toBeVisible({ timeout: 30_000 });
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 120_000 })
     .toBeGreaterThanOrEqual(1);

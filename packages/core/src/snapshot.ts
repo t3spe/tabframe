@@ -86,8 +86,13 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
     effects.push(...releaseNode(ledger, node));
     ledger.nodes.delete(node.nodeId);
   }
-  // The cores are still running out there; they will reconnect to this generation as new nodes.
-  for (const core of ledger.cores.values()) core.nodeId = null;
+  // The cores are still running out there; they will reconnect to this generation as new nodes,
+  // and get the link timeout's grace from now, not from their launch (WP4.4: without this every
+  // rotation terminated every core on its first tick).
+  for (const core of ledger.cores.values()) {
+    core.nodeId = null;
+    core.unlinkedAt = now;
+  }
   ledger.nodeByConn.clear();
   ledger.conns.clear();
   ledger.observers.clear();
