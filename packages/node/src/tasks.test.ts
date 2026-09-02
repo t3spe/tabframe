@@ -199,10 +199,16 @@ describe("TaskRunner", () => {
     expect(w.puts.length).toBe(1); // the second output was already in the store
   });
 
-  test("a trap is an error result with the log; a deadline kill is released; disposed is dropped", async () => {
+  test("a trap is an error result with the log; a deadline kill or a host failure is released; disposed is dropped", async () => {
     const w = world([
       { ok: false, error: "trap: unreachable", log: "before the trap" },
       { ok: false, error: "deadline", log: "" },
+      {
+        ok: false,
+        error:
+          "WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory for new instance",
+        log: "",
+      },
       { ok: false, error: "disposed", log: "" },
     ]);
     const trap = await w.runner.run(assign(), 1);
@@ -212,6 +218,9 @@ describe("TaskRunner", () => {
     });
     const late = await w.runner.run(assign(), 1);
     expect(late).toMatchObject({ kind: "result", msg: { error: RELEASED } });
+    // The host could not run the module at all: not the program's fault, another node's turn.
+    const starved = await w.runner.run(assign(), 1);
+    expect(starved).toMatchObject({ kind: "result", msg: { error: RELEASED } });
     const gone = await w.runner.run(assign(), 1);
     expect(gone).toEqual({ kind: "dropped", reason: "cancelled" });
     expect(w.puts).toEqual([]);

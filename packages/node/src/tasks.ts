@@ -84,8 +84,14 @@ export class TaskRunner {
       const computeMs = Math.max(0, Math.round(this.deps.now() - started));
       if (!result.ok) {
         if (result.error === "disposed") return { kind: "dropped", reason: "cancelled" };
-        // A deadline kill is the node giving up, not a program fault; the control plane releases it.
-        const error = result.error === "deadline" ? RELEASED : result.error.slice(0, 1024);
+        // A deadline kill is the node giving up, not a program fault; the control plane releases
+        // it. So is a host that could not even instantiate the module — a CI runner with ten
+        // workers failed `WebAssembly.Instance(): Out of memory` once and took a whole frame down
+        // with it (WP4.4): the program did nothing wrong, another node will run the task.
+        const error =
+          result.error === "deadline" || hostFailure(result.error)
+            ? RELEASED
+            : result.error.slice(0, 1024);
         return {
           kind: "result",
           msg: {
@@ -178,6 +184,13 @@ export class TaskRunner {
     }
     return p;
   }
+}
+
+/** An error from the host, not from the program: the module never ran (memory, instantiation). */
+export function hostFailure(error: string): boolean {
+  return /out of memory|cannot allocate|WebAssembly\.(Instance|Memory)\(\)|RangeError: WebAssembly/i.test(
+    error,
+  );
 }
 
 function inlineLog(text: string): { text: string } | null {
