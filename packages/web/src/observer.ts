@@ -114,12 +114,7 @@ export class ObserverClient {
    */
   send(control: ControlRequest): boolean {
     if (this.stopped || this.off) return false;
-    if (control.t === "setRedundancy") {
-      // This page knows the value it asked for; the echo needs no refresh.
-      this.expectRedundancyEcho += 1;
-      this.state = withRedundancy(this.state, control.on);
-      this.handlers.onCluster(this.state);
-    }
+    this.anticipate(control);
     if (!this.connected) {
       this.held.push({ control, at: Date.now() });
       return true;
@@ -129,12 +124,30 @@ export class ObserverClient {
     return true;
   }
 
-  /** Controls held across a reconnect go out once the new socket is live, if still fresh. */
+  /** This page knows the redundancy value it asked for: show it now, and expect the echo. */
+  private anticipate(control: ControlRequest): void {
+    if (control.t !== "setRedundancy") return;
+    this.expectRedundancyEcho += 1;
+    this.state = withRedundancy(this.state, control.on);
+    this.handlers.onCluster(this.state);
+  }
+
+  /**
+   * Controls held across a reconnect go out once the new socket is live, if still fresh. The
+   * snapshot that made the socket live carried the machine's old redundancy value, so a held
+   * toggle is anticipated again (the echo count was already taken at the click).
+   */
   private releaseHeld(): void {
     const now = Date.now();
     const fresh = this.held.filter((h) => now - h.at <= CONTROL_HOLD_MS);
     this.held = [];
-    for (const h of fresh) this.outbox.push(h.control);
+    for (const h of fresh) {
+      if (h.control.t === "setRedundancy") {
+        this.state = withRedundancy(this.state, h.control.on);
+        this.handlers.onCluster(this.state);
+      }
+      this.outbox.push(h.control);
+    }
     if (fresh.length > 0) this.drain();
   }
 

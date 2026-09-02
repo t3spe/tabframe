@@ -164,13 +164,38 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
   // The cluster is short-handed; the page spawns nothing new on its own.
   await expect(page.locator("#counts")).toHaveText(/[1-9] nodes/, { timeout: 20_000 });
 
-  // The frame completes anyway.
-  await expect
-    .poll(async () => page.evaluate(tilesDone), {
-      timeout: 180_000,
-      intervals: [1_000],
-    })
-    .toBeGreaterThanOrEqual(goldens.taskCount);
+  // The frame completes anyway. When it does not (a CI runner stalled at 215 of 640 twice), what
+  // the machine looked like is worth more than the number, so it is dumped before the failure.
+  try {
+    await expect
+      .poll(async () => page.evaluate(tilesDone), {
+        timeout: 180_000,
+        intervals: [1_000],
+      })
+      .toBeGreaterThanOrEqual(goldens.taskCount);
+  } catch (err) {
+    const dump = await page.evaluate(() => {
+      const w = (window as unknown as { __watch?: Watch }).__watch;
+      const text = (sel: string) => document.querySelector(sel)?.textContent ?? "";
+      const rows = [...document.querySelectorAll("#nodes tbody tr")].map((r) => r.textContent);
+      const activity = [...document.querySelectorAll("#activity li")]
+        .slice(0, 20)
+        .map((li) => li.textContent);
+      return {
+        exec: text("#exec"),
+        machine: text("#machine"),
+        counters: text("#counters"),
+        counts: text("#counts"),
+        failure: text("#failure"),
+        nodes: rows,
+        activity,
+        watcherFailed: w?.failed ?? null,
+        watcherFinished: w?.finished ?? null,
+      };
+    });
+    console.log(`[money-shot] stalled: ${JSON.stringify(dump)}`);
+    throw err;
+  }
   expect(beforeKill).toBeLessThan(goldens.taskCount);
 
   const outputs = Object.values(await page.evaluate(tileOutputs));
