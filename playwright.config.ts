@@ -30,6 +30,9 @@ export default defineConfig({
           TABFRAME_PRIVATE_PORT: String(port + 1),
           TABFRAME_WEB_DIR: "packages/web/dist",
           TABFRAME_TICK_MS: "100",
+          // No seeding: these suites want an idle machine. The pipeline in a browser is
+          // exercised by the live tests that point at a seeded server.
+          TABFRAME_PROGRAMS_DIR: "",
         },
       }
     : undefined,

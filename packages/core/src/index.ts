@@ -8,8 +8,12 @@ export {
   ensureDefaultLoop,
   executionTasks,
   failExecution,
+  KEEP_ENDED_EXECUTIONS,
   type LaunchRequest,
+  LOOP_BACKOFF_MAX_MS,
+  LOOP_BACKOFF_MIN_MS,
   maybeStart,
+  pruneExecutions,
 } from "./executions.ts";
 export {
   type Clock,

@@ -39,7 +39,12 @@ export function deserializeLedger(json: string): Ledger {
   const s = JSON.parse(json) as SerializedLedger;
   if (s.version !== 1) throw new Error(`unsupported ledger version ${String(s.version)}`);
   return {
-    meta: s.meta,
+    // Fields added after a snapshot was written take their defaults.
+    meta: {
+      ...s.meta,
+      loopBackoffMs: s.meta.loopBackoffMs ?? 0,
+      loopPausedUntil: s.meta.loopPausedUntil ?? 0,
+    },
     config: s.config,
     conns: new Map(),
     nodes: new Map(s.nodes.map((n) => [n.nodeId, n])),
