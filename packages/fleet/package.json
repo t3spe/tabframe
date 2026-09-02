@@ -15,5 +15,16 @@
   },
   "devDependencies": {
     "aws-sdk-client-mock": "4.1.0"
+  },
+  "exports": {
+    ".": "./src/ops.ts",
+    "./config": "./src/config.ts",
+    "./cp-client": "./src/cp-client.ts",
+    "./microvm-client": "./src/microvm-client.ts",
+    "./pointer": "./src/pointer.ts",
+    "./rotate": "./src/rotate.ts",
+    "./session": "./src/session.ts",
+    "./testing/fake": "./src/testing/fake.ts",
+    "./types": "./src/types.ts"
   }
 }

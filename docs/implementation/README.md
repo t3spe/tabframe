@@ -32,3 +32,6 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP2.3 | [wp-2.3-launch-path.md](wp-2.3-launch-path.md) | 2026-09-02 | Launch path: uploaded bundles resolved and validated by the process, per-execution task budget, per-observer launch rate |
 | WP3.1 | [wp-3.1-cp-lifecycle.md](wp-3.1-cp-lifecycle.md) | 2026-09-02 | Rotation, control-plane side: phases, handover, generation-guarded adopt, jittered drain, fleet-secret gate |
 | WP3.2 | [wp-3.2-fleet-v1.md](wp-3.2-fleet-v1.md) | 2026-09-02 | Rotation, fleet side: the five steps, the private-port client, failure paths, and repair of an interrupted rotation |
+| WP2.4 | [wp-2.4-editor.md](wp-2.4-editor.md) | 2026-09-02 | In-page editor: asc in a lazily loaded worker (byte-identical to the build), prefilled Mandelbrot, diagnostics with lines, params, compile → bundle → launch over the observer socket, the drop-a-`.wasm` door |
+| WP3.3 | [wp-3.3-cloud-cores.md](wp-3.3-cloud-cores.md) | 2026-09-02 | Cloud cores: the fleet and sleep policies in the pure core, core records in the ledger, the image running the same orchestrator a tab runs |
+| WP3.4 | [wp-3.4-handover-tests.md](wp-3.4-handover-tests.md) | 2026-09-02 | A real rotation on a laptop: the local driver behind `dev:rotate`, and a two-process handover taken mid-render as a test |

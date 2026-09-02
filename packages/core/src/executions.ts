@@ -555,6 +555,7 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   const loop = ledger.config.defaultLoop;
   if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
+  if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
   if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
   return enqueue(

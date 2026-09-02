@@ -40,7 +40,10 @@ export type Event =
       connId?: string;
     }
   /** The process finished checking an uploaded bundle (design §5.2, §5.5). */
-  | { kind: "bundleRejected"; bundle: string; connId: string; reason: string };
+  | { kind: "bundleRejected"; bundle: string; connId: string; reason: string }
+  /** The process launched a cloud core, or found one gone (design §6.8). */
+  | { kind: "coreLaunched"; microvmId: string }
+  | { kind: "coreGone"; microvmId: string };
 
 /** Outbound effects. The process executes them; the core never touches a socket or the store. */
 export type Effect =
@@ -54,6 +57,9 @@ export type Effect =
    * module, validates them (imports, exports, size, declared memory), and answers with a
    * `programAdded` event followed by the same launch, or with `bundleRejected` (design §5.2).
    */
+  /** Keep the cloud-core fleet at its desired size (design §6.8); the process calls AWS. */
+  | { kind: "launchCore" }
+  | { kind: "terminateCore"; microvmId: string }
   | {
       kind: "resolveBundle";
       bundle: string;

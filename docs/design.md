@@ -733,6 +733,16 @@ Dated deviations discovered while building, recorded before the code landed (pla
   few accented letters become ASCII, and the edition's transcriber's notes go; the word rule is a
   byte rule (ASCII letters and apostrophes) and non-ASCII bytes separate words. The attribution
   file ships inside the bundle as `/in/ATTRIBUTION.txt`.
+
+- **2026-09-02 (WP2.4).** The in-page compiler is asc bundled with Bun for the browser, minified
+  (1.6 MB), its Node-only imports left as dynamic imports that a worker never takes; binaryen is
+  served **as is** as a sibling asset (13.6 MB, almost all of it the compiler's own WebAssembly —
+  a minifying pass made it larger), not minified as §5.6 planned. Both load in a module worker
+  only when the editor opens. A page compile is byte-identical to the build's (pinned under Bun
+  and in Chromium). A page-built bundle is the manifest blob seeding produces, except its
+  manifest is compact JSON, so the same program uploaded from the page and shipped in the image
+  are two bundles and two program records (§5.6, §7.3). `@tabframe/sandbox` exports a
+  `./validate` subpath for the page.
 - **2026-09-03 (WP1.9).** Found by the churn simulation. Results and presigns do not count
   against the per-node message bucket at all: they answer assignments, which `maxInFlight` already
   paces (§8.4; WP1.7 had raised the bucket to 1000 a second for the same reason). Agreement means
@@ -748,6 +758,19 @@ Dated deviations discovered while building, recorded before the code landed (pla
   the same task is evidence only, so a stale report never closes a newer attempt (§6.5). D7's
   "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
   free slot; a tie after two contested rounds is not a majority and starts another round, up to
+  four, after which report order breaks it.
+- **2026-09-02 (WP3.3).** A cloud core names itself `core-<microvmId>`, which is how the ledger
+  links a node to the core it launched; no registration message (§6.8). Core records travel in the
+  ledger and are inherited at adopt with their node links cleared. Cores launch with **no ingress
+  connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
+  the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
+  but has no fleet (§6.8, §12).
+- **2026-09-02 (WP3.4).** Local mode can boot neutral (`TABFRAME_LOCAL_NEUTRAL`) so `dev:rotate`
+  drives the real run hook and the real rotate handler with control-plane processes standing in for
+  MicroVMs (§12). A run payload with an empty `storeBase` leaves a control plane serving blobs from
+  its own port; locally each generation has its own in-memory store, so a rotation loses earlier
+  blobs and the local test rotates within one stage. On AWS the store is shared and this does not
+  arise (§7.1).
   four, after which report order breaks it. Freeze is terminal on the node **record** too: a later
   `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a
   worker that computes nothing until the silence window declares it gone (§4, §6.7).

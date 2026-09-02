@@ -16,6 +16,8 @@ export interface Config {
   blobBucket: string | null;
   /** Local mode only: serve `{off: true}` from the emulated session endpoint. */
   localOff: boolean;
+  /** Local mode only: boot neutral and wait for `/run`, the way the image does (`dev:rotate`). */
+  localNeutral: boolean;
   tickMs: number;
   /** Where the demo programs live: `/app/programs` in the image, `programs/` in the repo locally. */
   programsDir: string | null;
@@ -24,6 +26,12 @@ export interface Config {
   /** Image mode: the bucket the snapshotter writes to. */
   snapshotBucket: string | null;
   snapshotEveryMs: number;
+  /** Image mode: what the control plane needs to launch cloud cores (design §6.8). */
+  imageArn: string | null;
+  imageVersion: string | null;
+  coreRoleArn: string | null;
+  region: string;
+  sessionUrl: string | null;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
@@ -39,6 +47,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     webDir: env.TABFRAME_WEB_DIR ?? null,
     blobBucket: env.TABFRAME_BLOB_BUCKET ?? null,
     localOff: env.TABFRAME_LOCAL_OFF === "1",
+    localNeutral: env.TABFRAME_LOCAL_NEUTRAL === "1",
     tickMs: intEnv(env.TABFRAME_TICK_MS, 500),
     programsDir:
       env.TABFRAME_PROGRAMS_DIR === ""
@@ -47,6 +56,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     defaultProgram: env.TABFRAME_DEFAULT_PROGRAM ?? "mandelbrot",
     snapshotBucket: env.TABFRAME_SNAPSHOT_BUCKET ?? null,
     snapshotEveryMs: intEnv(env.TABFRAME_SNAPSHOT_MS, 5_000),
+    imageArn: env.TABFRAME_IMAGE_ARN ?? null,
+    imageVersion: env.TABFRAME_IMAGE_VERSION ?? null,
+    coreRoleArn: env.TABFRAME_CORE_ROLE_ARN ?? null,
+    region: env.AWS_REGION ?? "us-west-2",
+    sessionUrl: env.TABFRAME_SESSION_URL ?? null,
   };
 }
 

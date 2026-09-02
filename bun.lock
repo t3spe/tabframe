@@ -20,6 +20,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@tabframe/core": "workspace:*",
+        "@tabframe/fleet": "workspace:*",
+        "@tabframe/node": "workspace:*",
         "@tabframe/protocol": "workspace:*",
         "@tabframe/sandbox": "workspace:*",
         "@tabframe/store": "workspace:*",
@@ -43,6 +45,9 @@
     "packages/dev": {
       "name": "@tabframe/dev",
       "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/fleet": "workspace:*",
+      },
     },
     "packages/fleet": {
       "name": "@tabframe/fleet",

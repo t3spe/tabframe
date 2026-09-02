@@ -1,6 +1,13 @@
 import { fromBase64, toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
-import type { ExecutionRecord, Ledger, NodeRecord, ProgramRecord, TaskRecord } from "./ledger.ts";
+import type {
+  CoreRecord,
+  ExecutionRecord,
+  Ledger,
+  NodeRecord,
+  ProgramRecord,
+  TaskRecord,
+} from "./ledger.ts";
 import { releaseNode } from "./scheduler.ts";
 
 /**
@@ -14,6 +21,8 @@ export interface SerializedLedger {
   config: Ledger["config"];
   nodes: NodeRecord[];
   programs: ProgramRecord[];
+  /** Cloud cores travel with the ledger, so a successor inherits them (design §6.8). */
+  cores?: CoreRecord[];
   executions: ExecutionRecord[];
   queue: string[];
   running: string | null;
@@ -27,6 +36,7 @@ export function serializeLedger(ledger: Ledger): string {
     config: ledger.config,
     nodes: [...ledger.nodes.values()],
     programs: [...ledger.programs.values()],
+    cores: [...ledger.cores.values()],
     executions: [...ledger.executions.values()],
     queue: ledger.queue,
     running: ledger.running,
@@ -43,6 +53,10 @@ export function deserializeLedger(json: string): Ledger {
     meta: {
       ...s.meta,
       phase: "active",
+      lastObserverAt: s.meta.lastObserverAt ?? s.meta.startedAt,
+      awake: s.meta.awake ?? true,
+      sleepReason: s.meta.sleepReason ?? null,
+      lastCoreLaunchAt: s.meta.lastCoreLaunchAt ?? 0,
       loopBackoffMs: s.meta.loopBackoffMs ?? 0,
       loopPausedUntil: s.meta.loopPausedUntil ?? 0,
     },
@@ -53,6 +67,7 @@ export function deserializeLedger(json: string): Ledger {
     observers: new Map(),
     // A snapshot written before bundles carried their files has none.
     programs: new Map(s.programs.map((p) => [p.bundle, { ...p, files: p.files ?? {} }])),
+    cores: new Map((s.cores ?? []).map((c) => [c.microvmId, c])),
     executions: new Map(s.executions.map((e) => [e.executionId, e])),
     queue: s.queue,
     running: s.running,
@@ -71,6 +86,8 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
     effects.push(...releaseNode(ledger, node));
     ledger.nodes.delete(node.nodeId);
   }
+  // The cores are still running out there; they will reconnect to this generation as new nodes.
+  for (const core of ledger.cores.values()) core.nodeId = null;
   ledger.nodeByConn.clear();
   ledger.conns.clear();
   ledger.observers.clear();

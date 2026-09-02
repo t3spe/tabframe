@@ -4,6 +4,7 @@
 import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
 import { type DemoHandle, startDemo } from "./demo.ts";
+import type { EditorHandle } from "./editor.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
 import {
   applyMessage,
@@ -108,6 +109,8 @@ const els = {
   coresNote: $<HTMLParagraphElement>("#coresNote"),
   redundancy: $<HTMLInputElement>("#redundancy"),
   tileStats: $<HTMLSpanElement>("#tileStats"),
+  openEditor: $<HTMLButtonElement>("#openEditor"),
+  editor: $<HTMLElement>("#editor"),
 };
 const controlButtons: [HTMLButtonElement, ControlRequest][] = [
   [$<HTMLButtonElement>("#killHalf"), { t: "killHalf" }],
@@ -287,10 +290,12 @@ function scheduleRender(): void {
   });
 }
 
+const clusterListeners = new Set<(state: ClusterState) => void>();
 function onCluster(state: ClusterState): void {
   latest = state;
   tiles.sync(state);
   scheduleRender();
+  for (const listener of clusterListeners) listener(state);
 }
 
 function setMachine(state: MachineState, detail?: string): void {
@@ -622,6 +627,44 @@ for (const [button, control] of controlButtons) {
 }
 els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.checked });
 
+// ---- the editor (design §5.6), loaded only when asked for ------------------------------------
+
+let editor: EditorHandle | null = null;
+let storeBase: string | null = null;
+
+async function openEditor(): Promise<EditorHandle> {
+  els.editor.hidden = false;
+  if (editor) {
+    els.editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    return editor;
+  }
+  els.openEditor.disabled = true;
+  // A runtime URL keeps editor.js its own bundle: the dashboard never loads it unasked.
+  const mod = (await import(
+    new URL("./editor.js", import.meta.url).href
+  )) as typeof import("./editor.ts");
+  editor = mod.mountEditor(els.editor, {
+    connected: () => client?.connected ?? false,
+    storeBase: () => storeBase,
+    presign: (items) =>
+      client ? client.presign(items) : Promise.reject(new Error("not connected")),
+    launch: (bundle, launchParams) =>
+      client?.send({ t: "launch", bundle, params: launchParams, inherit: null }) ?? false,
+    subscribe: (listener) => {
+      clusterListeners.add(listener);
+      return () => clusterListeners.delete(listener);
+    },
+  });
+  els.openEditor.disabled = false;
+  els.editor.addEventListener("editor-closed", () => {
+    els.openEditor.disabled = false;
+  });
+  els.editor.scrollIntoView({ behavior: "smooth", block: "start" });
+  expose();
+  return editor;
+}
+els.openEditor.onclick = () => void openEditor();
+
 // Flashes fade and throughput decays even when the cluster is quiet.
 setInterval(() => {
   if (machine === "live") scheduleRender();
@@ -658,6 +701,7 @@ async function main(): Promise<void> {
     onState: setMachine,
     onCluster,
     onSession: (session) => {
+      storeBase = session.storeBase;
       blobSource = storeSource(session.storeBase);
       if (!observeOnly && locals.size === 0 && !spawnedOnce) {
         spawnedOnce = true;
@@ -684,6 +728,10 @@ function expose(): void {
     get state() {
       return latest;
     },
+    get editor() {
+      return editor;
+    },
+    openEditor,
   };
 }
 let spawnedOnce = false;

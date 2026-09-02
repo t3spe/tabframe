@@ -8,8 +8,10 @@ import {
   decode,
   encode,
   LIMITS,
+  type ObserverToControlPlane,
   PROTOCOL_VERSION,
 } from "@tabframe/protocol";
+import type { PresignedUpload, PresignItem } from "@tabframe/store";
 import { applyMessage, type ClusterState, emptyState, withRedundancy } from "./state.ts";
 
 export type MachineState = "connecting" | "starting" | "off" | "live" | "outdated";
@@ -26,6 +28,12 @@ export interface ObserverHandlers {
   onCluster(state: ClusterState): void;
   onSession(session: Session & { kind: "on" }): void;
 }
+
+/** Anything the page sends besides subscribe and ping, before the version and generation are stamped. */
+type Outgoing = ControlRequest | { t: "presign"; items: PresignItem[] };
+
+/** How long a presign may stay unanswered before the upload gives up. */
+export const PRESIGN_TIMEOUT_MS = 30_000;
 
 /** Spacing between outgoing controls: with a ping every two seconds this stays under the observer rate. */
 export const CONTROL_SPACING_MS = Math.ceil(1000 / (LIMITS.observerMessagesPerSecond - 1));
@@ -47,7 +55,13 @@ export class ObserverClient {
   private stopped = false;
   private resubscribing = false;
   private lastSentAt = 0;
-  private outbox: ControlRequest[] = [];
+  private outbox: Outgoing[] = [];
+  private pendingPresign: {
+    hashes: Set<string>;
+    resolve: (urls: PresignedUpload[]) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   private expectRedundancyEcho = 0;
   private readonly backoff = new Backoff();
   private readonly sessionUrl: string;
@@ -98,6 +112,35 @@ export class ObserverClient {
     return true;
   }
 
+  /**
+   * Ask the control plane for presigned upload URLs over this socket (design D18): bundle uploads
+   * from the page have no HTTP API. One request at a time; a close or a silent control plane
+   * rejects it, so an upload never hangs.
+   */
+  presign(items: PresignItem[]): Promise<PresignedUpload[]> {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) return reject(new Error("not connected"));
+      if (this.pendingPresign) return reject(new Error("an upload is already in progress"));
+      const timer = setTimeout(() => {
+        this.pendingPresign = null;
+        reject(new Error("the control plane did not answer the presign"));
+      }, PRESIGN_TIMEOUT_MS);
+      this.pendingPresign = { hashes: new Set(items.map((i) => i.hash)), resolve, reject, timer };
+      this.outbox.push({ t: "presign", items });
+      this.drain();
+    });
+  }
+
+  private settlePresign(urls: PresignedUpload[] | null, error?: string): void {
+    const p = this.pendingPresign;
+    if (!p) return;
+    if (urls && !urls.every((u) => p.hashes.has(u.hash))) return; // not ours
+    clearTimeout(p.timer);
+    this.pendingPresign = null;
+    if (urls) p.resolve(urls);
+    else p.reject(new Error(error ?? "presign failed"));
+  }
+
   private drain(): void {
     if (this.sendTimer || this.outbox.length === 0) return;
     const wait = this.lastSentAt + CONTROL_SPACING_MS - Date.now();
@@ -108,13 +151,19 @@ export class ObserverClient {
       }, wait);
       return;
     }
-    const control = this.outbox.shift() as ControlRequest;
+    const control = this.outbox.shift() as Outgoing;
     const session = this.session;
     if (!this.connected || !session) {
       this.outbox = [];
+      this.settlePresign(null, "not connected");
       return;
     }
-    this.socket?.send(encode({ ...control, v: PROTOCOL_VERSION, gen: session.generation }));
+    const msg: ObserverToControlPlane = {
+      ...control,
+      v: PROTOCOL_VERSION,
+      gen: session.generation,
+    };
+    this.socket?.send(encode(msg));
     this.lastSentAt = Date.now();
     this.drain();
   }
@@ -170,6 +219,7 @@ export class ObserverClient {
       return;
     }
     const msg = d.msg as ControlPlaneToObserver;
+    if (msg.t === "presigned") this.settlePresign(msg.urls);
     if (msg.t === "controlApplied" && msg.op === "setRedundancy" && this.expectRedundancyEcho > 0) {
       this.expectRedundancyEcho -= 1;
       this.state = { ...applyMessage(this.state, msg), refresh: false };
@@ -214,6 +264,7 @@ export class ObserverClient {
     this.clearTimers();
     this.socket = null;
     this.outbox = [];
+    this.settlePresign(null, "the socket closed");
     if (this.stopped) return;
     if (code === CLOSE.versionMismatch) {
       this.handlers.onState("outdated", reason);
