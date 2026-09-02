@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabframe</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --panel:#12161b; --line:#232a33; --fg:#d7dde5; --dim:#8a94a3; --ok:#3ddc84; --warn:#f5b73d; --bad:#ff5c5c; --acc:#6ea8ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:1rem; padding:.75rem 1rem; border-bottom:1px solid var(--line); }
+  header h1 { font-size:1rem; margin:0; letter-spacing:.04em; }
+  .pill { padding:.15rem .5rem; border-radius:999px; border:1px solid var(--line); color:var(--dim); font-family:ui-monospace, monospace; font-size:12px; }
+  .pill.live { color:var(--ok); border-color:var(--ok); }
+  .pill.wait { color:var(--warn); border-color:var(--warn); }
+  .pill.off  { color:var(--bad); border-color:var(--bad); }
+  main { display:grid; grid-template-columns: 1fr 320px; gap:1rem; padding:1rem; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.75rem 1rem; }
+  h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 .5rem; }
+  table { width:100%; border-collapse:collapse; font-family:ui-monospace, monospace; font-size:12.5px; }
+  th, td { text-align:left; padding:.3rem .4rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:500; }
+  td.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .health-fast{color:var(--ok)} .health-slow{color:var(--warn)} .health-throttled{color:var(--warn)} .health-gone{color:var(--bad)}
+  .mine { color:var(--acc); }
+  .controls { display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:.75rem; }
+  button { background:#1a212a; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:.35rem .7rem; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  .banner { padding:2rem; text-align:center; color:var(--dim); }
+  .banner strong { color:var(--fg); }
+  .row { display:flex; justify-content:space-between; gap:1rem; padding:.3rem 0; border-bottom:1px solid var(--line); font-family:ui-monospace, monospace; font-size:12.5px; }
+  .muted { color:var(--dim); }
+  footer { padding:.5rem 1rem; color:var(--dim); font-size:12px; border-top:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TABFRAME</h1>
+  <span id="machine" class="pill wait">connecting</span>
+  <span id="gen" class="pill">gen —</span>
+  <span id="counts" class="pill">0 nodes · 0 hosts</span>
+  <span id="seq" class="pill">seq 0</span>
+</header>
+<main>
+  <section>
+    <h2>Cluster</h2>
+    <div id="banner" class="banner"><strong>Connecting…</strong></div>
+    <table id="nodes" hidden>
+      <thead><tr><th>node</th><th>host</th><th>kind</th><th>health</th><th>visible</th><th class="num">done</th><th class="num">in flight</th><th>joined</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Your nodes</h2>
+    <div class="controls">
+      <button type="button" id="spawn1">spawn 1</button>
+      <button type="button" id="spawnN">spawn <span id="spawnCount">3</span></button>
+      <button type="button" id="killMine">close all mine</button>
+    </div>
+    <div id="mine"></div>
+    <p class="muted" id="coresNote"></p>
+    <h2 style="margin-top:1rem">Consent</h2>
+    <p class="muted">An open tab lends CPU to programs other people submitted, sandboxed. Closing the tab, or your nodes, withdraws it at once.</p>
+  </section>
+</main>
+<footer>Tabframe · every visitor is a core · <a href="?observe" style="color:var(--acc)">observe only</a></footer>
+<script type="module" src="/host.js"></script>
+</body>
+</html>

@@ -7,7 +7,9 @@
   "exports": {
     ".": "./src/orchestrator.ts",
     "./platform/web": "./src/platform/web.ts",
-    "./platform/node": "./src/platform/node.ts"
+    "./platform/node": "./src/platform/node.ts",
+    "./backoff": "./src/backoff.ts",
+    "./session": "./src/session.ts"
   },
   "dependencies": {
     "@tabframe/protocol": "workspace:*"

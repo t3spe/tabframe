@@ -55,6 +55,14 @@
         "zod": "4.5.4",
       },
     },
+    "packages/web": {
+      "name": "@tabframe/web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/node": "workspace:*",
+        "@tabframe/protocol": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@aws-sdk/client-sts": ["@aws-sdk/client-sts@3.1124.0", "", { "dependencies": { "@aws-sdk/core": "^3.977.9", "@aws-sdk/credential-provider-node": "^3.972.82", "@aws-sdk/signature-v4-multi-region": "^3.996.46", "@aws-sdk/types": "^3.974.5", "@smithy/core": "^3.33.3", "@smithy/fetch-http-handler": "^5.7.2", "@smithy/node-http-handler": "^4.11.3", "@smithy/types": "^4.17.2", "tslib": "^2.6.2" } }, "sha512-BXfCHbdwhSbVWQ3pFtHSheHjpiLnSdmKtmgLSrUJ4W6r9wWnGMpy6jhTnWuTaqEyNbT43jhW/4Jzws52OS7yww=="],
@@ -130,6 +138,8 @@
     "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
     "@tabframe/protocol": ["@tabframe/protocol@workspace:packages/protocol"],
+
+    "@tabframe/web": ["@tabframe/web@workspace:packages/web"],
 
     "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
 
