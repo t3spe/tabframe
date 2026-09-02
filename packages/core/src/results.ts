@@ -213,9 +213,14 @@ function contest(
   return effects;
 }
 
+/** Rounds after which a tied vote is broken by report order rather than by another round. */
+const MAX_CONTESTED_ROUNDS = 4;
+
 /**
  * After the second contested round, the identity reported by the most nodes wins (D7). Votes are
  * nodes, not reports: a node that keeps reporting the same bytes round after round counts once.
+ * A tie is not a majority: the task goes round once more (to nodes that have not reported, when
+ * any is free) until a majority exists or the round cap is reached.
  */
 function settleContested(
   ledger: Ledger,
@@ -233,13 +238,18 @@ function settleContested(
   }
   let winner: ResultRecord | null = null;
   let best = -1;
+  let tied = false;
   for (const { nodes, first } of votes.values()) {
     if (nodes.size > best) {
       best = nodes.size;
       winner = first;
+      tied = false;
+    } else if (nodes.size === best) {
+      tied = true;
     }
   }
   if (!winner) return { kind: "contested", task };
+  if (tied && task.contestedRounds < MAX_CONTESTED_ROUNDS) return { kind: "contested", task };
   task.resolvedByVote = true;
   exec.counters.pending = Math.max(0, exec.counters.pending - 1);
   task.status = "assigned"; // accept() expects an open task

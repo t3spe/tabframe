@@ -284,20 +284,21 @@ describe("verification", () => {
   });
 
   test("the vote counts nodes, not reports: a persistent liar is outvoted by two honest nodes", () => {
-    const { h, spec } = machine(3, 2);
+    // Three nodes, one task each. c1 lies on its task; c2 disagrees late; c3 recomputes.
+    const { h, spec } = machine(3, 3);
     const [a] = h.assigns(spec);
     if (!a) throw new Error("no assign");
-    // c1 lies, c2 disagrees late: contested. c1 (first free node) recomputes and lies again.
+    expect(a.connId).toBe("c1");
     h.result(a.connId, a.taskId, a.attempt, H("a"));
-    const contested = h.result("c2", a.taskId, 9, H("b"));
-    const [again] = h.assigns(contested);
+    const [again] = h.assigns(h.result("c2", a.taskId, 9, H("b")));
     if (!again) throw new Error("no reassignment");
-    expect(again.connId).toBe(a.connId);
-    h.result(again.connId, again.taskId, again.attempt, H("a"));
-    // c3 disagrees late as well: second contested round, and the vote counts two nodes for b.
-    h.result("c3", a.taskId, 9, H("b"));
+    expect(again.connId).toBe("c3");
+    h.result("c3", again.taskId, again.attempt, H("b"));
+    expect(h.ledger.tasks.get(a.taskId)?.accepted?.output).toBe(H("b"));
+    // c1 insists, late: two reports from one node are one vote, against two nodes for b.
+    h.result("c1", a.taskId, 9, H("a"));
     const task = h.ledger.tasks.get(a.taskId);
-    expect(task).toMatchObject({ status: "done", resolvedByVote: true });
+    expect(task).toMatchObject({ status: "done", resolvedByVote: true, contestedRounds: 2 });
     expect(task?.accepted?.output).toBe(H("b"));
     expect(h.invariants()).toEqual([]);
   });
@@ -326,6 +327,58 @@ describe("verification", () => {
       true,
     );
     expect(h.ledger.nodes.get("n1")?.inFlight).not.toContain(a.taskId);
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("a contested task is recomputed by a node that has not reported, when one is free", () => {
+    // With a third node idle, the recompute skips both nodes that already weighed in.
+    const three = machine(3, 3);
+    const [x] = three.h.assigns(three.spec);
+    if (!x) throw new Error("no assign");
+    three.h.result(x.connId, x.taskId, x.attempt, H("a"));
+    const [fresh] = three.h.assigns(three.h.result("c2", x.taskId, 9, H("b")));
+    expect(fresh).toMatchObject({ connId: "c3", taskId: x.taskId });
+    // With nobody fresh, anyone free takes it: the cluster of two still makes progress.
+    const two = machine(2, 2);
+    const [y] = two.h.assigns(two.spec);
+    if (!y) throw new Error("no assign");
+    two.h.result(y.connId, y.taskId, y.attempt, H("a"));
+    const [anyone] = two.h.assigns(two.h.result("c2", y.taskId, 9, H("b")));
+    expect(anyone).toMatchObject({ connId: "c1", taskId: y.taskId });
+    expect(three.h.invariants()).toEqual([]);
+    expect(two.h.invariants()).toEqual([]);
+  });
+
+  test("a tie after two rounds is not settled by report order: another round decides", () => {
+    // Two nodes disagree twice, one vote each: nothing is painted; a third round starts instead.
+    const { h, spec } = machine(2, 2);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    expect(a.connId).toBe("c1");
+    h.result("c1", a.taskId, a.attempt, H("a"));
+    const [again] = h.assigns(h.result("c2", a.taskId, 9, H("b")));
+    if (!again) throw new Error("no reassignment");
+    expect(again.connId).toBe("c1");
+    h.result("c1", again.taskId, again.attempt, H("a"));
+    const tie = h.result("c2", a.taskId, 9, H("b"));
+    const task = h.ledger.tasks.get(a.taskId);
+    expect(task).toMatchObject({ contestedRounds: 2, resolvedByVote: false, status: "assigned" });
+    expect(eventsOf(tie, "o1")).not.toContain("taskDone");
+    const [third] = h.assigns(tie);
+    expect(third?.connId).toBe("c1");
+    if (!third) throw new Error("no third round");
+    // A third node joins. c1 reports the same bytes; c2 objects again; now a fresh node is free
+    // and takes the next round, and its word makes the majority.
+    h.hello("c3", "h3");
+    h.result("c1", third.taskId, third.attempt, H("a"));
+    const [fresh] = h.assigns(h.result("c2", a.taskId, 9, H("b")));
+    expect(fresh).toMatchObject({ connId: "c3", taskId: a.taskId });
+    if (!fresh) throw new Error("no fresh node");
+    h.result("c3", fresh.taskId, fresh.attempt, H("b"));
+    expect(h.ledger.tasks.get(a.taskId)?.accepted?.output).toBe(H("b"));
+    h.result("c1", a.taskId, 9, H("a"));
+    expect(h.ledger.tasks.get(a.taskId)).toMatchObject({ status: "done", resolvedByVote: true });
+    expect(h.ledger.tasks.get(a.taskId)?.accepted?.output).toBe(H("b"));
     expect(h.invariants()).toEqual([]);
   });
 

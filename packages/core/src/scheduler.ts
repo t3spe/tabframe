@@ -37,13 +37,39 @@ function answered(task: TaskRecord, nodeId: string): boolean {
   return task.results.some((r) => r.round === task.contestedRounds && r.nodeId === nodeId);
 }
 
-function fillable(task: TaskRecord, nodeId: string): boolean {
-  return wanted(task) > 0 && !holds(task, nodeId) && !answered(task, nodeId);
+/** The node reported on this task in any round. */
+function reported(task: TaskRecord, nodeId: string): boolean {
+  return task.results.some((r) => r.nodeId === nodeId);
+}
+
+/**
+ * A contested task is recomputed "from scratch" (D7): by nodes that have not weighed in yet, as
+ * long as one with a free slot exists. Otherwise anyone may take it, so a small cluster still
+ * makes progress.
+ */
+function freshNodeFree(ledger: Ledger, task: TaskRecord): boolean {
+  for (const n of ledger.nodes.values()) {
+    if (n.commanded === "freeze" || n.inFlight.length >= LIMITS.maxInFlight) continue;
+    if (!reported(task, n.nodeId)) return true;
+  }
+  return false;
+}
+
+function eligible(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
+  if (holds(task, nodeId) || answered(task, nodeId)) return false;
+  if (task.contestedRounds > 0 && reported(task, nodeId) && freshNodeFree(ledger, task))
+    return false;
+  return true;
+}
+
+function fillable(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
+  return wanted(task) > 0 && eligible(ledger, task, nodeId);
 }
 
 /** Overdue with exactly one open attempt, nothing wanted: a speculative twin may join (tier three). */
-function speculatable(task: TaskRecord, nodeId: string, now: number): boolean {
-  if (task.status !== "assigned" || wanted(task) > 0 || answered(task, nodeId)) return false;
+function speculatable(ledger: Ledger, task: TaskRecord, nodeId: string, now: number): boolean {
+  if (task.status !== "assigned" || wanted(task) > 0 || !eligible(ledger, task, nodeId))
+    return false;
   const running = task.attempts.filter((a) => a.outcome === "running");
   if (running.length !== 1) return false;
   const a = running[0];
@@ -62,16 +88,17 @@ export function pickTask(
   // Tier one: released work, oldest first.
   let best: TaskRecord | null = null;
   for (const t of candidates) {
-    if (t.released && fillable(t, node.nodeId) && (!best || t.createdAt < best.createdAt)) best = t;
+    if (t.released && fillable(ledger, t, node.nodeId) && (!best || t.createdAt < best.createdAt))
+      best = t;
   }
   if (best) return { task: best, speculative: false };
   // Tier two: pending work in stage order (the plan task comes first by construction).
   for (const t of candidates) {
-    if (!t.released && fillable(t, node.nodeId)) return { task: t, speculative: false };
+    if (!t.released && fillable(ledger, t, node.nodeId)) return { task: t, speculative: false };
   }
   // Tier three: overdue attempts get a twin.
   for (const t of candidates) {
-    if (speculatable(t, node.nodeId, now)) return { task: t, speculative: true };
+    if (speculatable(ledger, t, node.nodeId, now)) return { task: t, speculative: true };
   }
   return null;
 }

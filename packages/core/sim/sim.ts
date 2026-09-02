@@ -596,8 +596,8 @@ class World implements ChaosWorld {
     for (const t of stageTasks(ledger, exec)) {
       if (t === task || !t.released || wanted(t) === 0) continue;
       if (t.attempts.some((a) => a.outcome === "running" && a.nodeId === attempt.nodeId)) continue;
-      if (t.results.some((r) => r.round === t.contestedRounds && r.nodeId === attempt.nodeId))
-        continue;
+      // A node that already reported on a contested task may leave it to nodes that have not.
+      if (t.results.some((r) => r.nodeId === attempt.nodeId)) continue;
       this.violation(
         `fresh ${taskId} assigned to ${attempt.nodeId} while released ${t.taskId} waited`,
       );
@@ -669,7 +669,7 @@ class World implements ChaosWorld {
           this.stats.liesAccepted += 1;
           if (t.requiredAgreement === 2 && !this.agreementExplains(t, golden))
             this.violation(
-              `${t.taskId}: a lie accepted under redundancy without two nodes behind it`,
+              `${t.taskId}: a lie accepted under redundancy without two nodes behind it (${describeResults(t, golden)})`,
             );
         }
       }
@@ -727,6 +727,14 @@ class World implements ChaosWorld {
 }
 
 /** The message type, plus the task and attempt of a result, straight from the frame text. */
+/** The reports of a task, for a violation message: node, round, and whether it was the golden. */
+function describeResults(task: TaskRecord, golden: string): string {
+  const reports = task.results
+    .map((r) => `${r.nodeId}@r${r.round}:${r.output === golden ? "golden" : r.output.slice(0, 6)}`)
+    .join(" ");
+  return `rounds ${task.contestedRounds}, vote ${task.resolvedByVote}, accepted ${task.accepted?.output.slice(0, 6) ?? "-"}, reports ${reports}`;
+}
+
 const typeOf = (raw: unknown): string => {
   if (typeof raw !== "string") return "?";
   const t = /"t":"([A-Za-z]+)"/.exec(raw)?.[1] ?? "?";
