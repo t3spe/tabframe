@@ -1,6 +1,6 @@
 # WP2.4 — Editor
 
-**Milestone:** M2 · **Branch:** `wp/2.4-editor` · **Merged:** pending · **Packages:** `packages/web`
+**Milestone:** M2 · **Branch:** `wp/2.4-editor` · **Merged:** 2026-09-02 · **Packages:** `packages/web`
 (editor, compiler worker, build), one export subpath in `packages/sandbox`
 
 ## What
