@@ -139,7 +139,16 @@ describe("v1 node messages", () => {
 
 describe("v1 observer messages", () => {
   test("controls and launch", () => {
-    for (const t of ["killHalf", "freezeHalf", "throttleHalf", "resumeAll", "restart", "skip", "stop", "start"]) {
+    for (const t of [
+      "killHalf",
+      "freezeHalf",
+      "throttleHalf",
+      "resumeAll",
+      "restart",
+      "skip",
+      "stop",
+      "start",
+    ]) {
       expect(decode(observerToControlPlane, encode({ t, ...base })).ok).toBe(true);
     }
     expect(
