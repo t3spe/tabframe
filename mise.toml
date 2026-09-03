@@ -70,6 +70,9 @@ run = "bun packages/web/scripts/build.ts"
 
 [tasks."build:image"]
 description = "Bundle the control-plane process and stage the MicroVM image directory"
+# The image carries the compiled programs: they must be built first (a new program was once
+# staged before its first build and missed the image — WP6.5).
+depends = ["build:programs"]
 run = [
   "bun build packages/control-plane/src/main.ts --target=node --format=esm --outfile packages/control-plane/dist/main.js",
   # The sandbox's worker thread is a second entry point: one bundled file cannot be its own worker.
