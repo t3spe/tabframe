@@ -11,6 +11,7 @@
       "!**/dist",
       "!**/cdk.out",
       "!**/assembly",
+      "!**/examples",
       "!LICENSE",
       "!.claude",
       "!**/.claude",
