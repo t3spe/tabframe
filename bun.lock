@@ -147,6 +147,13 @@
         "@tabframe/sdk-as": "workspace:*",
       },
     },
+    "programs/tinygpt": {
+      "name": "@tabframe/program-tinygpt",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tabframe/sdk-as": "workspace:*",
+      },
+    },
     "programs/wordcount": {
       "name": "@tabframe/program-wordcount",
       "version": "0.0.0",
@@ -329,6 +336,8 @@
     "@tabframe/node": ["@tabframe/node@workspace:packages/node"],
 
     "@tabframe/program-mandelbrot": ["@tabframe/program-mandelbrot@workspace:programs/mandelbrot"],
+
+    "@tabframe/program-tinygpt": ["@tabframe/program-tinygpt@workspace:programs/tinygpt"],
 
     "@tabframe/program-wordcount": ["@tabframe/program-wordcount@workspace:programs/wordcount"],
 

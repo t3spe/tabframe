@@ -362,6 +362,20 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#files")).toContainText("/in/corpus.txt", { timeout: 15_000 });
   beat("word count drew its bars");
 
+  // ---- 9b. tiny GPT: a transformer's forward pass on the cores, text out --------------------------
+  await beatAndMeasure("tiny GPT");
+  await expect(page.locator('[data-launch="tinygpt"]')).toBeVisible({ timeout: 30_000 });
+  await page.click('[data-launch="tinygpt"]');
+  await page.click('[data-launch-go="tinygpt"]');
+  await expect(page.locator("#exec")).toContainText("tinygpt", { timeout: 300_000 });
+  await expect(page.locator("#exec")).toContainText("tinygpt · done", { timeout: 300_000 });
+  await expect(page.locator("#result .text-view")).toContainText("Call me Ishmael", {
+    timeout: 30_000,
+  });
+  beat(
+    `tiny GPT wrote: ${JSON.stringify(((await page.locator("#result .text-view").textContent()) ?? "").slice(0, 80))}`,
+  );
+
   // ---- 10. a rotation: banner, reconnect, the render continues --------------------------------------
   await beatAndMeasure("rotation");
   const rotation = rotateInBackground();

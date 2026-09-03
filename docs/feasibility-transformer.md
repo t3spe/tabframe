@@ -70,7 +70,26 @@ no fused multiply-add unless asked for. Two nodes computing the same continuatio
 bytes — which is exactly what the redundancy toggle checks, and what makes recompute a
 verification rather than a waste.
 
-## The prototype, if built
+## The prototype, built
+
+`programs/tinygpt` is the third program the image ships. Measured on 2026-09-03:
+
+| | |
+|---|---|
+| Model | character-level GPT, 97-symbol byte vocabulary, context 128, 4 layers × 4 heads × width 128, **822 144 parameters** |
+| Training | `programs/tinygpt/train/train.py`, PyTorch on this laptop's CPU, 3 000 steps of 32 × 128 tokens on the Moby-Dick corpus, about 12 minutes; validation loss 1.47 nats per byte |
+| Weights | `programs/tinygpt/in/weights.bin`, **822 685 bytes**: int8 with one f32 scale per tensor; dequantised to f32 in the module (3.3 MB), well inside the 16 MB cap with the KV cache (0.5 MB) |
+| Module | `programs/tinygpt/dist/program.wasm`, 19.6 KB of AssemblyScript: the whole forward pass — layer norm, attention with a KV cache, GELU, tied output embedding, greedy decoding |
+| Speed | **4.0 ms per token** under Bun's WebAssembly (4 prompts × 24 tokens in 387 ms, weights loaded once per task) — a 96-token continuation is under half a second here, a few seconds on a core |
+| Correctness | the module's greedy continuations equal the training script's reference, computed by PyTorch with the same dequantised weights, **token for token on 96 of 96** — the f32 sums in a different order never flipped a choice |
+| Determinism | two runs give the same bytes; on the machine, redundancy on verifies the same across tabs and cores |
+| Shape | stage 0: one task per prompt (`prompts`, `|`-separated, `tokens` per continuation); stage 1: one task joins the continuations into the text the dashboard shows |
+
+What it says, greedily, after twelve minutes of training: *"Call me Ishmael the ship of the ship
+of"* — Melville-shaped, repetitive the way greedy decoding of a small model is. Sampling with a
+seed from the params is the obvious next step and stays deterministic.
+
+## The prototype, as planned
 
 1. **Train offline** (Python, on this laptop): a character-level GPT — vocabulary of ~90 bytes,
    context 128, 4 layers, 4 heads, width 128 (about 0.8 M parameters) — on `programs/wordcount/in/
