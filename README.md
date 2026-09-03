@@ -173,6 +173,12 @@ What it costs is in the design's §9.5: about $0.13 for a reviewer hour with cor
 left running all day, near zero suspended. The machine sleeps ten minutes after the last observer
 leaves — cores terminated, automatic continuation paused — and wakes on the next visitor.
 
+**During the review period the machine stays up.** The public URL answers; while nobody
+watches, the machine sleeps (ten minutes), the control plane suspends (fifteen), and the platform
+terminates it after seven suspended hours, so an untouched machine converges to nothing running.
+The first visitor sees "starting" for the few seconds of a boot, the cores follow, and the loop
+resumes when the page is open. `mise run down` turns it off for good; `mise run up` brings it back.
+
 ## Reading the repository
 
 | Where | What |

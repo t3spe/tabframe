@@ -22,8 +22,9 @@ rest the agent has done or re-runs at the very end.
 
 - [ ] **Mircea:** confirm the real budget's notification arrived (the one-cent `tabframe-alarm-test`
       budget can go once it has: `aws budgets delete-budget --account-id … --budget-name tabframe-alarm-test`).
-- [ ] **Mircea:** decide whether the machine stays up for the review period (hourly rotation, two
-      cores while anyone watches, asleep otherwise) or goes `mise run down`; the README says which.
+- [x] **Mircea (decided 2026-09-02):** the machine **stays up** for the review period — hourly
+      rotation while awake, two cores while anyone watches, asleep otherwise; the README says so.
+      `mise run down` remains the way to turn it off.
 - [ ] **Mircea:** make the repository public (GitHub → Settings → Danger zone), then check the
       public page renders the README and the web origin in it answers.
 - [ ] Submit: the repository URL, the rationale (`docs/rationale.md`), the video, and a note that
