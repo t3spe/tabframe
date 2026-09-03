@@ -879,3 +879,254 @@ body[data-panel] #ledger,
 body[data-panel] #activity {
   font-size: 13px;
 }
+
+/* Nothing changes size (WP6.2). Every region that appears, disappears, grows, or shrinks as the
+   machine runs keeps a reserved box: hidden means invisible, not gone; lists scroll inside fixed
+   heights; text that can outgrow its slot is cut with an ellipsis; digits are tabular. */
+header .pill {
+  display: inline-block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+}
+#machine {
+  min-width: 9rem;
+}
+#gen {
+  min-width: 5.5rem;
+}
+#nextRotation {
+  min-width: 10rem;
+}
+#nextRotation[hidden] {
+  display: inline-block !important;
+  visibility: hidden;
+}
+#counts {
+  min-width: 10.5rem;
+}
+#seq {
+  min-width: 7rem;
+}
+#exec {
+  min-width: 26rem;
+  max-width: 26rem;
+}
+#rate {
+  min-width: 8rem;
+}
+#notice {
+  height: 1.6rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#notice[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+.machine-banner {
+  min-height: 3.8rem;
+  max-height: 3.8rem;
+  overflow: hidden;
+}
+.machine-banner[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+.hero {
+  position: relative;
+}
+#banner {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: rgba(11, 13, 16, 0.9);
+  border-radius: 8px;
+}
+#stage[hidden] {
+  display: block !important;
+}
+#nodes[hidden] {
+  display: table !important;
+  visibility: hidden;
+}
+#nodes thead,
+#nodes tbody tr {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+#nodes tbody {
+  display: block;
+  height: 11rem;
+  overflow: auto;
+}
+.execrow {
+  flex-wrap: nowrap;
+  height: 1.8rem;
+  overflow: hidden;
+}
+#execName,
+#execDetail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#execName {
+  flex: 0 0 auto;
+  max-width: 22rem;
+}
+#execDetail {
+  flex: 0 1 30rem;
+}
+#throughputFigure {
+  display: inline-block;
+  min-width: 11rem;
+  text-align: right;
+  white-space: nowrap;
+}
+#failure {
+  height: 2.4rem;
+  overflow: hidden;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+}
+#failure[hidden] {
+  display: flex !important;
+  visibility: hidden;
+}
+#warnings {
+  height: 1.6rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+#warnings[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+#strip {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 3.5rem;
+}
+#strip[hidden] {
+  display: flex !important;
+  visibility: hidden;
+}
+.stage {
+  flex: 0 0 9rem;
+  width: 9rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.stage > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#followUp {
+  height: 2.2rem;
+  overflow: hidden;
+}
+#followUp[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+.stage-box {
+  position: relative;
+  width: 100%;
+  max-width: 1024px;
+  margin: 0 auto;
+  aspect-ratio: 8 / 5;
+}
+.stage-box #tiles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  margin: 0;
+}
+.stage-box #result {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  overflow: auto;
+}
+#pulses {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  height: 1.9rem;
+}
+#pulses[hidden] {
+  display: flex !important;
+  visibility: hidden;
+}
+#pulses li {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#taskDetail {
+  height: 12rem;
+  overflow: auto;
+}
+#taskDetail[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
+#counters {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  height: 2rem;
+}
+.chip {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
+  white-space: nowrap;
+}
+.controls {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  height: 2.4rem;
+  align-items: center;
+}
+.controls button[hidden] {
+  display: inline-block !important;
+  visibility: hidden;
+}
+#stop,
+#start {
+  min-width: 4.5rem;
+}
+#tileStats {
+  min-width: 18rem;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#mine {
+  height: 5rem;
+  overflow: auto;
+}
+#programs {
+  height: 14rem;
+  overflow: auto;
+}
+#queue {
+  height: 6rem;
+  overflow: auto;
+  margin: 0;
+}
+#grid {
+  height: 96px;
+}
+#grid[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
