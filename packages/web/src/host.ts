@@ -79,7 +79,17 @@ const BG = "#0b0d10";
 
 const params = new URLSearchParams(location.search);
 const demoMode = params.has("demo");
-const observeOnly = params.has("observe") || demoMode;
+/** One big panel, full-width, in its own tab (WP6.3): ledger, files, or activity. */
+const PANELS = { ledger: "ledgerPanel", files: "filesPanel", activity: "activityPanel" } as const;
+const panelMode = ((p) => (p && p in PANELS ? (p as keyof typeof PANELS) : null))(
+  params.get("panel"),
+);
+if (panelMode) {
+  document.body.dataset.panel = panelMode;
+  document.getElementById(PANELS[panelMode])?.classList.add("panel-full");
+  document.title = `Tabframe · ${panelMode}`;
+}
+const observeOnly = params.has("observe") || demoMode || panelMode !== null;
 const hostId = crypto.randomUUID().slice(0, 8);
 const cores = navigator.hardwareConcurrency || 1;
 const locals = new Map<number, LocalNode>();
@@ -406,7 +416,7 @@ function render(state: ClusterState): void {
   const stopped = state.machine?.stopped === true;
   const paused = state.machine?.paused === true;
   els.exec.textContent = exec
-    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" ? " · stopped" : ""}${paused ? " · paused (editor open)" : ""}`
+    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" && exec.phase !== "stopped" ? " · stopped" : ""}${paused ? " · paused (editor open)" : ""}`
     : stopped
       ? "idle · stopped by a person"
       : paused
@@ -500,9 +510,13 @@ function render(state: ClusterState): void {
   // The panels: programs, queue, strip, failure, result, files, task detail.
   panels.render(state);
 
+  const lastAct = state.activity.at(-1);
+  $<HTMLParagraphElement>("#activitySummary").textContent = lastAct
+    ? `${state.activity.length} lines · last: ${fmtTime(lastAct.at)} ${lastAct.text}`
+    : "nothing yet";
   els.activity.replaceChildren(
     ...state.activity
-      .slice(-14)
+      .slice(panelMode === "activity" ? 0 : -14)
       .reverse()
       .map((a) => {
         const li = document.createElement("li");
@@ -778,6 +792,7 @@ for (const [button, control] of controlButtons) {
 els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.checked });
 
 const panels: Panels = mountPanels(document, {
+  panelMode,
   blobs: () => blobSource,
   storeBase: () => storeBase,
   send: issue,

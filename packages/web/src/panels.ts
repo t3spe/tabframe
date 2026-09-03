@@ -39,6 +39,8 @@ export interface PanelDeps {
   /** Ask the page to render again once a fetch has landed or a panel's own state moved. */
   rerender(): void;
   now(): number;
+  /** The one panel this page shows full-width in its own tab (WP6.3), or null on the dashboard. */
+  panelMode?: "ledger" | "files" | "activity" | null;
 }
 
 export interface Panels {
@@ -130,6 +132,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     taskDetail: $<HTMLDivElement>(root, "#taskDetail"),
     ledger: $<HTMLTableSectionElement>(root, "#ledger tbody"),
     ledgerNote: $<HTMLParagraphElement>(root, "#ledgerNote"),
+    ledgerSummary: $<HTMLParagraphElement>(root, "#ledgerSummary"),
+    filesSummary: $<HTMLParagraphElement>(root, "#filesSummary"),
     followUp: $<HTMLDivElement>(root, "#followUp"),
     killExecution: $<HTMLButtonElement>(root, "#killExecution"),
   };
@@ -492,6 +496,11 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     if (!changed("files", sig)) return;
     els.filesRoot.textContent = root ? short(root, 16) : "—";
     els.filesRoot.title = root ?? "";
+    els.filesSummary.textContent = root
+      ? `root ${short(root, 12)} · fetching the manifest…`
+      : exec
+        ? "no filesystem yet: the first stage has not folded"
+        : "no execution";
     els.files.replaceChildren();
     if (!root) {
       els.files.append(
@@ -522,6 +531,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     }
     const groups = groupFiles(files);
     const total = files.reduce((n, f) => n + f.size, 0);
+    els.filesSummary.textContent = `root ${short(root, 12)} · ${files.length} files · ${fmtBytes(total)} · every byte fetched from the store by hash`;
     els.files.append(
       el(
         "div",
@@ -529,6 +539,21 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         `${files.length} files · ${fmtBytes(total)}${browsingRoot ? " · browsing a chosen root" : ""}`,
       ),
     );
+    if (deps.panelMode === "files" && exec) {
+      // The files tab cannot see the stage strip: the stages' roots are offered here instead.
+      const roots = el("div", "muted small");
+      roots.append("roots: ");
+      for (const s of exec.stages) {
+        if (!s.root) continue;
+        const b = el("button", "small", `stage ${s.stage}`);
+        b.type = "button";
+        b.dataset.rootStage = String(s.stage);
+        b.title = s.root;
+        b.onclick = () => browseRoot(s.root);
+        roots.append(b, " ");
+      }
+      els.files.append(roots);
+    }
     if (browsingRoot) {
       const follow = el("button", "small", "follow the execution");
       follow.type = "button";
@@ -726,13 +751,22 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
    */
   function renderLedger(state: ClusterState): void {
     const exec = state.execution;
-    const rows = ledgerRows(state);
+    // The dashboard keeps the newest eight; the ledger's own tab shows every settled task.
+    const rows = ledgerRows(state, deps.panelMode === "ledger" ? Number.POSITIVE_INFINITY : 8);
     const store = deps.storeBase();
     const sig = JSON.stringify([exec?.executionId, exec?.stage, rows, store, cache.version]);
     if (!changed("ledger", sig)) return;
     const sizes = manifestSizes(exec);
     let settled = 0;
-    for (const t of state.tasks.values()) if (t.status === "done") settled++;
+    let bytes = 0;
+    for (const t of state.tasks.values()) {
+      if (t.status !== "done") continue;
+      settled++;
+      bytes += t.place ? t.place.w * t.place.h * 4 : (sizes.get(t.output ?? "") ?? 0);
+    }
+    els.ledgerSummary.textContent = exec
+      ? `${settled} settled ${settled === 1 ? "task" : "tasks"} · ${fmtBytes(bytes)} in the store · hashes, not bytes`
+      : "hashes, not bytes — nothing settled yet";
     els.ledgerNote.textContent = exec
       ? `The control plane holds hashes, not bytes: for each of the ${settled} settled ${settled === 1 ? "task" : "tasks"} of stage ${exec.stage} it keeps a 64-hex output hash; the bytes live in ${store ? "the store behind the CDN" : "this page's demo store"} and are fetched by hash. The newest ${Math.min(rows.length, 8) || ""} settled:`
       : "The control plane holds hashes, not bytes. No execution is running, so there is nothing settled to list.";

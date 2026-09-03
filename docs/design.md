@@ -838,6 +838,11 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.3).** The dashboard's ledger, files, and activity panels are one-line
+  summaries with a link; each opens full-width in its own observer tab (`?panel=…`) under an
+  explanation of what it shows and how to read it, with everything rather than the newest few
+  (§8.3). The files tab offers the stages' roots for browsing an earlier filesystem.
+
 - **2026-09-03 (WP6.4).** The editor is a page of its own, opened by the dashboard in a new tab
   (§3, §5.6), and it holds the machine paused while it lives: `pause`/`resume` controls (§6.7),
   `meta.pausedBy` naming the holder's socket; nothing new is assigned or started while it is set,

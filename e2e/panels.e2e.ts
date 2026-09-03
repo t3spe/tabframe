@@ -52,27 +52,37 @@ test("demo: word count runs three stages, draws its bars, and its files can be b
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", "the");
   await expect(page.locator("#result .bar-row").first()).toContainText("14,529");
   await expect(page.locator("#result")).toContainText("/out/2/0");
-  // The files panel follows the execution's root: bundle files, the corpus, every stage's outputs.
+  // The dashboard keeps a one-line summary of the filesystem and a link to its own tab (WP6.3).
   await expect(page.locator("#filesRoot")).not.toHaveText("—");
-  await expect(page.locator("#files")).toContainText("/program.wasm");
-  await expect(page.locator("#files")).toContainText("/in/corpus.txt");
-  await expect(page.locator("#files")).toContainText("/out/0/7");
-  await expect(page.locator("#files")).toContainText("/out/2/0");
-  await expect(page.locator("#files .file-group")).toHaveCount(5);
+  await expect(page.locator("#filesSummary")).toContainText(/root \S+ · \d+ files/);
+  await expect(page.locator("#filesPanel .open-panel")).toHaveAttribute("href", /panel=files/);
+  await expect(page.locator("#files")).toBeHidden();
+  // The files tab follows the execution's root: bundle files, the corpus, every stage's outputs.
+  const files = await page.context().newPage();
+  await files.goto("/?demo=1&speed=12&program=wordcount&hold=1&panel=files");
+  await waitHeld(files);
+  await expect(files.locator("#filesPanel .panel-explain")).toBeVisible();
+  await expect(files.locator(".hero")).toBeHidden();
+  await expect(files.locator("#files")).toContainText("/program.wasm");
+  await expect(files.locator("#files")).toContainText("/in/corpus.txt");
+  await expect(files.locator("#files")).toContainText("/out/0/7");
+  await expect(files.locator("#files")).toContainText("/out/2/0");
+  await expect(files.locator("#files .file-group")).toHaveCount(5);
   // A click previews the file: a map partition is text.
-  await page.click('#files li[data-path="/out/0/3"]');
-  await expect(page.locator("#filePreview")).toBeVisible();
-  await expect(page.locator("#filePreview .text-view")).toContainText(/^[a-z]+ \d+/);
+  await files.click('#files li[data-path="/out/0/3"]');
+  await expect(files.locator("#filePreview")).toBeVisible();
+  await expect(files.locator("#filePreview .text-view")).toContainText(/^[a-z]+ \d+/);
   // The corpus is text too; the bars payload draws as bars.
-  await page.click('#files li[data-path="/out/2/0"]');
-  await expect(page.locator("#filePreview .bars .bar-row")).toHaveCount(25);
-  // Browsing an earlier root from the strip shows the filesystem as it was after stage 0.
-  await page.click('#strip .stage[data-stage="0"] a');
-  await expect(page.locator("#files")).toContainText("browsing a chosen root");
-  await expect(page.locator("#files")).toContainText("/out/0/7");
-  await expect(page.locator("#files")).not.toContainText("/out/2/0");
-  await page.click("#files button:has-text('follow the execution')");
-  await expect(page.locator("#files")).toContainText("/out/2/0");
+  await files.click('#files li[data-path="/out/2/0"]');
+  await expect(files.locator("#filePreview .bars .bar-row")).toHaveCount(25);
+  // Browsing an earlier root shows the filesystem as it was after stage 0.
+  await files.click('#files button[data-root-stage="0"]');
+  await expect(files.locator("#files")).toContainText("browsing a chosen root");
+  await expect(files.locator("#files")).toContainText("/out/0/7");
+  await expect(files.locator("#files")).not.toContainText("/out/2/0");
+  await files.click("#files button:has-text('follow the execution')");
+  await expect(files.locator("#files")).toContainText("/out/2/0");
+  await files.close();
   // Task detail: the last stage's one task, its attempt, and its log fetched from the store.
   const grid = page.locator("#grid");
   await expect(grid).toBeVisible();
@@ -191,4 +201,44 @@ test("live: an upload shows up in the programs panel, launches from it, and can 
   await expect(page.locator("#programs .launch-form")).toContainText(
     "params must be a JSON object",
   );
+});
+
+test("demo: the ledger and the activity log open full-width in their own tabs, the dashboard keeps a summary", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(150_000);
+  await page.goto("/?demo=1&speed=12&pause=300");
+  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await expect(page.locator("#ledgerSummary")).toContainText(
+    /\d+ settled tasks · .* · hashes, not bytes/,
+  );
+  await expect(page.locator("#ledger")).toBeHidden();
+  await expect(page.locator("#activitySummary")).toContainText(/\d+ lines · last:/);
+  await expect(page.locator("#activity")).toBeHidden();
+  const href = await page.locator("#ledgerPanel .open-panel").getAttribute("href");
+  expect(href).toContain("panel=ledger");
+  // The ledger tab: the explanation, every settled task, nothing else on the page.
+  const ledger = await context.newPage();
+  await ledger.goto("/?demo=1&speed=12&pause=300&panel=ledger");
+  await ledger.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await expect(ledger.locator("#ledgerPanel .panel-explain")).toContainText("hashes");
+  await expect(ledger.locator(".hero")).toBeHidden();
+  await expect(ledger.locator("#programs")).toBeHidden();
+  await expect(ledger.locator("#ledger tbody tr[data-hash]")).toHaveCount(300);
+  await expect(ledger).toHaveTitle(/ledger/);
+  await ledger.close();
+  // The activity tab keeps the whole log, not the dashboard's last fourteen lines.
+  const activity = await context.newPage();
+  await activity.goto("/?demo=1&speed=12&pause=300&panel=activity");
+  await activity.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await expect(activity.locator("#activityPanel .panel-explain")).toBeVisible();
+  const held = await activity.evaluate(
+    () =>
+      (window as unknown as { tabframe: { state: { activity: unknown[] } } }).tabframe.state
+        .activity.length,
+  );
+  expect(held).toBeGreaterThan(0);
+  expect(await activity.locator("#activity li").count()).toBe(held);
+  await activity.close();
 });

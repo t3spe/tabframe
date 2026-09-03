@@ -824,3 +824,58 @@ footer {
   font-size: 12px;
   border-top: 1px solid var(--line);
 }
+
+/* Big panels live in their own tab (WP6.3): the dashboard shows a one-line summary and a link;
+   `?panel=ledger|files|activity` renders that one panel full-width with its explanation. */
+.open-panel {
+  float: right;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--acc);
+  text-decoration: none;
+}
+.summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg);
+  min-height: 1.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-explain {
+  display: none;
+  max-width: 72ch;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+body:not([data-panel]) #ledger,
+body:not([data-panel]) #ledgerNote,
+body:not([data-panel]) #files,
+body:not([data-panel]) #filePreview,
+body:not([data-panel]) #filesNote,
+body:not([data-panel]) #activity {
+  display: none;
+}
+body[data-panel] main {
+  grid-template-columns: 1fr;
+}
+body[data-panel] main > *:not(aside),
+body[data-panel] aside section:not(.panel-full),
+body[data-panel] .summary,
+body[data-panel] .open-panel,
+body[data-panel] footer {
+  display: none;
+}
+body[data-panel] .panel-explain {
+  display: block;
+}
+body[data-panel] aside section.panel-full {
+  display: block;
+}
+body[data-panel] #ledger,
+body[data-panel] #activity {
+  font-size: 13px;
+}

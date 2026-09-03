@@ -49,3 +49,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP4.4 | [wp-4.4-unattended-demo.md](wp-4.4-unattended-demo.md) | 2026-09-02 | The demo script runs unattended against the deployed machine (`mise run demo`); first runs fixed the fleet policy for killed, frozen, and never-linked cores |
 | WP6.1 | [wp-6.1-stop-start.md](wp-6.1-stop-start.md) | 2026-09-02 | Stop and Start from the page: the running execution ends, the loop's queued frames go, the loop waits for Start across snapshots and rotations |
 | WP6.4 | [wp-6.4-editor-tab-pause.md](wp-6.4-editor-tab-pause.md) | 2026-09-03 | The editor in its own tab; pause and resume — the tab holds the machine paused while it lives, launching or closing resumes |
+| WP6.3 | [wp-6.3-panel-tabs.md](wp-6.3-panel-tabs.md) | 2026-09-03 | The ledger, files, and activity panels summarise on the dashboard and open full-width in their own tabs, each under an explanation of what it is |
