@@ -310,3 +310,84 @@ describe("a person's result holds the stage", () => {
     expect([...h.ledger.executions.values()][1]?.human).toBe(false);
   });
 });
+
+/** A person pressed Stop (WP6.1): the machine goes idle and stays idle until Start. */
+describe("stop and start", () => {
+  const alive = (h: ReturnType<typeof harness>) => {
+    h.heartbeat("a");
+    h.send("obs", { t: "ping" });
+  };
+  test("stop ends the running frame, drops the loop's queued continuation, keeps a person's launch, and holds the loop", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles"); // the loop launches e1
+    h.tick();
+    expect(h.ledger.running).toBe("e1");
+    // A queued continuation and a queued human launch.
+    h.event({ kind: "launch", bundle: BUNDLE, params: { preset: 3 }, human: false, inherit: null });
+    h.launch({ preset: 7 }, true);
+    expect(h.ledger.queue).toEqual(["e3", "e2"]);
+    const effects = h.send("obs", { t: "stop" });
+    expect(
+      effects.some((e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "stop"),
+    ).toBe(true);
+    expect(h.ledger.meta.loopStopped).toBe(true);
+    expect(h.ledger.executions.get("e1")?.status).toBe("cancelled");
+    expect(h.ledger.executions.get("e2")?.status).toBe("cancelled"); // the loop's continuation
+    // The person's launch was next in line and runs; the loop does not follow it.
+    expect(h.ledger.running).toBe("e3");
+    const plan = planAssignOf(h, "e3");
+    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
+      kind: "done",
+      next: { preset: 8 },
+    });
+    expect(h.ledger.executions.get("e3")?.status).toBe("done");
+    for (let i = 0; i < 30; i++) {
+      h.advance(1_000);
+      alive(h);
+      h.tick();
+    }
+    expect(h.ledger.running).toBeNull();
+    expect(h.ledger.queue).toEqual([]);
+    // The snapshot says so, and a snapshot round trip keeps it.
+    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    expect(snap.msg.machine?.stopped).toBe(true);
+    expect(deserializeLedger(serializeLedger(h.ledger)).meta.loopStopped).toBe(true);
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("start lets the loop run again at once, hold or backoff notwithstanding", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.tick();
+    h.send("obs", { t: "stop" });
+    expect(h.ledger.running).toBeNull();
+    h.ledger.meta.loopPausedUntil = h.now + 60_000; // as after a person's launch, or a failure
+    const effects = h.send("obs", { t: "start" });
+    expect(
+      effects.some(
+        (e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "start",
+      ),
+    ).toBe(true);
+    expect(h.ledger.meta.loopStopped).toBe(false);
+    expect(h.ledger.running).not.toBeNull();
+    expect(h.ledger.executions.get(h.ledger.running as string)?.human).toBe(false);
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("stop with nothing running is just the hold; a person's launch still runs while stopped", () => {
+    const h = harness();
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.send("obs", { t: "stop" });
+    expect(h.ledger.meta.loopStopped).toBe(true);
+    h.launch({ preset: 1 }, true);
+    expect(h.ledger.running).toBe("e1");
+    expect(h.invariants()).toEqual([]);
+  });
+});

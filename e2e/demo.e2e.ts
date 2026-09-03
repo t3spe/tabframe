@@ -212,6 +212,23 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await page.click("#redundancy");
   await expect(page.locator("#redundancy")).not.toBeChecked();
 
+  // ---- 7b. stop and start: a person makes the machine idle, then lets the loop run again ----------
+  beat("stop");
+  await settle(page);
+  await page.click("#stop");
+  await expect(page.locator("#start")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#exec")).toContainText("stopped", { timeout: 30_000 });
+  const execAtStop = (await page.locator("#exec").textContent()) ?? "";
+  await page.waitForTimeout(8_000);
+  const execLater = (await page.locator("#exec").textContent()) ?? "";
+  beat(`stopped: "${execAtStop}" → "${execLater}"`);
+  expect(execLater).toContain("stopped");
+  await page.click("#start");
+  await expect(page.locator("#stop")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#exec")).toContainText("mandelbrot · ", { timeout: 60_000 });
+  await expect(page.locator("#exec")).not.toContainText("stopped", { timeout: 60_000 });
+  beat("started again");
+
   // ---- 8. the editor: change the palette cycle, compile in the browser, launch ---------------------
   beat("editor");
   await page.click("#openEditor");
