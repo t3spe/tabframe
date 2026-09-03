@@ -29,9 +29,13 @@ quickly".
   the next snapshot, and the demo's Start beat timed out).
 - **The top of the page (2).** One status line, a single line high, holds the machine banner or
   the notice. Under it the execution row is a fixed grid — name and detail, the progress bar and its
-  figure, the throughput chart — and the three messages that used to stack (failure, warnings,
-  follow-up) share one reserved slot. Hidden header buttons are really hidden (`display: none`
-  under `[hidden]`), so nothing overlaps and nothing moves when a message comes or goes.
+  figure, the throughput chart — and the messages get two fixed rows: a failure or the warnings on
+  the first (a failure on top), the follow-up button with its explanation on the second. Every
+  hidden child keeps its cell (`visibility: hidden`), hidden header buttons are really hidden, so
+  nothing overlaps and nothing moves when a message comes or goes. (A first draft gave the three
+  messages one shared slot; a held word count showed a warning, the follow-up button, and its
+  explanation on top of each other — the very overlap the review was about.) Stop is the one red
+  thing in the header.
 - **Whole hashes and addresses in the ledger (4).** The output hash and the store address wrap
   instead of being cut (`overflow-wrap: anywhere`); the address is a link to the raw bytes.
 - **Freeze on the panel tabs (5).** The ledger, files, and activity tabs get a *freeze updates*
