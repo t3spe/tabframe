@@ -170,3 +170,35 @@ test("launch uploads the bundle through the observer socket and the control plan
   await page.click("#launch");
   await expect(page.locator("#launchInfo")).toContainText("params must be a JSON object");
 });
+
+test("the editor explains itself: a guide from the SDK's README, the machine's limits, and three examples to load", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await openEditor(page);
+  await expect(page.locator("#guide")).toBeVisible();
+  await expect(page.locator("#guideBody h3")).toContainText(["Writing a program"]);
+  await expect(page.locator("#guideBody")).toContainText("plan");
+  await expect(page.locator("#guideBody pre")).not.toHaveCount(0);
+  await expect(page.locator("#guideLimits")).toContainText("256 pages");
+  // The examples: hello loads, compiles in the page, and its manifest fills the form.
+  await expect(page.locator("#example")).toHaveValue("mandelbrot");
+  await page.locator("#example").selectOption("hello");
+  await expect(page.locator("#source")).toHaveValue(/hello, \$\{who\}/);
+  await expect(page.locator("#programName")).toHaveValue("hello");
+  await expect(page.locator("#programView")).toHaveValue("text");
+  await expect(page.locator("#programParams")).toHaveValue('{"who":"world"}');
+  await expect(page.locator("#exampleNote")).toContainText("smallest program");
+  await page.click("#compile");
+  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, { timeout: 180_000 });
+  await expect(page.locator("#diagnostics li")).toHaveCount(0);
+  await expect(page.locator("#launch")).toBeEnabled();
+  // Word count is there to read, and says what a launch from here would lack.
+  await page.locator("#example").selectOption("wordcount");
+  await expect(page.locator("#source")).toHaveValue(/three stages/);
+  await expect(page.locator("#exampleNote")).toContainText("no inputs");
+  // Reset returns to the selected example, not always to Mandelbrot.
+  await page.locator("#source").fill("garbage");
+  await page.click("#resetSource");
+  await expect(page.locator("#source")).toHaveValue(/three stages/);
+});

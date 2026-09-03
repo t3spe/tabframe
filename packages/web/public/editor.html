@@ -22,7 +22,9 @@
     <div class="editor-head">
       <h2>Editor</h2>
       <span id="editorStatus" class="pill">compiler: idle</span>
-      <span class="muted">Edit the Mandelbrot program, compile it in this tab, and launch it on the machine — or drop a <code>.wasm</code> built any other way. While this tab is open the machine is paused: in-flight tasks finish, nothing new starts. Launching or closing resumes it.</span>
+      <label class="muted">example <select id="example" title="Load one of the shipped programs into the editor"></select></label>
+      <span class="muted" id="exampleNote"></span>
+      <span class="muted">Compile in this tab and launch on the machine — or drop a <code>.wasm</code> built any other way. While this tab is open the machine is paused: in-flight tasks finish, nothing new starts. Launching or closing resumes it.</span>
       <button type="button" id="closeEditor" style="margin-left:auto" title="Resume the machine and close this tab">close</button>
     </div>
     <div class="editor-grid">
@@ -46,6 +48,11 @@
         <div id="launchInfo" class="muted"></div>
       </div>
     </div>
+  </section>
+  <section id="guide" class="guide">
+    <h2>What a program is, and what it may do</h2>
+    <p class="muted small" id="guideLimits"></p>
+    <div id="guideBody"></div>
   </section>
 <script type="module" src="/editor-page.js"></script>
 </body>
