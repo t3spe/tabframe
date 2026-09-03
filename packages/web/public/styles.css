@@ -1148,6 +1148,11 @@ header .pill {
 .notice {
   color: var(--warn);
 }
+/* Stop is the one red thing in the header: the machine's brake, not another link. */
+header #stop {
+  color: var(--bad);
+  border-color: var(--bad);
+}
 header #stop,
 header #start,
 header #resume {
@@ -1201,18 +1206,32 @@ body[data-panel] .panel-only {
   grid-row: 2;
   margin-left: 0;
 }
+/* Two fixed rows: a failure or the warnings on the first (a failure on top), the follow-up on the
+   second. Each keeps its cell when hidden, so nothing overlaps and nothing moves (WP6.8). */
 .messages {
-  position: relative;
-  height: 2.4rem;
+  display: grid;
+  grid-template-rows: 2.2rem 2.2rem;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 0.2rem;
   margin: 0.2rem 0 0.4rem;
 }
 .messages > * {
-  position: absolute;
-  inset: 0;
+  grid-column: 1;
+  min-width: 0;
   margin: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.messages > #failure,
+.messages > #warnings {
+  grid-row: 1;
+}
+.messages > #failure {
+  z-index: 1;
+}
+.messages > #followUp {
+  grid-row: 2;
 }
 .messages > [hidden] {
   display: block !important;
