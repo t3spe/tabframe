@@ -1126,3 +1126,7 @@ header .pill {
 #grid {
   height: 96px;
 }
+#grid[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
