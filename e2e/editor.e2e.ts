@@ -190,7 +190,9 @@ test("the editor explains itself: a guide from the SDK's README, the machine's l
   await expect(page.locator("#programParams")).toHaveValue('{"who":"world"}');
   await expect(page.locator("#exampleNote")).toContainText("smallest program");
   await page.click("#compile");
-  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, { timeout: 180_000 });
+  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+    timeout: 180_000,
+  });
   await expect(page.locator("#diagnostics li")).toHaveCount(0);
   await expect(page.locator("#launch")).toBeEnabled();
   // Word count is there to read, and says what a launch from here would lack.

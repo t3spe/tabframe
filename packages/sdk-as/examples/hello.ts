@@ -17,6 +17,7 @@ import {
   readRunInput,
   stage,
 } from "@tabframe/sdk-as/assembly/index";
+
 export { alloc } from "@tabframe/sdk-as/assembly/index";
 
 export function plan(ptr: usize, len: i32): usize {
