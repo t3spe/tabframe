@@ -296,6 +296,16 @@ export const machineSleeping = z.object({
   reason: z.string().max(128),
 });
 
+/**
+ * The loop yielded to a person's launch (WP6.8): once their execution has ended the loop launches
+ * nothing until Start or ten quiet minutes. `yielded: false` says it took the stage back by itself.
+ */
+export const loopYielded = z.object({
+  t: z.literal("loopYielded"),
+  ...event,
+  yielded: z.boolean(),
+});
+
 export const controlPlaneToObserver = z.discriminatedUnion("t", [
   snapshot,
   pong,
@@ -324,6 +334,7 @@ export const controlPlaneToObserver = z.discriminatedUnion("t", [
   programRetired,
   controlPlaneRotating,
   machineSleeping,
+  loopYielded,
 ]);
 
 export type Subscribe = z.infer<typeof subscribe>;
@@ -333,6 +344,7 @@ export type ProgramView = z.infer<typeof programView>;
 export type Pong = z.infer<typeof pong>;
 export type ErrorMessage = z.infer<typeof error>;
 export type MachineView = z.infer<typeof machineView>;
+export type LoopYielded = z.infer<typeof loopYielded>;
 export type NodeJoined = z.infer<typeof nodeJoined>;
 export type NodeLeft = z.infer<typeof nodeLeft>;
 export type NodeHealth = z.infer<typeof nodeHealth>;

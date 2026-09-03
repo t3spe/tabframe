@@ -128,6 +128,12 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
   await expect(page.locator("#gen")).toHaveText(/gen \d+/, { timeout: 30_000 });
   const startGeneration = await generation(page);
+  // An earlier visitor may have left the loop yielded, or the machine stopped (WP6.8): the header
+  // shows Start, and a person who wants the show presses it.
+  if (await page.locator("#start").isVisible()) {
+    await page.click("#start");
+    beat("the loop had yielded to an earlier visitor: Start pressed");
+  }
   // The default loop starts a frame as soon as someone watches; the fleet adds two cores.
   await expect(page.locator("#exec")).toContainText("mandelbrot", { timeout: 120_000 });
   await expect
@@ -245,6 +251,19 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await beatAndMeasure("redundancy on");
   await settle(page);
   await page.click("#redundancy");
+  // The click can land in a reconnect the page hides (the last beats' sockets are still closing
+  // at the endpoint); the page says so, and a person would click again once it is back.
+  const checked = await expect(page.locator("#redundancy"))
+    .toBeChecked({ timeout: 12_000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!checked) {
+    beat("redundancy: the first click was lost while the page reconnected; clicking again");
+    await settle(page);
+    if (!(await page.locator("#redundancy").isChecked())) await page.click("#redundancy");
+  }
   await expect(page.locator("#redundancy")).toBeChecked({ timeout: 20_000 });
   await expect(page.locator("#activity")).toContainText("setRedundancy", { timeout: 20_000 });
   // Agreement is set when a task is created, so the verified count climbs with the next frame;

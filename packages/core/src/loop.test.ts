@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
+import type { Effect } from "./events.ts";
 import {
   KEEP_ENDED_EXECUTIONS,
   KEEP_ENDED_TASKS,
@@ -239,8 +240,40 @@ describe("the loop yields to people (WP6.8)", () => {
     next: Record<string, unknown> | null,
   ) => {
     const plan = planAssignOf(h, id);
-    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), { kind: "done", next });
+    return h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
+      kind: "done",
+      next,
+    });
   };
+  const said = (effects: Effect[], yielded: boolean) =>
+    effects.some(
+      (e) => e.kind === "send" && e.msg.t === "loopYielded" && e.msg.yielded === yielded,
+    );
+
+  test("the yield and its release are announced to observers (loopYielded)", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles"); // e1, the loop's
+    h.tick();
+    h.launch({ preset: 5 }, true); // e2, a person's
+    finishPlanOf(h, "e1", { preset: 1 }); // e2 starts; e3, the continuation, waits
+    const ended = finishPlanOf(h, "e2", null);
+    expect(said(ended, true)).toBe(true);
+    expect(h.ledger.meta.loopYielded).toBe(true);
+    h.send("obs", { t: "resumeAll" }); // an interaction: the quiet minutes count from here
+    let released: Effect[] = [];
+    for (let t = 0; t <= YIELD_IDLE_MS + 5_000 && released.length === 0; t += 1_000) {
+      h.advance(1_000);
+      alive(h);
+      const fx = h.tick();
+      if (said(fx, false)) released = fx;
+    }
+    expect(released.length).toBeGreaterThan(0);
+    expect(h.ledger.meta.loopYielded).toBe(false);
+    expect(h.ledger.running).toBe("e3");
+    expect(h.invariants()).toEqual([]);
+  });
 
   test("after a person's launch ends the loop stays out until Start", () => {
     const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });

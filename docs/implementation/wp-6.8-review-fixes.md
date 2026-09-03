@@ -22,7 +22,11 @@ quickly".
   an abandoned tab still renders. This replaces WP4.4's twenty-second hold, which let the loop take
   the stage back while the person was still looking (`loopPausedUntil` stays for the backoff after a
   failed frame). The machine view carries `yielded`; the execution pill reads "loop yielded to you"
-  and the header shows Start. Snapshots carry the flag; old snapshots read it as false.
+  and the header shows Start. Snapshots carry the flag; old snapshots read it as false. The change
+  is announced as it happens by a new observer event, `loopYielded {yielded}` — sent when the
+  person's launch ends and again when the loop takes the stage back after the quiet minutes — so
+  connected dashboards do not wait for a resubscribe (the first deploy showed the pill only after
+  the next snapshot, and the demo's Start beat timed out).
 - **The top of the page (2).** One status line, a single line high, holds the machine banner or
   the notice. Under it the execution row is a fixed grid — name and detail, the progress bar and its
   figure, the throughput chart — and the three messages that used to stack (failure, warnings,
@@ -58,8 +62,19 @@ quickly".
 - `e2e/panels.e2e.ts`: the ledger tab shows the whole output hash and store address and the freeze
   button holds its rows; a file name is a link to the viewer tab, which opens on that file.
 - `e2e/demo.e2e.ts`: after the tiny GPT beat the pill reads "loop yielded to you" and Start is
-  visible; pressing it brings Mandelbrot back. The layout probes (WP6.2) run at every beat and pass
-  with the new top of the page.
+  visible; pressing it brings Mandelbrot back. The opening beat presses Start when the header
+  shows it — an earlier visitor (or the previous pass) left the loop yielded — and the redundancy
+  beat clicks again when its first click landed in a reconnect the page hides, as a person would.
+  The layout probes (WP6.2) run at every beat and pass with the new top of the page.
+
+## What the first deploy taught
+
+Generation 79 carried everything above, and three unattended passes failed three ways: the
+yield was carried by snapshots only, so a connected page learned of it at its next resubscribe
+(hence `loopYielded`); the next pass opened on a machine still yielded from the previous one
+(hence the opening Start); and one redundancy click was lost in a reconnect (hence the retry). All
+three were the demo finding real gaps, not test flakiness, and the fixes went out as the next
+generation.
 
 ## Drift
 

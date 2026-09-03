@@ -215,6 +215,14 @@ describe("cluster state: snapshots and sequence", () => {
     // A pong never advances the sequence: only events and snapshots do.
     expect(s.seq).toBe(3);
   });
+  test("the loop's yield and its return are announced (WP6.8)", () => {
+    const sc = new Script(3);
+    sc.send({ t: "loopYielded", yielded: true });
+    expect(sc.state.machine?.yielded).toBe(true);
+    expect(sc.state.activity.at(-1)?.text).toContain("yielded to you");
+    sc.send({ t: "loopYielded", yielded: false });
+    expect(sc.state.machine?.yielded).toBe(false);
+  });
   test("a fresh first page replaces nodes, tasks, and banners; unknown-node health is ignored", () => {
     const sc = new Script(3);
     sc.startStage(2);
