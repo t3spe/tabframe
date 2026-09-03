@@ -1129,6 +1129,7 @@ header .pill {
 #grid[hidden] {
   display: block !important;
   visibility: hidden;
+}
 /* The editor's guide (WP6.6): the SDK's README, rendered beside the source. */
 .guide {
   margin-top: 1rem;
