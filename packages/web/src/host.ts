@@ -493,7 +493,27 @@ function render(state: ClusterState): void {
     els.execDetail.className = "muted";
     els.progressFill.style.width = "0%";
     els.progressText.textContent = "";
-    els.counters.replaceChildren();
+    // The counters keep their slots while nothing runs (WP6.2): eight chips, dashes for numbers.
+    els.counters.replaceChildren(
+      ...[
+        "pending",
+        "assigned",
+        "done",
+        "failed",
+        "reassigned",
+        "speculated",
+        "verified",
+        "mismatched",
+      ].map((label) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.dataset.counter = label;
+        const num = document.createElement("b");
+        num.textContent = "—";
+        chip.append(num, ` ${label}`);
+        return chip;
+      }),
+    );
   }
   const tilesView = exec?.view === "tiles";
   els.tiles.hidden = !tilesView;

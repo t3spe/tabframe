@@ -33,8 +33,63 @@ const generation = (page: Page): Promise<number> =>
     .locator("#gen")
     .textContent()
     .then((t) => Number(/gen (\d+)/.exec(t ?? "")?.[1] ?? "0"));
+/** Regions that must keep their box for the whole run (WP6.2): measured at every beat. */
+const LAYOUT_SELECTORS = [
+  "header",
+  "#machineBanner",
+  ".hero",
+  "#stage",
+  ".execrow",
+  "#strip",
+  "#failure",
+  ".stage-box",
+  "#grid",
+  "#legend",
+  "#pulses",
+  "#taskDetail",
+  "#counters",
+  ".controls",
+  "#nodes",
+  "aside",
+  "#programs",
+  "#queue",
+  "#filesPanel",
+  "#ledgerPanel",
+  "#activityPanel",
+];
+type Boxes = Record<string, { w: number; h: number }>;
+const layoutBoxes = (page: Page): Promise<Boxes> =>
+  page.evaluate((selectors) => {
+    const out: Record<string, { w: number; h: number }> = {};
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      out[sel] = { w: Math.round(r.width), h: Math.round(r.height) };
+    }
+    return out;
+  }, LAYOUT_SELECTORS);
+let layoutPage: Page | null = null;
+let layoutFirst: Boxes | null = null;
+const layoutChanges: string[] = [];
 const beat = (name: string) =>
   console.log(`[demo] ${new Date().toISOString().slice(11, 19)} ${name}`);
+/** A beat that also measures the page: any region that changed size is a finding. */
+async function beatAndMeasure(name: string): Promise<void> {
+  beat(name);
+  if (!layoutPage) return;
+  const boxes = await layoutBoxes(layoutPage);
+  if (!layoutFirst) {
+    layoutFirst = boxes;
+    return;
+  }
+  for (const [sel, box] of Object.entries(boxes)) {
+    const first = layoutFirst[sel];
+    if (!first) continue;
+    if (Math.abs(first.w - box.w) > 1 || Math.abs(first.h - box.h) > 1)
+      layoutChanges.push(`${sel} at "${name}": ${first.w}×${first.h} → ${box.w}×${box.h}`);
+  }
+}
 
 /** The burst of joins floods the observer into a resubscribe; let the socket come back first. */
 async function settle(page: Page): Promise<void> {
@@ -78,13 +133,14 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect
     .poll(() => counts(page).then((c) => c.hosts), { timeout: 150_000 })
     .toBeGreaterThanOrEqual(3);
-  beat(`rendering with ${JSON.stringify(await counts(page))}`);
+  layoutPage = page;
+  await beatAndMeasure(`rendering with ${JSON.stringify(await counts(page))}`);
   await expect.poll(() => counter(page, "done"), { timeout: 120_000 }).toBeGreaterThan(10);
 
   // ---- 2. another real tab -------------------------------------------------------------------------
   // The script says two more; with the endpoint's sixteen connections (WP4.5) one more is what
   // leaves room for the reconnects the beats below cause — see the spawn note.
-  beat("another tab");
+  await beatAndMeasure("another tab");
   const before = await counts(page);
   const tab2 = await openTab(context);
   await expect
@@ -96,7 +152,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   // dashboards, their two nodes, and two cores are six, so four more nodes here keeps the machine
   // at ten with room for the reconnects the beats below cause. Runs that spawned ten, then six,
   // saw the dashboard's own socket refused and a control lost or held past its window.
-  beat("spawn four");
+  await beatAndMeasure("spawn four");
   const hint = page.locator("#spawnHint");
   await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
   await expect(hint).toContainText(/This browser reports \d+ cores?/);
@@ -109,7 +165,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat(`cluster ${JSON.stringify(await counts(page))}`);
 
   // ---- 4. kill half: work is taken back or its twins carry on -------------------------------------
-  beat("kill half");
+  await beatAndMeasure("kill half");
   const alive = (await counts(page)).nodes;
   await page.click("#killHalf");
   // A click can still land in a reconnect the page hides; a person would click again, so does
@@ -141,7 +197,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   );
 
   // ---- 5. freeze half: frozen workers fall silent and are declared gone ----------------------------
-  beat("freeze half");
+  await beatAndMeasure("freeze half");
   await page.click("#freezeHalf");
   await expect(page.locator("#activity")).toContainText(/freezeHalf: \S+/, { timeout: 20_000 });
   // The victims are named; each falls silent and is declared gone (a frozen core's MicroVM is
@@ -163,7 +219,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
     .toBe(0);
 
   // ---- 6. throttle half: slow workers get twins, and the picture still completes ------------------
-  beat("throttle half");
+  await beatAndMeasure("throttle half");
   // Replace what was lost so there is something to throttle and something to race it.
   for (let i = 0; i < 3; i++) await page.click("#spawn1");
   await expect
@@ -186,7 +242,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#activity")).toContainText("resumeAll", { timeout: 20_000 });
 
   // ---- 7. redundancy on: every tile computed twice, the bytes agree ----------------------------------
-  beat("redundancy on");
+  await beatAndMeasure("redundancy on");
   await settle(page);
   await page.click("#redundancy");
   await expect(page.locator("#redundancy")).toBeChecked({ timeout: 20_000 });
@@ -213,7 +269,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#redundancy")).not.toBeChecked();
 
   // ---- 7b. stop and start: a person makes the machine idle, then lets the loop run again ----------
-  beat("stop");
+  await beatAndMeasure("stop");
   await settle(page);
   await page.click("#stop");
   await expect(page.locator("#start")).toBeVisible({ timeout: 30_000 });
@@ -230,7 +286,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("started again");
 
   // ---- 8. the editor: change the palette cycle, compile in the browser, launch ---------------------
-  beat("editor");
+  await beatAndMeasure("editor");
   // The editor opens in its own tab and holds the machine paused while it lives (WP6.4).
   const editorOpened = context.waitForEvent("page");
   await page.click("#openEditor");
@@ -268,7 +324,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("the edited program renders");
 
   // ---- 9. word count: three stages and a bar chart ----------------------------------------------------
-  beat("word count");
+  await beatAndMeasure("word count");
   await expect(page.locator('[data-launch="wordcount"]')).toBeVisible({ timeout: 30_000 });
   await page.click('[data-launch="wordcount"]');
   await page.click('[data-launch-go="wordcount"]');
@@ -307,7 +363,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("word count drew its bars");
 
   // ---- 10. a rotation: banner, reconnect, the render continues --------------------------------------
-  beat("rotation");
+  await beatAndMeasure("rotation");
   const rotation = rotateInBackground();
   const banner = page.locator("#machineBanner");
   // The rotating banner's countdown is under two seconds, so what the banner said is collected
@@ -351,7 +407,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat(`generation ${await generation(page)}, ${JSON.stringify(await counts(page))}`);
 
   // ---- 11. the ledger and files panels: hashes everywhere, no bytes in the control plane -----------
-  beat("ledger and files");
+  await beatAndMeasure("ledger and files");
   // The dashboard keeps one-line summaries; the panels open full-width in their own tabs (WP6.3).
   await expect(page.locator("#ledgerSummary")).toContainText("hashes, not bytes");
   const ledgerOpened = context.waitForEvent("page");
@@ -381,5 +437,8 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await filesTab.close();
 
   await tab2.close();
-  beat("done");
+  await beatAndMeasure("done");
+  // Nothing changed size across the whole run (WP6.2).
+  expect(layoutChanges).toEqual([]);
+  beat("layout held");
 });
