@@ -352,18 +352,33 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 11. the ledger and files panels: hashes everywhere, no bytes in the control plane -----------
   beat("ledger and files");
-  await expect(page.locator("#ledgerNote")).toContainText("hashes, not bytes");
-  await expect(page.locator("#ledger tbody tr[data-hash]").first()).toBeVisible({
+  // The dashboard keeps one-line summaries; the panels open full-width in their own tabs (WP6.3).
+  await expect(page.locator("#ledgerSummary")).toContainText("hashes, not bytes");
+  const ledgerOpened = context.waitForEvent("page");
+  await page.click("#ledgerPanel .open-panel");
+  const ledgerTab = await ledgerOpened;
+  await expect(ledgerTab.locator("#machine")).toHaveText(/live/, { timeout: 60_000 });
+  await expect(ledgerTab.locator("#ledgerPanel .panel-explain")).toBeVisible();
+  await expect(ledgerTab.locator("#ledger tbody tr[data-hash]").first()).toBeVisible({
     timeout: 120_000,
   });
-  await expect(page.locator("#ledger tbody tr[data-hash]").first()).toHaveAttribute(
+  await expect(ledgerTab.locator("#ledger tbody tr[data-hash]").first()).toHaveAttribute(
     "data-hash",
     /^[0-9a-f]{64}$/,
   );
-  await expect(page.locator("#filesNote")).toContainText("named by its hash");
+  beat(`ledger tab: ${await ledgerTab.locator("#ledger tbody tr[data-hash]").count()} rows`);
+  await ledgerTab.close();
+  await expect(page.locator("#filesSummary")).toContainText(/root \S+|no filesystem/, {
+    timeout: 30_000,
+  });
+  const filesOpened = context.waitForEvent("page");
+  await page.click("#filesPanel .open-panel");
+  const filesTab = await filesOpened;
+  await expect(filesTab.locator("#machine")).toHaveText(/live/, { timeout: 60_000 });
+  await expect(filesTab.locator("#filesPanel .panel-explain")).toBeVisible();
   // After the rotation the loop is on a fresh frame; its filesystem exists once the stage folds.
-  await expect(page.locator("#filesRoot")).not.toHaveText("—", { timeout: 180_000 });
-  await expect(page.locator("#files")).toContainText("/program.wasm", { timeout: 180_000 });
+  await expect(filesTab.locator("#files")).toContainText("/program.wasm", { timeout: 180_000 });
+  await filesTab.close();
 
   await tab2.close();
   beat("done");
