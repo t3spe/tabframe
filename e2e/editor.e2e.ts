@@ -17,15 +17,45 @@ const wasmPath = path.resolve(
 );
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+// The editor is a page of its own since WP6.4: the dashboard's button opens it in a new tab, and
+// the tab holds the machine paused while it lives. The suites go there directly.
 async function openEditor(page: Page): Promise<void> {
-  await page.goto("/?observe");
+  await page.goto("/editor.html");
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
-  await expect(page.locator("#editor")).toBeHidden();
-  await page.click("#openEditor");
   await expect(page.locator("#editor")).toBeVisible();
   await expect(page.locator("#source")).toHaveValue(/Mandelbrot/);
   await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 120_000 });
 }
+
+test("the editor opens from the dashboard in its own tab and holds the machine paused while it lives", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/?observe");
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  await expect(page.locator("#resume")).toBeHidden();
+  const opened = context.waitForEvent("page");
+  await page.click("#openEditor");
+  const editor = await opened;
+  await expect(editor).toHaveURL(/\/editor\.html$/);
+  await expect(editor.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  await expect(editor.locator("#pauseState")).toContainText("paused");
+  // The dashboard sees the pause and offers Resume.
+  await expect(page.locator("#exec")).toContainText("paused (editor open)", { timeout: 15_000 });
+  await expect(page.locator("#resume")).toBeVisible();
+  // Closing the tab lifts it: the control plane resumes when the holder's socket goes away.
+  await editor.close();
+  await expect(page.locator("#exec")).not.toContainText("paused", { timeout: 15_000 });
+  await expect(page.locator("#resume")).toBeHidden();
+  // Resume from the dashboard works too, while a tab holds the pause.
+  const again = context.waitForEvent("page");
+  await page.click("#openEditor");
+  const editor2 = await again;
+  await expect(page.locator("#resume")).toBeVisible({ timeout: 15_000 });
+  await page.click("#resume");
+  await expect(page.locator("#resume")).toBeHidden({ timeout: 15_000 });
+  await editor2.close();
+});
 
 test("the compiler loads in a worker and the page compile is byte-identical to the build", async ({
   page,
@@ -123,14 +153,18 @@ test("launch uploads the bundle through the observer socket and the control plan
   });
   console.log(`[editor.e2e] ${await page.locator("#launchInfo").textContent()}`);
   // Since WP2.3 the launch is real: the execution would plan forever here (no nodes in observe
-  // mode) and then run on the next suite's nodes. Kill it from the page so the suites that
+  // mode) and then run on the next suite's nodes. Kill it from a dashboard tab so the suites that
   // follow find the machine idle; the failure banner names the reason.
-  const kill = page.locator("#killExecution");
+  const dash = await page.context().newPage();
+  await dash.goto("/?observe");
+  await expect(dash.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  const kill = dash.locator("#killExecution");
   await expect(kill).toBeVisible({ timeout: 15_000 });
   await kill.click();
-  await expect(page.locator("#failure")).toContainText("cancelled by an operator", {
+  await expect(dash.locator("#failure")).toContainText("cancelled by an operator", {
     timeout: 15_000,
   });
+  await dash.close();
   // Params that are not an object never leave the page.
   await page.locator("#programParams").fill("[1, 2]");
   await page.click("#launch");

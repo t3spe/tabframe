@@ -373,6 +373,16 @@ function onControl(
       effects.push(...maybeStart(ledger, now), ...fill(ledger, now));
       return effects;
     }
+    case "pause": {
+      // The editor tab that asked holds the pause; nothing new is assigned or started until it
+      // resumes or goes away (WP6.4). Asking twice from the same socket is one pause.
+      const held = ledger.meta.pausedBy;
+      ledger.meta.pausedBy = connId;
+      if (held === connId) return [];
+      return broadcast(ledger, { t: "controlApplied", op: "pause", nodeIds: [] });
+    }
+    case "resume":
+      return resumeMachine(ledger, now);
     case "start": {
       ledger.meta.loopStopped = false;
       ledger.meta.loopPausedUntil = 0; // a person asked now, not after a hold or a backoff
@@ -516,6 +526,7 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
     reason: ledger.meta.sleepReason,
     redundancy: ledger.meta.redundancy,
     stopped: ledger.meta.loopStopped,
+    paused: ledger.meta.pausedBy !== null,
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
   };
@@ -658,8 +669,19 @@ export function removeConnection(
     if (node) effects.push(...releaseNode(ledger, node));
     return effects;
   }
+  // The pause holder's socket went away: the machine resumes by itself (WP6.4).
+  if (ledger.meta.pausedBy === connId) effects.push(...resumeMachine(ledger, now));
   ledger.observers.delete(connId);
   ledger.conns.delete(connId);
+  return effects;
+}
+
+/** Lift a pause, tell the observers, and let the machine pick up where it stopped. */
+function resumeMachine(ledger: Ledger, now: number): Effect[] {
+  if (ledger.meta.pausedBy === null) return [];
+  ledger.meta.pausedBy = null;
+  const effects = broadcast(ledger, { t: "controlApplied", op: "resume", nodeIds: [] });
+  effects.push(...ensureDefaultLoop(ledger, now), ...maybeStart(ledger, now), ...fill(ledger, now));
   return effects;
 }
 

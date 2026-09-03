@@ -340,7 +340,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     const offered = exec && exec.phase === "done" && exec.human && exec.followUp;
     els.followUp.hidden = !offered;
     els.followUp.replaceChildren();
-    els.killExecution.hidden = !exec || exec.phase === "done" || exec.phase === "failed";
+    els.killExecution.hidden =
+      !exec || exec.phase === "done" || exec.phase === "failed" || exec.phase === "stopped";
     if (!offered || !exec.followUp) return;
     const params = exec.followUp;
     const button = el("button", undefined, `run follow-up ${JSON.stringify(params)}`);

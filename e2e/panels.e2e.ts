@@ -123,18 +123,24 @@ test("live: an upload shows up in the programs panel, launches from it, and can 
 
   // Upload through the editor's drop door; the control plane validates the bundle and the
   // program shows up in the panel, with its view, whether it was known before or not.
-  await page.click("#openEditor");
-  await expect(page.locator("#editor")).toBeVisible();
-  // editor.js loads lazily and its drop-door handler attaches only once the compiler reports
-  // ready; on a slow CI runner that can take longer than the file drop below would wait.
-  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  await page.locator("#wasmFile").setInputFiles(wasmPath);
-  await expect(page.locator("#launch")).toBeEnabled({ timeout: 15_000 });
+  const editor = await page.context().newPage();
+  await editor.goto("/editor.html");
+  // The drop-door handler attaches only once the compiler reports ready; on a slow CI runner
+  // that can take longer than the file drop below would wait.
+  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  await editor.locator("#wasmFile").setInputFiles(wasmPath);
+  await expect(editor.locator("#launch")).toBeEnabled({ timeout: 15_000 });
   // A dropped module is named after its file; give it the program's real name.
-  await page.locator("#programName").fill("mandelbrot");
-  await page.locator("#programParams").fill('{"preset": 2, "palette": "ocean"}');
-  await page.click("#launch");
-  await expect(page.locator("#launchInfo")).toContainText("launch sent", { timeout: 30_000 });
+  await editor.locator("#programName").fill("mandelbrot");
+  await editor.locator("#programParams").fill('{"preset": 2, "palette": "ocean"}');
+  await editor.click("#launch");
+  await expect(editor.locator("#launchInfo")).toContainText("launch sent", { timeout: 30_000 });
+  // Controls leave the tab spaced under the observer rate: wait for the control plane's answer
+  // before closing it, or the launch may still be in the outbox.
+  await expect(editor.locator("#launchInfo")).toContainText(/answered|queued as|running as/, {
+    timeout: 30_000,
+  });
+  await editor.close();
   await expect(page.locator('[data-launch="mandelbrot"]')).toBeVisible({ timeout: 30_000 });
   expect(await page.locator("#programs .program").count()).toBeGreaterThanOrEqual(
     Math.max(1, programsBefore),

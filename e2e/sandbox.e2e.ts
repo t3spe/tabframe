@@ -66,22 +66,23 @@ export function run(ptr: usize, len: i32): usize {
 }
 `;
 
+/** The editor is its own page (WP6.4): open it beside the dashboard, launch, close it. */
 async function compileAndLaunch(page: Page, source: string, name: string): Promise<void> {
-  await page.click("#openEditor");
-  await expect(page.locator("#editor")).toBeVisible();
-  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  await page.locator("#source").fill(source);
-  await page.locator("#programName").fill(name);
-  await page.click("#compile");
-  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+  const editor = await page.context().newPage();
+  await editor.goto("/editor.html");
+  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  await editor.locator("#source").fill(source);
+  await editor.locator("#programName").fill(name);
+  await editor.click("#compile");
+  await expect(editor.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
     timeout: 180_000,
   });
-  await page.locator("#programParams").fill("{}");
-  await page.click("#launch");
-  await expect(page.locator("#launchInfo")).toContainText(/queued as|running as/, {
+  await editor.locator("#programParams").fill("{}");
+  await editor.click("#launch");
+  await expect(editor.locator("#launchInfo")).toContainText(/queued as|running as/, {
     timeout: 60_000,
   });
-  await page.click("#closeEditor");
+  await editor.close();
 }
 
 test("a program that never returns is killed at the deadline and its task is given away", async ({

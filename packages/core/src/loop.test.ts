@@ -9,7 +9,7 @@ import {
   pruneExecutions,
 } from "./executions.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
-import { deserializeLedger, serializeLedger } from "./snapshot.ts";
+import { adoptLedger, deserializeLedger, serializeLedger } from "./snapshot.ts";
 
 /** The machine's default loop after failures: back off, doubling; success resets (D4, D19). */
 describe("default loop backoff", () => {
@@ -388,6 +388,72 @@ describe("stop and start", () => {
     expect(h.ledger.meta.loopStopped).toBe(true);
     h.launch({ preset: 1 }, true);
     expect(h.ledger.running).toBe("e1");
+    expect(h.invariants()).toEqual([]);
+  });
+});
+
+/** An editor tab holds the machine paused (WP6.4): nothing new is assigned or started. */
+describe("pause and resume", () => {
+  test("pause freezes assignment and starts; resume continues the same execution", () => {
+    const h = harness();
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.launch({ preset: 0 }, true);
+    h.tick();
+    const plan = planAssignOf(h, "e1");
+    h.connect("editor", "observer");
+    h.send("editor", { t: "subscribe" });
+    const paused = h.send("editor", { t: "pause" });
+    expect(
+      paused.some((e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "pause"),
+    ).toBe(true);
+    expect(h.ledger.meta.pausedBy).toBe("editor");
+    // The plan result lands and the stage is created, but no tile is handed out.
+    const stage = h.planSpec(
+      h.result(plan.connId, plan.taskId, plan.attempt, H("e")),
+      renderSpec(3),
+    );
+    expect(h.assigns(stage)).toEqual([]);
+    expect(h.assigns(h.tick())).toEqual([]);
+    expect(h.ledger.running).toBe("e1");
+    // A second pause from the same tab is one pause; the snapshot says paused.
+    expect(h.send("editor", { t: "pause" })).toEqual([]);
+    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    expect(snap.msg.machine?.paused).toBe(true);
+    // Resume from the dashboard: the tiles go out at once.
+    const resumed = h.send("obs", { t: "resume" });
+    expect(h.ledger.meta.pausedBy).toBeNull();
+    expect(h.assigns(resumed).length).toBeGreaterThan(0);
+    expect(h.invariants()).toEqual([]);
+  });
+
+  test("the holder's socket going away lifts the pause; adoption clears it too", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("obs");
+    h.hello("a", "h1");
+    h.connect("editor", "observer");
+    h.send("editor", { t: "subscribe" });
+    h.send("editor", { t: "pause" });
+    h.addProgram("tiles"); // the loop would launch now; it waits
+    h.tick();
+    expect(h.ledger.running).toBeNull();
+    const gone = h.disconnect("editor");
+    expect(
+      gone.some((e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "resume"),
+    ).toBe(true);
+    expect(h.ledger.meta.pausedBy).toBeNull();
+    expect(h.ledger.running).not.toBeNull();
+    // A pause never survives a rotation: the holder is on the previous generation's sockets.
+    h.connect("editor2", "observer");
+    h.send("editor2", { t: "subscribe" });
+    h.send("editor2", { t: "pause" });
+    expect(h.ledger.meta.pausedBy).toBe("editor2");
+    const restored = deserializeLedger(serializeLedger(h.ledger));
+    expect(restored.meta.pausedBy).toBeNull();
+    adoptLedger(h.ledger, 9, h.now);
+    expect(h.ledger.meta.pausedBy).toBeNull();
     expect(h.invariants()).toEqual([]);
   });
 });

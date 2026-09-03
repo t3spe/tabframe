@@ -59,6 +59,8 @@ export const executionView = z.object({
   program: hash,
   programName: z.string().min(1).max(64),
   status: executionStatus,
+  /** Why it ended, when it did not end well; "stopped by a person" after a Stop (WP6.1). */
+  failure: z.string().max(512).nullable().optional(),
   human: z.boolean(),
   view,
   params,
