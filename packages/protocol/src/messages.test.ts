@@ -139,7 +139,7 @@ describe("v1 node messages", () => {
 
 describe("v1 observer messages", () => {
   test("controls and launch", () => {
-    for (const t of ["killHalf", "freezeHalf", "throttleHalf", "resumeAll", "restart", "skip"]) {
+    for (const t of ["killHalf", "freezeHalf", "throttleHalf", "resumeAll", "restart", "skip", "stop", "start"]) {
       expect(decode(observerToControlPlane, encode({ t, ...base })).ok).toBe(true);
     }
     expect(
@@ -227,6 +227,8 @@ describe("v1 observer messages", () => {
       { t: "controlApplied", ...ev, op: "killHalf", nodeIds: ["n1", "n2"] },
       { t: "programAdded", ...ev, program: H, name: "mandelbrot" },
       { t: "programRetired", ...ev, program: H, name: "mandelbrot" },
+      { t: "controlApplied", ...ev, op: "stop", nodeIds: [] },
+      { t: "controlApplied", ...ev, op: "start", nodeIds: [] },
       { t: "controlPlaneRotating", ...ev, next: 3, reconnectAfterMs: 2500 },
       { t: "machineSleeping", ...ev, reason: "no observers for 10 minutes" },
       { t: "budget", ...ev, executionId: "e1", computeMsUsed: 10, computeMsCap: 100 },

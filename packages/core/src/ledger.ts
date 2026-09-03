@@ -214,6 +214,8 @@ export interface Meta {
   /** The default loop backs off after a failed execution: current delay and when it may relaunch. */
   loopBackoffMs: number;
   loopPausedUntil: number;
+  /** A person pressed Stop (WP6.1): the loop launches nothing until Start; survives a rotation. */
+  loopStopped: boolean;
 }
 
 export interface LedgerConfig {
@@ -294,6 +296,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       phase: "active",
       loopBackoffMs: 0,
       loopPausedUntil: 0,
+      loopStopped: false,
     },
     config: {
       defaultLoop: config.defaultLoop ?? null,

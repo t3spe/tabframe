@@ -358,6 +358,33 @@ function onControl(
       ledger.meta.redundancy = msg.on;
       return broadcast(ledger, { t: "controlApplied", op: "setRedundancy", nodeIds: [] });
     }
+    case "stop": {
+      // A person wants the machine idle (WP6.1): the running execution ends, the loop's queued
+      // continuations go, a person's own queued launches stay, and the loop waits for Start.
+      const effects: Effect[] = [];
+      ledger.meta.loopStopped = true;
+      if (running) effects.push(...cancelExecution(ledger, running, "stopped by a person", now));
+      for (const id of [...ledger.queue]) {
+        const queued = ledger.executions.get(id);
+        if (queued && !queued.human)
+          effects.push(...cancelExecution(ledger, queued, "stopped by a person", now));
+      }
+      effects.push(...broadcast(ledger, { t: "controlApplied", op: "stop", nodeIds: [] }));
+      effects.push(...maybeStart(ledger, now), ...fill(ledger, now));
+      return effects;
+    }
+    case "start": {
+      ledger.meta.loopStopped = false;
+      ledger.meta.loopPausedUntil = 0; // a person asked now, not after a hold or a backoff
+      ledger.meta.loopBackoffMs = 0;
+      const effects = broadcast(ledger, { t: "controlApplied", op: "start", nodeIds: [] });
+      effects.push(
+        ...ensureDefaultLoop(ledger, now),
+        ...maybeStart(ledger, now),
+        ...fill(ledger, now),
+      );
+      return effects;
+    }
   }
 }
 
@@ -488,6 +515,7 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
     awake: ledger.meta.awake,
     reason: ledger.meta.sleepReason,
     redundancy: ledger.meta.redundancy,
+    stopped: ledger.meta.loopStopped,
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
   };

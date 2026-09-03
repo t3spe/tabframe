@@ -132,6 +132,8 @@ const els = {
   editor: $<HTMLElement>("#editor"),
 };
 const controlButtons: [HTMLButtonElement, ControlRequest][] = [
+  [$<HTMLButtonElement>("#stop"), { t: "stop" }],
+  [$<HTMLButtonElement>("#start"), { t: "start" }],
   [$<HTMLButtonElement>("#killHalf"), { t: "killHalf" }],
   [$<HTMLButtonElement>("#freezeHalf"), { t: "freezeHalf" }],
   [$<HTMLButtonElement>("#throttleHalf"), { t: "throttleHalf" }],
@@ -402,10 +404,16 @@ function render(state: ClusterState): void {
   els.gen.textContent = `gen ${state.generation ?? "—"}`;
   els.seq.textContent = `seq ${state.seq}`;
   els.counts.textContent = `${state.nodes.size} nodes · ${hostCount(state)} hosts`;
+  const stopped = state.machine?.stopped === true;
   els.exec.textContent = exec
-    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}`
-    : "idle";
+    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" ? " · stopped" : ""}`
+    : stopped
+      ? "idle · stopped by a person"
+      : "idle";
   els.exec.className = `pill ${exec?.phase === "failed" ? "off" : exec ? "live" : ""}`;
+  // One of the two shows: Stop while the loop may run, Start once a person stopped it.
+  $<HTMLButtonElement>("#stop").hidden = stopped;
+  $<HTMLButtonElement>("#start").hidden = !stopped;
   els.rate.textContent = `${throughput(state, now).toFixed(1)} tasks/s`;
   const due = state.machine?.nextRotationAt ?? null;
   els.nextRotation.hidden = due === null;

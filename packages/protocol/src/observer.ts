@@ -31,6 +31,10 @@ export const killHalf = z.object({ t: z.literal("killHalf"), ...envelope });
 export const freezeHalf = z.object({ t: z.literal("freezeHalf"), ...envelope });
 export const throttleHalf = z.object({ t: z.literal("throttleHalf"), ...envelope });
 export const resumeAll = z.object({ t: z.literal("resumeAll"), ...envelope });
+/** Stop: end the running execution, drop the loop's queued continuations, hold the loop (WP6.1). */
+export const stop = z.object({ t: z.literal("stop"), ...envelope });
+/** Start: let the loop run again after a stop. */
+export const start = z.object({ t: z.literal("start"), ...envelope });
 export const restart = z.object({ t: z.literal("restart"), ...envelope });
 export const skip = z.object({ t: z.literal("skip"), ...envelope });
 export const killExecution = z.object({ t: z.literal("killExecution"), ...envelope, executionId });
@@ -59,6 +63,8 @@ export const observerToControlPlane = z.discriminatedUnion("t", [
   freezeHalf,
   throttleHalf,
   resumeAll,
+  stop,
+  start,
   restart,
   skip,
   killExecution,
@@ -72,6 +78,8 @@ export const machineView = z.object({
   awake: z.boolean(),
   reason: z.string().max(128).nullable(),
   redundancy: z.boolean(),
+  /** A person pressed Stop: the loop waits for Start (WP6.1). */
+  stopped: z.boolean().default(false),
   /** Next scheduled rotation, when known. */
   nextRotationAt: millis.nullable(),
   uptimeMs: millis,
@@ -244,6 +252,8 @@ export const controlApplied = z.object({
     "skip",
     "killExecution",
     "setRedundancy",
+    "stop",
+    "start",
   ]),
   nodeIds: z.array(nodeId).default([]),
 });

@@ -838,6 +838,11 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-02 (WP6.1).** Stop and Start from the page (§6.7): Stop ends the running execution,
+  drops the loop's queued continuations (a person's queued launches stay), and holds the loop —
+  `meta.loopStopped`, carried by snapshots and rotations — until Start, which also clears any hold
+  or backoff (§6.8). The snapshot's machine view says `stopped`.
+
 - **2026-09-02 (WP4.4, later the same day).** What the unattended runs kept finding, each fixed
   in the core: agreement under redundancy is counted and announced as a verification (it never
   was, so the toggle's counter never moved); a person's launch holds the stage for twenty seconds

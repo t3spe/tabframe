@@ -581,6 +581,9 @@ export function applyMessage(
       const next = advance(state, msg.seq);
       next.victims = { op: msg.op, nodeIds: msg.nodeIds, at: now };
       if (msg.op === "setRedundancy") next.refresh = true;
+      // Stop and Start carry the machine's new state themselves (WP6.1).
+      if ((msg.op === "stop" || msg.op === "start") && next.machine)
+        next.machine = { ...next.machine, stopped: msg.op === "stop" };
       const who = msg.nodeIds.length ? `: ${msg.nodeIds.join(" ")}` : "";
       return note(next, now, "control", `${msg.op}${who}`);
     }

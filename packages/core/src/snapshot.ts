@@ -59,6 +59,7 @@ export function deserializeLedger(json: string): Ledger {
       lastCoreLaunchAt: s.meta.lastCoreLaunchAt ?? 0,
       loopBackoffMs: s.meta.loopBackoffMs ?? 0,
       loopPausedUntil: s.meta.loopPausedUntil ?? 0,
+      loopStopped: s.meta.loopStopped ?? false,
     },
     config: s.config,
     conns: new Map(),

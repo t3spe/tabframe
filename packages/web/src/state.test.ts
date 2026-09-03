@@ -1016,3 +1016,35 @@ describe("dashboard polish: flash kinds, the released colour, the chart, banners
     expect(ledgerRows(sc.state).map((r) => r.taskId)).toEqual(["t9", "t2"]);
   });
 });
+
+describe("stop and start (WP6.1)", () => {
+  test("the control's echo flips the machine's stopped flag without a refresh", () => {
+    let s = applyMessage(emptyState(), {
+      t: "snapshot",
+      ...env,
+      seq: 1,
+      page: 0,
+      pages: 1,
+      nodes: [],
+      programs: [],
+      execution: null,
+      queue: [],
+      machine: {
+        awake: true,
+        reason: null,
+        redundancy: false,
+        stopped: false,
+        nextRotationAt: null,
+        uptimeMs: 1,
+      },
+      tasks: [],
+      at: 1,
+    });
+    s = applyMessage(s, { t: "controlApplied", ...env, seq: 2, op: "stop", nodeIds: [] });
+    expect(s.machine?.stopped).toBe(true);
+    expect(s.refresh).toBe(false);
+    expect(s.activity.at(-1)?.text).toBe("stop");
+    s = applyMessage(s, { t: "controlApplied", ...env, seq: 3, op: "start", nodeIds: [] });
+    expect(s.machine?.stopped).toBe(false);
+  });
+});

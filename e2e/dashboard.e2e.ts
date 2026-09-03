@@ -165,4 +165,17 @@ test("live: cluster controls go over the observer socket and the machine answers
   await page.click("#killHalf");
   await expect(page.locator("#activity")).toContainText(/killHalf: \S+/);
   await expect(page.locator("#machine")).toHaveText(/live/);
+  // Stop holds the loop and swaps the button for Start; Start swaps it back (WP6.1).
+  await expect(page.locator("#start")).toBeHidden();
+  await page.click("#stop");
+  await expect(page.locator("#activity")).toContainText("stop");
+  await expect(page.locator("#exec")).toHaveText("idle · stopped by a person");
+  await expect(page.locator("#start")).toBeVisible();
+  await expect(page.locator("#stop")).toBeHidden();
+  await page.reload();
+  await expect(page.locator("#machine")).toHaveText(/live/);
+  await expect(page.locator("#start")).toBeVisible(); // the snapshot carries it
+  await page.click("#start");
+  await expect(page.locator("#stop")).toBeVisible();
+  await expect(page.locator("#exec")).toHaveText("idle");
 });
