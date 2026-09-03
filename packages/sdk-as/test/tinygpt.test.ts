@@ -62,7 +62,9 @@ describe.skipIf(!have)("tiny GPT", () => {
     const vocab = dv.getUint32(8, true);
     const symbols = new Uint8Array(readFileSync(weightsFile).buffer.slice(28, 28 + vocab));
     const idOf = new Map<number, number>();
-    symbols.forEach((b, i) => idOf.set(b, i));
+    symbols.forEach((b, i) => {
+      idOf.set(b, i);
+    });
     let mismatches = 0;
     let compared = 0;
     for (let i = 0; i < refs.length; i++) {
