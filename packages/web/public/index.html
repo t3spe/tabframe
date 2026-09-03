@@ -17,10 +17,13 @@
   <span id="exec" class="pill">idle</span>
   <span id="rate" class="pill">0.0 tasks/s</span>
   <span class="spacer"></span>
+  <button type="button" id="stop" class="danger" title="End the running execution, drop the loop's queued frames, and keep the machine idle until Start">stop</button>
+  <button type="button" id="start" title="Let the loop run again" hidden>start</button>
+  <button type="button" id="resume" title="Lift the pause an editor tab holds" hidden>resume</button>
+  <button type="button" id="freezePanel" class="panel-only" hidden title="Stop this tab from updating so you can read it; updates queue and apply on resume">pause updates</button>
   <button type="button" id="openEditor" title="Open the editor in its own tab; the machine pauses while it is open">editor ↗</button>
 </header>
-<div id="notice" class="notice" hidden></div>
-<div id="machineBanner" class="machine-banner" role="status" hidden></div>
+<div class="status-line"><div id="machineBanner" class="machine-banner" role="status" hidden></div><div id="notice" class="notice" hidden></div></div>
 <main>
   <section class="hero">
     <div id="banner" class="banner" data-state="connecting"><strong id="bannerTitle">Connecting…</strong><span id="bannerBody"></span><span id="bannerHint" class="muted small"></span></div>
@@ -29,13 +32,15 @@
         <span id="execName">No execution</span>
         <span id="execDetail" class="muted"></span>
         <div class="bar"><div id="progressFill"></div></div>
-        <span id="progressText"></span>
+        <span id="progressText">0/0</span>
         <span class="throughput"><canvas id="throughputChart" width="240" height="36" aria-label="tasks done per second over the last minute"></canvas><span id="throughputFigure">0.0 tasks/s · 0 nodes</span></span>
       </div>
-      <div id="failure" class="failure" hidden></div>
-      <ul id="warnings" class="warnings" hidden></ul>
+      <div id="messages" class="messages">
+        <div id="failure" class="failure" hidden></div>
+        <ul id="warnings" class="warnings" hidden></ul>
+        <div id="followUp" class="followup" hidden></div>
+      </div>
       <div id="strip" class="strip" hidden></div>
-      <div id="followUp" class="followup" hidden></div>
       <div class="stage-box">
         <canvas id="tiles" width="1024" height="640" aria-label="the frame being rendered"></canvas>
         <div id="result" class="result" hidden></div>
@@ -46,9 +51,6 @@
       <div id="taskDetail" class="task-detail" hidden></div>
       <div id="counters" class="counters"></div>
       <div class="controls">
-        <button type="button" id="stop" class="danger" title="End the running execution, drop the loop's queued frames, and keep the machine idle until Start">stop</button>
-        <button type="button" id="start" title="Let the loop run again" hidden>start</button>
-        <button type="button" id="resume" title="Lift the pause an editor tab holds" hidden>resume</button>
         <button type="button" id="killHalf" class="danger" title="Close half the live nodes, cloud cores included">kill half</button>
         <button type="button" id="freezeHalf" class="danger" title="Freeze half the live nodes">freeze half</button>
         <button type="button" id="throttleHalf" class="danger" title="Throttle half the live nodes">throttle half</button>

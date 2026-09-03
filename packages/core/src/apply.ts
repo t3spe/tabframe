@@ -385,6 +385,7 @@ function onControl(
       return resumeMachine(ledger, now);
     case "start": {
       ledger.meta.loopStopped = false;
+      ledger.meta.loopYielded = false;
       ledger.meta.loopPausedUntil = 0; // a person asked now, not after a hold or a backoff
       ledger.meta.loopBackoffMs = 0;
       const effects = broadcast(ledger, { t: "controlApplied", op: "start", nodeIds: [] });
@@ -527,6 +528,7 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
     redundancy: ledger.meta.redundancy,
     stopped: ledger.meta.loopStopped,
     paused: ledger.meta.pausedBy !== null,
+    yielded: ledger.meta.loopYielded,
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
   };

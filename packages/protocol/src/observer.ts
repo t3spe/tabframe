@@ -90,6 +90,8 @@ export const machineView = z.object({
   stopped: z.boolean().optional(),
   /** An editor tab holds the machine paused (WP6.4). Absent means no. */
   paused: z.boolean().optional(),
+  /** The loop yielded to a person's launch and waits for Start or ten idle minutes (WP6.8). */
+  yielded: z.boolean().optional(),
   /** Next scheduled rotation, when known. */
   nextRotationAt: millis.nullable(),
   uptimeMs: millis,

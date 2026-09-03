@@ -18,6 +18,7 @@ import {
   type TaskLimits,
 } from "@tabframe/protocol";
 import type { BlobPurpose, Effect, Event } from "../src/events.ts";
+import { YIELD_IDLE_MS } from "../src/executions.ts";
 import { type Harness, harness } from "../src/harness.ts";
 import { seededRng } from "../src/interfaces.ts";
 import { checkInvariants } from "../src/invariants.ts";
@@ -269,6 +270,10 @@ class World implements ChaosWorld {
     return this.ledger.running;
   }
 
+  loopState(): { stopped: boolean; yielded: boolean } {
+    return { stopped: this.ledger.meta.loopStopped, yielded: this.ledger.meta.loopYielded };
+  }
+
   queuedExecutions(): string[] {
     return [...this.ledger.queue];
   }
@@ -304,6 +309,7 @@ class World implements ChaosWorld {
     let phase: "chaos" | "calm" | "drill" = "chaos";
     let framesAtCalm = 0;
     let settleAt = 0;
+    let settleDeadline = 0;
     let drill: FleetDrill | null = null;
     while (this.timeline.step()) {
       if (this.violations.length > 0 && this.opts.keepGoing !== true) break;
@@ -319,6 +325,7 @@ class World implements ChaosWorld {
           phase = "calm";
           framesAtCalm = this.stats.framesDone;
           settleAt = this.now + settleWindow;
+          settleDeadline = settleAt;
           this.note(`calm: ${framesAtCalm} frames done, settle window ${settleWindow} ms`);
           this.chaos.calm();
         }
@@ -329,11 +336,21 @@ class World implements ChaosWorld {
           phase = "drill";
           drill = new FleetDrill(this, this.fleet);
           this.note("drill: starting");
-        } else if (this.now > settleAt) {
-          this.violation(
-            `stalled: no frame completed within ${settleWindow} ms of calm (${this.machineState()})`,
-          );
-          break;
+        } else {
+          // The loop yields to people (design §6.8): after a person's launch ends it launches
+          // nothing until Start or ten idle minutes, and the calm phase owes it that wait.
+          const m = this.ledger.meta;
+          if (m.loopYielded)
+            settleDeadline = Math.max(
+              settleDeadline,
+              m.lastInteractionAt + YIELD_IDLE_MS + settleWindow,
+            );
+          if (this.now > settleDeadline) {
+            this.violation(
+              `stalled: no frame completed within ${settleDeadline - settleAt + settleWindow} ms of calm (${this.machineState()})`,
+            );
+            break;
+          }
         }
       } else if (drill) {
         drill.poll();
@@ -369,6 +386,8 @@ class World implements ChaosWorld {
       `observers ${l.observers.size}`,
       `programs ${l.programs.size}`,
       paused > 0 ? `loop paused ${Math.round(paused)} ms` : "loop ready",
+      `stopped ${l.meta.loopStopped} yielded ${l.meta.loopYielded} pausedBy ${l.meta.pausedBy ?? "none"} idle ${this.now - l.meta.lastInteractionAt} ms`,
+      `executions ${[...l.executions.values()].map((e) => `${e.executionId}${e.human ? "H" : "a"}:${e.status}`).join(" ")}`,
       ...(exec ? this.describeOpen(exec) : []),
     ].join(", ");
   }

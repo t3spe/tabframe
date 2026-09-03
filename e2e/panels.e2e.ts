@@ -242,3 +242,49 @@ test("demo: the ledger and the activity log open full-width in their own tabs, t
   expect(await activity.locator("#activity li").count()).toBe(held);
   await activity.close();
 });
+
+test("demo: the ledger tab shows whole hashes and addresses, and can pause its updates to be read", async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  await page.goto("/?demo=1&speed=12&pause=300&panel=ledger");
+  await expect(page.locator("#machine")).toHaveText("live · demo");
+  await expect(page.locator("#freezePanel")).toBeVisible();
+  // Freeze early: the table stops changing while the demo carries on underneath.
+  await expect(page.locator("#ledger tbody tr[data-hash]").first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.click("#freezePanel");
+  await expect(page.locator("#freezePanel")).toHaveAttribute("data-frozen", "1");
+  const frozenRows = await page.locator("#ledger tbody tr[data-hash]").count();
+  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await expect(page.locator("#freezePanel")).toContainText(/resume updates \(\d+ held\)/);
+  expect(await page.locator("#ledger tbody tr[data-hash]").count()).toBe(frozenRows);
+  await page.click("#freezePanel");
+  await expect(page.locator("#ledger tbody tr[data-hash]")).toHaveCount(300);
+  // Nothing is truncated: the whole hash, the whole address.
+  const hash =
+    (await page.locator("#ledger tbody tr[data-hash] td.hash").first().textContent()) ?? "";
+  expect(hash).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test("demo: a file's name opens the file in its own tab, rendered, with the raw bytes a link away", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(150_000);
+  await page.goto("/?demo=1&speed=12&program=wordcount&hold=1&panel=files");
+  await waitHeld(page);
+  const link = page.locator('#files li[data-path="/out/2/0"] a.open-file');
+  await expect(link).toHaveAttribute("href", /panel=files/);
+  await expect(link).toHaveAttribute("href", /path=%2Fout%2F2%2F0/);
+  const opened = context.waitForEvent("page");
+  await link.click();
+  const viewer = await opened;
+  await expect(viewer).toHaveURL(/panel=files/);
+  await waitHeld(viewer);
+  await expect(viewer.locator("#filePreview")).toBeVisible();
+  await expect(viewer.locator("#filePreview .bars .bar-row")).toHaveCount(25, { timeout: 30_000 });
+  await expect(viewer.locator("#filePreview")).toContainText("/out/2/0");
+  await viewer.close();
+});

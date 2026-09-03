@@ -375,6 +375,15 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat(
     `tiny GPT wrote: ${JSON.stringify(((await page.locator("#result .text-view").textContent()) ?? "").slice(0, 80))}`,
   );
+  // The loop yielded to the person's launches and waits for Start (WP6.8): the text stays on the
+  // stage until someone asks for the loop back.
+  await expect(page.locator("#exec")).toContainText("loop yielded to you", { timeout: 30_000 });
+  await expect(page.locator("#start")).toBeVisible();
+  await page.waitForTimeout(5_000);
+  await expect(page.locator("#result .text-view")).toContainText("Call me Ishmael");
+  await page.click("#start");
+  await expect(page.locator("#exec")).toContainText("mandelbrot · ", { timeout: 60_000 });
+  beat("loop handed back with Start");
 
   // ---- 10. a rotation: banner, reconnect, the render continues --------------------------------------
   await beatAndMeasure("rotation");

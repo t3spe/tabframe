@@ -168,7 +168,7 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   // The loop's pause holds its queued continuations too, not only new launches: after a person's
   // launch ends, the follow-up the previous frame left in the queue would otherwise take the
   // stage at once (WP4.4: word count's bars lasted a tick). A person's own launch never waits.
-  if (!queued.human && (ledger.meta.loopStopped || now < (ledger.meta.loopPausedUntil ?? 0)))
+  if (!queued.human && (!loopMayRun(ledger, now) || now < (ledger.meta.loopPausedUntil ?? 0)))
     return [];
   ledger.queue.shift();
   const exec = queued;
@@ -504,10 +504,12 @@ function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Ef
       followUp: exec.followUp,
     }),
   );
-  // Only the machine's default loop continues on its own (D19), and not after a Stop (WP6.1).
+  // Only the machine's default loop continues on its own (D19), and not after a Stop or while it
+  // has yielded to a person (WP6.1, WP6.8).
   if (
     !exec.human &&
     !ledger.meta.loopStopped &&
+    !ledger.meta.loopYielded &&
     exec.followUp &&
     ledger.config.defaultLoop &&
     exec.bundle === ledger.config.defaultLoop.bundle &&
@@ -584,6 +586,7 @@ export function cancelExecution(
     ledger.queue = ledger.queue.filter((id) => id !== exec.executionId);
     exec.status = "cancelled";
     exec.endedAt = now;
+    holdResult(ledger, exec, now);
     effects.push(
       ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
     );
@@ -595,6 +598,7 @@ export function cancelExecution(
   exec.failure = reason;
   exec.endedAt = now;
   ledger.running = null;
+  holdResult(ledger, exec, now);
   effects.push(
     ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
   );
@@ -614,25 +618,38 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 }
 
 /**
- * A person's result stays on the screen: the loop waits this long after a human launch ends
- * before it takes the stage back (WP4.4: word count's bars were gone before anyone saw them).
+ * The loop yields to people (WP6.8): once a person's launch has ended, the loop launches nothing
+ * until Start is pressed or nobody has touched the page for this long. (WP4.4's twenty-second hold
+ * was not enough: the loop took the stage back from whoever was reading their result.)
  */
-export const HUMAN_RESULT_HOLD_MS = 20_000;
+export const YIELD_IDLE_MS = 10 * 60 * 1000;
 
-function holdResult(ledger: Ledger, exec: ExecutionRecord, now: number): void {
+/**
+ * The loop yields to people (design §6.7, WP6.8): once a person's launch has ended — done, failed,
+ * or killed — the loop launches nothing, neither a new frame nor a queued continuation, until
+ * Start is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the
+ * stage for as long as the person is around.
+ */
+function holdResult(ledger: Ledger, exec: ExecutionRecord, _now: number): void {
   if (!exec.human) return;
-  ledger.meta.loopPausedUntil = Math.max(
-    ledger.meta.loopPausedUntil ?? 0,
-    now + HUMAN_RESULT_HOLD_MS,
-  );
+  ledger.meta.loopYielded = true;
+}
+
+/** The loop's gate for automatic work: stopped, yielded and someone still around, or paused. */
+export function loopMayRun(ledger: Ledger, now: number): boolean {
+  if (ledger.meta.loopStopped || ledger.meta.pausedBy !== null) return false;
+  if (ledger.meta.loopYielded) {
+    if (now - ledger.meta.lastInteractionAt < YIELD_IDLE_MS) return false;
+    ledger.meta.loopYielded = false; // nobody has touched the page for a while: the loop is back
+  }
+  return true;
 }
 
 /** The default loop keeps the machine busy while someone is watching (D4, §6.8). */
 export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   const loop = ledger.config.defaultLoop;
   if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
-  if (ledger.meta.loopStopped) return []; // a person pressed Stop (WP6.1)
-  if (ledger.meta.pausedBy !== null) return []; // an editor tab holds a pause (WP6.4)
+  if (!loopMayRun(ledger, now)) return []; // stopped, yielded to a person, or paused
   if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
   if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
