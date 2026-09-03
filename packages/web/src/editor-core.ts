@@ -12,7 +12,16 @@ import {
 } from "@tabframe/protocol";
 import { validateModuleBytes } from "@tabframe/sandbox/validate";
 import { sha256Hex } from "@tabframe/store/hash";
-import { MANDELBROT_MANIFEST, MANDELBROT_SOURCE, SDK_FILES } from "./program-sources.generated.ts";
+import {
+  GUIDE_MARKDOWN,
+  HELLO_MANIFEST,
+  HELLO_SOURCE,
+  MANDELBROT_MANIFEST,
+  MANDELBROT_SOURCE,
+  SDK_FILES,
+  WORDCOUNT_MANIFEST,
+  WORDCOUNT_SOURCE,
+} from "./program-sources.generated.ts";
 
 /** The compiler flags every program uses; must equal the SDK build's (a test pins it). */
 export const ASC_FLAGS: readonly string[] = [
@@ -230,4 +239,140 @@ export function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---- examples and the guide (WP6.6) ------------------------------------------------------------
+
+/** A program the editor can load: its source, its manifest, and what the reader should know. */
+export interface Example {
+  key: "mandelbrot" | "wordcount" | "hello";
+  label: string;
+  source: string;
+  manifest: ProgramManifest;
+  /** One line under the select: what it does, and what launching it from here needs. */
+  note: string;
+}
+
+export function examples(): Example[] {
+  return [
+    {
+      key: "mandelbrot",
+      label: "Mandelbrot (tiles, one stage, a follow-up)",
+      source: MANDELBROT_SOURCE,
+      manifest: programManifest.parse(JSON.parse(MANDELBROT_MANIFEST)),
+      note: "The machine's own program: 640 tiles a frame, RGBA out, a follow-up to the next preset. Edit, compile, launch.",
+    },
+    {
+      key: "hello",
+      label: "Hello, text (one task)",
+      source: HELLO_SOURCE,
+      manifest: programManifest.parse(JSON.parse(HELLO_MANIFEST)),
+      note: "The smallest program: one stage, one task, a line of text in the text view. Change `who` in the params.",
+    },
+    {
+      key: "wordcount",
+      label: "Word count (three stages over a file)",
+      source: WORDCOUNT_SOURCE,
+      manifest: programManifest.parse(JSON.parse(WORDCOUNT_MANIFEST)),
+      note: "Map, reduce, merge over /in/corpus.txt. Here to read: a launch from this editor ships no inputs, so it would find no corpus — the shipped bundle carries it.",
+    },
+  ];
+}
+
+/** The guide's Markdown (the SDK's README), so a test can check it is the file on disk. */
+export function guideMarkdown(): string {
+  return GUIDE_MARKDOWN;
+}
+
+/**
+ * Enough Markdown for the guide: headings, paragraphs, fenced code, bullet lists, inline code,
+ * and bold. Everything is text nodes — nothing from the README is interpreted as HTML.
+ */
+export function renderGuide(markdown: string, doc: Document = document): DocumentFragment {
+  const frag = doc.createDocumentFragment();
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  const inline = (text: string, into: HTMLElement): void => {
+    // `code`, **bold**, and the rest, in order.
+    const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+    let last = 0;
+    for (const m of text.matchAll(re)) {
+      const at = m.index ?? 0;
+      if (at > last) into.append(text.slice(last, at));
+      const tok = m[0];
+      if (tok.startsWith("`")) {
+        const code = doc.createElement("code");
+        code.textContent = tok.slice(1, -1);
+        into.append(code);
+      } else {
+        const b = doc.createElement("b");
+        b.textContent = tok.slice(2, -2);
+        into.append(b);
+      }
+      last = at + tok.length;
+    }
+    if (last < text.length) into.append(text.slice(last));
+  };
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+    if (line.startsWith("```")) {
+      const pre = doc.createElement("pre");
+      const code = doc.createElement("code");
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !(lines[i] ?? "").startsWith("```")) body.push(lines[i++] ?? "");
+      i++; // the closing fence
+      code.textContent = body.join("\n");
+      pre.append(code);
+      frag.append(pre);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const level = Math.min(6, (heading[1]?.length ?? 1) + 1); // the README's h1 is the page's h2
+      const h = doc.createElement(`h${level}`);
+      inline(heading[2] ?? "", h);
+      frag.append(h);
+      i++;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const ul = doc.createElement("ul");
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i] ?? "")) {
+        const item: string[] = [(lines[i] ?? "").replace(/^\s*[-*]\s+/, "")];
+        i++;
+        // A wrapped bullet continues on indented lines.
+        while (
+          i < lines.length &&
+          /^\s{2,}\S/.test(lines[i] ?? "") &&
+          !/^\s*[-*]\s+/.test(lines[i] ?? "")
+        ) {
+          item.push((lines[i] ?? "").trim());
+          i++;
+        }
+        const li = doc.createElement("li");
+        inline(item.join(" "), li);
+        ul.append(li);
+      }
+      frag.append(ul);
+      continue;
+    }
+    const para: string[] = [];
+    while (
+      i < lines.length &&
+      (lines[i] ?? "").trim() !== "" &&
+      !/^(#{1,6}\s|```|\s*[-*]\s+)/.test(lines[i] ?? "")
+    ) {
+      para.push((lines[i] ?? "").trim());
+      i++;
+    }
+    const p = doc.createElement("p");
+    inline(para.join(" "), p);
+    frag.append(p);
+  }
+  return frag;
 }

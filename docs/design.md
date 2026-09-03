@@ -838,6 +838,11 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.6).** The editor explains itself (§5.6): the SDK's README is embedded at
+  build time and rendered as a guide under the source, with the machine's limits stated in
+  numbers; three examples load from a select — Mandelbrot, a new `hello` (one task, a line of
+  text; the SDK's tutorial example), and word count (to read; the editor ships no inputs).
+
 - **2026-09-03 (WP6.2).** Nothing on the dashboard changes size as the machine runs (§8.3):
   hidden regions keep their box, lists scroll inside fixed heights, text that can grow is cut, the
   picture's box is fixed, the connection banner overlays the stage. Measured by the demo suite at

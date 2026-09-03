@@ -1130,3 +1130,37 @@ header .pill {
   display: block !important;
   visibility: hidden;
 }
+/* The editor's guide (WP6.6): the SDK's README, rendered beside the source. */
+.guide {
+  margin-top: 1rem;
+  max-width: 80ch;
+}
+.guide h2 {
+  font-size: 0.85rem;
+}
+.guide h3 {
+  font-size: 0.95rem;
+  color: var(--fg);
+  margin: 1rem 0 0.3rem;
+}
+.guide p,
+.guide li {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.guide pre {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.guide code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.guide b {
+  color: var(--fg);
+}

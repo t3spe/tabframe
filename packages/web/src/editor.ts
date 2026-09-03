@@ -12,14 +12,18 @@ import {
   buildManifest,
   type CompileResult,
   type Diagnostic,
+  examples,
   fmtBytes,
   formatDiagnostic,
+  guideMarkdown,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
   MAX_MODULE_BYTES,
+  MEMORY_PAGES_MAX,
   type ModuleInfo,
   parseParams,
+  renderGuide,
   shippedManifest,
 } from "./editor-core.ts";
 import type { ClusterState } from "./state.ts";
@@ -62,6 +66,8 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     compile: $<HTMLButtonElement>(root, "#compile"),
     launch: $<HTMLButtonElement>(root, "#launch"),
     reset: $<HTMLButtonElement>(root, "#resetSource"),
+    example: root.querySelector<HTMLSelectElement>("#example"),
+    exampleNote: root.querySelector<HTMLSpanElement>("#exampleNote"),
     note: $<HTMLSpanElement>(root, "#compileNote"),
     diagnostics: $<HTMLUListElement>(root, "#diagnostics"),
     name: $<HTMLInputElement>(root, "#programName"),
@@ -384,14 +390,46 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   // ---- wiring -------------------------------------------------------------------------------------
   els.compile.onclick = () => void compile();
   els.launch.onclick = () => void launch();
-  els.reset.onclick = () => {
-    els.source.value = MANDELBROT_SOURCE;
-    els.params.value = JSON.stringify(shipped.defaultParams);
-    els.name.value = shipped.name;
-    els.view.value = shipped.view;
+  // The examples (WP6.6): Mandelbrot as before, and the two others to read and try. Reset goes
+  // back to whichever is selected.
+  const all = examples();
+  let current = all[0] as (typeof all)[0];
+  const loadExample = (key: string, say: boolean): void => {
+    const ex = all.find((e) => e.key === key);
+    if (!ex) return;
+    current = ex;
+    els.source.value = ex.source;
+    els.params.value = JSON.stringify(ex.manifest.defaultParams);
+    els.name.value = ex.manifest.name;
+    els.view.value = ex.manifest.view;
+    els.description.value = ex.manifest.description ?? "";
+    if (els.exampleNote) els.exampleNote.textContent = ex.note;
     renderDiagnostics([]);
-    info(els.note, "source reset to the shipped program");
+    if (say) info(els.note, `loaded ${ex.manifest.name}`);
   };
+  if (els.example) {
+    els.example.replaceChildren(
+      ...all.map((ex) => {
+        const o = document.createElement("option");
+        o.value = ex.key;
+        o.textContent = ex.label;
+        return o;
+      }),
+    );
+    els.example.onchange = () => loadExample(els.example?.value ?? "mandelbrot", true);
+    if (els.exampleNote) els.exampleNote.textContent = current.note;
+  }
+  els.reset.onclick = () => {
+    loadExample(current.key, false);
+    info(els.note, `source reset to ${current.manifest.name}`);
+  };
+  // The guide: the SDK's README, and the numbers this machine holds a program to.
+  const guideBody = root.ownerDocument.querySelector<HTMLDivElement>("#guideBody");
+  const guideLimits = root.ownerDocument.querySelector<HTMLParagraphElement>("#guideLimits");
+  if (guideBody && guideBody.childElementCount === 0)
+    guideBody.append(renderGuide(guideMarkdown()));
+  if (guideLimits)
+    guideLimits.textContent = `Limits on this machine: a module declares a memory maximum of at most ${MEMORY_PAGES_MAX} pages (${(MEMORY_PAGES_MAX * 64) / 1024} MB) and is at most ${MAX_MODULE_BYTES / (1024 * 1024)} MB; a task's inline input is at most 16 KB; an output at most 16 MB, a task's writes at most 256 files and 16 MB, its log 64 KB; a task that runs past its deadline is killed and given to another core. The views: tiles (RGBA bytes placed on a canvas), bars (the bars() payload), text (UTF-8).`;
   els.source.onkeydown = (e) => {
     // Tab inserts two spaces instead of leaving the field.
     if (e.key === "Tab") {

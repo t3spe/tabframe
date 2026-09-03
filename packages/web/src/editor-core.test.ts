@@ -12,8 +12,10 @@ import {
   buildBundle,
   buildManifest,
   ENTRY,
+  examples,
   fmtBytes,
   formatDiagnostic,
+  guideMarkdown,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
@@ -205,5 +207,28 @@ describe("formatting", () => {
     expect(fmtBytes(512)).toBe("512 B");
     expect(fmtBytes(18746)).toBe("18.3 KB");
     expect(fmtBytes(3 * 1024 * 1024)).toBe("3.0 MB");
+  });
+});
+
+describe("examples and the guide (WP6.6)", () => {
+  test("three examples, each with a parsed manifest, a note, and distinct sources", () => {
+    const all = examples();
+    expect(all.map((e) => e.key)).toEqual(["mandelbrot", "hello", "wordcount"]);
+    for (const e of all) {
+      expect(e.manifest.name.length).toBeGreaterThan(0);
+      expect(["tiles", "bars", "text"]).toContain(e.manifest.view);
+      expect(e.source).toContain("export function plan");
+      expect(e.source).toContain("export function run");
+      expect(e.note.length).toBeGreaterThan(20);
+    }
+    expect(new Set(all.map((e) => e.source)).size).toBe(3);
+    expect(all[1]?.manifest.view).toBe("text");
+    expect(all[2]?.note).toContain("no inputs");
+  });
+  test("the guide is the SDK's README, embedded at build time", () => {
+    const md = guideMarkdown();
+    expect(md).toContain("# @tabframe/sdk-as");
+    expect(md).toContain("## Writing a program");
+    expect(md).toContain("fs.read");
   });
 });
