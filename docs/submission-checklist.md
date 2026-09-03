@@ -20,8 +20,8 @@ rest the agent has done or re-runs at the very end.
 
 ## The flip and after
 
-- [ ] **Mircea:** confirm the real budget's notification arrived (the one-cent `tabframe-alarm-test`
-      budget can go once it has: `aws budgets delete-budget --account-id … --budget-name tabframe-alarm-test`).
+- [x] The budget notification path is confirmed (the one-cent test budget's email arrived on
+      2026-09-03 at $2.55 month-to-date; the test budget is deleted, the real one stays).
 - [x] **Mircea (decided 2026-09-02):** the machine **stays up** for the review period — hourly
       rotation while awake, two cores while anyone watches, asleep otherwise; the README says so.
       `mise run down` remains the way to turn it off.
