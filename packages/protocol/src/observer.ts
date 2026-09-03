@@ -35,6 +35,12 @@ export const resumeAll = z.object({ t: z.literal("resumeAll"), ...envelope });
 export const stop = z.object({ t: z.literal("stop"), ...envelope });
 /** Start: let the loop run again after a stop. */
 export const start = z.object({ t: z.literal("start"), ...envelope });
+/**
+ * Pause (WP6.4): nothing new is assigned or started while the sender's socket lives; in-flight
+ * tasks finish. Resume, or the sender going away, lifts it.
+ */
+export const pause = z.object({ t: z.literal("pause"), ...envelope });
+export const resume = z.object({ t: z.literal("resume"), ...envelope });
 export const restart = z.object({ t: z.literal("restart"), ...envelope });
 export const skip = z.object({ t: z.literal("skip"), ...envelope });
 export const killExecution = z.object({ t: z.literal("killExecution"), ...envelope, executionId });
@@ -65,6 +71,8 @@ export const observerToControlPlane = z.discriminatedUnion("t", [
   resumeAll,
   stop,
   start,
+  pause,
+  resume,
   restart,
   skip,
   killExecution,
@@ -80,6 +88,8 @@ export const machineView = z.object({
   redundancy: z.boolean(),
   /** A person pressed Stop: the loop waits for Start (WP6.1). Absent means no. */
   stopped: z.boolean().optional(),
+  /** An editor tab holds the machine paused (WP6.4). Absent means no. */
+  paused: z.boolean().optional(),
   /** Next scheduled rotation, when known. */
   nextRotationAt: millis.nullable(),
   uptimeMs: millis,
@@ -254,6 +264,8 @@ export const controlApplied = z.object({
     "setRedundancy",
     "stop",
     "start",
+    "pause",
+    "resume",
   ]),
   nodeIds: z.array(nodeId).default([]),
 });

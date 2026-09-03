@@ -1046,5 +1046,10 @@ describe("stop and start (WP6.1)", () => {
     expect(s.activity.at(-1)?.text).toBe("stop");
     s = applyMessage(s, { t: "controlApplied", ...env, seq: 3, op: "start", nodeIds: [] });
     expect(s.machine?.stopped).toBe(false);
+    // Pause and resume the same way (WP6.4).
+    s = applyMessage(s, { t: "controlApplied", ...env, seq: 4, op: "pause", nodeIds: [] });
+    expect(s.machine?.paused).toBe(true);
+    s = applyMessage(s, { t: "controlApplied", ...env, seq: 5, op: "resume", nodeIds: [] });
+    expect(s.machine?.paused).toBe(false);
   });
 });

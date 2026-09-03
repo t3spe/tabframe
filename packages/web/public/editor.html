@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabframe · editor</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  body { padding: 1rem 1.25rem; }
+  .editor { display: block; }
+  .editor-page-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .8rem; }
+  .editor-page-head h1 { margin: 0; font-size: 1.2rem; }
+</style>
+</head>
+<body>
+<div class="editor-page-head">
+  <h1>Tabframe editor</h1>
+  <span id="machine" class="pill">connecting</span>
+  <span id="pauseState" class="muted">one of the endpoint's sixteen connections; the dashboard tab keeps its own</span>
+</div>
+  <section id="editor" class="editor">
+    <div class="editor-head">
+      <h2>Editor</h2>
+      <span id="editorStatus" class="pill">compiler: idle</span>
+      <span class="muted">Edit the Mandelbrot program, compile it in this tab, and launch it on the machine — or drop a <code>.wasm</code> built any other way. While this tab is open the machine is paused: in-flight tasks finish, nothing new starts. Launching or closing resumes it.</span>
+      <button type="button" id="closeEditor" style="margin-left:auto" title="Resume the machine and close this tab">close</button>
+    </div>
+    <div class="editor-grid">
+      <div>
+        <textarea id="source" spellcheck="false" wrap="off" aria-label="program source"></textarea>
+        <div class="controls" style="margin-top:.5rem">
+          <button type="button" id="compile">compile</button>
+          <button type="button" id="launch" disabled title="Upload the module and its manifest as a bundle, then launch it">launch</button>
+          <button type="button" id="resetSource">reset source</button>
+          <span id="compileNote" class="muted" style="font-family:var(--mono); font-size:12px"></span>
+        </div>
+        <ul id="diagnostics" class="plain"></ul>
+      </div>
+      <div class="editor-side">
+        <label>name <input id="programName" maxlength="64"></label>
+        <label>view <select id="programView"><option value="tiles">tiles</option><option value="bars">bars</option><option value="text">text</option></select></label>
+        <label>description <input id="programDescription" maxlength="512"></label>
+        <label>params (JSON object) <textarea id="programParams" rows="3" spellcheck="false"></textarea></label>
+        <div id="editorDrop" class="drop">drop a <code>.wasm</code> here, or <label class="link">choose one<input type="file" id="wasmFile" accept=".wasm,application/wasm" hidden></label></div>
+        <div id="moduleInfo" class="muted">no module yet</div>
+        <div id="launchInfo" class="muted"></div>
+      </div>
+    </div>
+  </section>
+<script type="module" src="/editor-page.js"></script>
+</body>
+</html>

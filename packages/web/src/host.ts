@@ -8,7 +8,6 @@ import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
 import { connectionCopy, fmtCountdown, machineCopy, ROTATING_DETAIL } from "./banners.ts";
 import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
-import type { EditorHandle } from "./editor.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
 import { gridIndexAt, gridLayout, mountPanels, type Panels } from "./panels.ts";
 import {
@@ -129,11 +128,11 @@ const els = {
   redundancy: $<HTMLInputElement>("#redundancy"),
   tileStats: $<HTMLSpanElement>("#tileStats"),
   openEditor: $<HTMLButtonElement>("#openEditor"),
-  editor: $<HTMLElement>("#editor"),
 };
 const controlButtons: [HTMLButtonElement, ControlRequest][] = [
   [$<HTMLButtonElement>("#stop"), { t: "stop" }],
   [$<HTMLButtonElement>("#start"), { t: "start" }],
+  [$<HTMLButtonElement>("#resume"), { t: "resume" }],
   [$<HTMLButtonElement>("#killHalf"), { t: "killHalf" }],
   [$<HTMLButtonElement>("#freezeHalf"), { t: "freezeHalf" }],
   [$<HTMLButtonElement>("#throttleHalf"), { t: "throttleHalf" }],
@@ -405,11 +404,15 @@ function render(state: ClusterState): void {
   els.seq.textContent = `seq ${state.seq}`;
   els.counts.textContent = `${state.nodes.size} nodes · ${hostCount(state)} hosts`;
   const stopped = state.machine?.stopped === true;
+  const paused = state.machine?.paused === true;
   els.exec.textContent = exec
-    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" ? " · stopped" : ""}`
+    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" ? " · stopped" : ""}${paused ? " · paused (editor open)" : ""}`
     : stopped
       ? "idle · stopped by a person"
-      : "idle";
+      : paused
+        ? "idle · paused (editor open)"
+        : "idle";
+  $<HTMLButtonElement>("#resume").hidden = !paused;
   els.exec.className = `pill ${exec?.phase === "failed" ? "off" : exec ? "live" : ""}`;
   // One of the two shows: Stop while the loop may run, Start once a person stopped it.
   $<HTMLButtonElement>("#stop").hidden = stopped;
@@ -782,41 +785,14 @@ const panels: Panels = mountPanels(document, {
   now: clockNow,
 });
 
-// ---- the editor (design §5.6), loaded only when asked for ------------------------------------
+// ---- the editor (design §5.6) lives in its own tab since WP6.4 ------------------------------
+// The tab holds the machine paused while it is open; launching or closing resumes it. A named
+// target reuses the tab if it is already open.
 
-let editor: EditorHandle | null = null;
 let storeBase: string | null = null;
 
-async function openEditor(): Promise<EditorHandle> {
-  els.editor.hidden = false;
-  if (editor) {
-    els.editor.scrollIntoView({ behavior: "smooth", block: "start" });
-    return editor;
-  }
-  els.openEditor.disabled = true;
-  // A runtime URL keeps editor.js its own bundle: the dashboard never loads it unasked.
-  const mod = (await import(
-    new URL("./editor.js", import.meta.url).href
-  )) as typeof import("./editor.ts");
-  editor = mod.mountEditor(els.editor, {
-    connected: () => client?.connected ?? false,
-    storeBase: () => storeBase,
-    presign: (items) =>
-      client ? client.presign(items) : Promise.reject(new Error("not connected")),
-    launch: (bundle, launchParams) =>
-      client?.send({ t: "launch", bundle, params: launchParams, inherit: null }) ?? false,
-    subscribe: (listener) => {
-      clusterListeners.add(listener);
-      return () => clusterListeners.delete(listener);
-    },
-  });
-  els.openEditor.disabled = false;
-  els.editor.addEventListener("editor-closed", () => {
-    els.openEditor.disabled = false;
-  });
-  els.editor.scrollIntoView({ behavior: "smooth", block: "start" });
-  expose();
-  return editor;
+function openEditor(): Window | null {
+  return window.open("/editor.html", "tabframe-editor");
 }
 els.openEditor.onclick = () => void openEditor();
 
@@ -890,9 +866,6 @@ function expose(): void {
     panels,
     get state() {
       return latest;
-    },
-    get editor() {
-      return editor;
     },
     openEditor,
   };

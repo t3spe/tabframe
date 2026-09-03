@@ -231,29 +231,37 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 8. the editor: change the palette cycle, compile in the browser, launch ---------------------
   beat("editor");
+  // The editor opens in its own tab and holds the machine paused while it lives (WP6.4).
+  const editorOpened = context.waitForEvent("page");
   await page.click("#openEditor");
-  await expect(page.locator("#editor")).toBeVisible();
-  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  const source = await page.locator("#source").inputValue();
+  const editor = await editorOpened;
+  await expect(editor.locator("#machine")).toHaveText(/live/, { timeout: 60_000 });
+  await expect(page.locator("#exec")).toContainText("paused (editor open)", { timeout: 30_000 });
+  await expect(page.locator("#resume")).toBeVisible();
+  beat("paused while the editor is open");
+  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  const source = await editor.locator("#source").inputValue();
   expect(source).toContain("const CYCLE: f64 = 48.0;");
-  await page
+  await editor
     .locator("#source")
     .fill(source.replace("const CYCLE: f64 = 48.0;", "const CYCLE: f64 = 24.0;"));
-  await page.click("#compile");
-  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+  await editor.click("#compile");
+  await expect(editor.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
     timeout: 180_000,
   });
-  await expect(page.locator("#diagnostics li")).toHaveCount(0);
-  await expect(page.locator("#launch")).toBeEnabled();
+  await expect(editor.locator("#diagnostics li")).toHaveCount(0);
+  await expect(editor.locator("#launch")).toBeEnabled();
   // Its own name: the shipped one is reserved for the image (WP4.9).
-  await page.locator("#programName").fill("mandelbrot-palette");
-  await page.locator("#programView").selectOption("tiles");
-  await page.locator("#programParams").fill('{"palette":"fire","preset":0}');
-  await page.click("#launch");
-  await expect(page.locator("#launchInfo")).toContainText(/queued as|running as/, {
+  await editor.locator("#programName").fill("mandelbrot-palette");
+  await editor.locator("#programView").selectOption("tiles");
+  await editor.locator("#programParams").fill('{"palette":"fire","preset":0}');
+  await editor.click("#launch");
+  await expect(editor.locator("#launchInfo")).toContainText(/queued as|running as/, {
     timeout: 60_000,
   });
-  await page.click("#closeEditor");
+  // The launch lifted the pause; closing the tab would have too.
+  await expect(page.locator("#exec")).not.toContainText("paused", { timeout: 30_000 });
+  await editor.close();
   // A person's launch goes ahead of the loop's continuations and runs next.
   await expect(page.locator("#exec")).toContainText("mandelbrot-palette", { timeout: 240_000 });
   await expect.poll(() => counter(page, "done"), { timeout: 180_000 }).toBeGreaterThan(50);

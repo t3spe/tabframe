@@ -838,6 +838,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.4).** The editor is a page of its own, opened by the dashboard in a new tab
+  (§3, §5.6), and it holds the machine paused while it lives: `pause`/`resume` controls (§6.7),
+  `meta.pausedBy` naming the holder's socket; nothing new is assigned or started while it is set,
+  in-flight tasks finish, and the control plane resumes by itself when the holder's socket goes
+  away, on a restore, and on adoption. An execution ended by Stop is shown as stopped, not failed.
+
 - **2026-09-02 (WP6.1).** Stop and Start from the page (§6.7): Stop ends the running execution,
   drops the loop's queued continuations (a person's queued launches stay), and holds the loop —
   `meta.loopStopped`, carried by snapshots and rotations — until Start, which also clears any hold

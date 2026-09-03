@@ -60,6 +60,7 @@ export function deserializeLedger(json: string): Ledger {
       loopBackoffMs: s.meta.loopBackoffMs ?? 0,
       loopPausedUntil: s.meta.loopPausedUntil ?? 0,
       loopStopped: s.meta.loopStopped ?? false,
+      pausedBy: null, // whoever held a pause is not on this socket set
     },
     config: s.config,
     conns: new Map(),
@@ -97,6 +98,7 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
   ledger.nodeByConn.clear();
   ledger.conns.clear();
   ledger.observers.clear();
+  ledger.meta.pausedBy = null;
   ledger.meta.generation = generation;
   ledger.meta.startedAt = now;
   // Whatever the source ledger was doing, this one is the active control plane now.

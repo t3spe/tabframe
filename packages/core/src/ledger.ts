@@ -216,6 +216,12 @@ export interface Meta {
   loopPausedUntil: number;
   /** A person pressed Stop (WP6.1): the loop launches nothing until Start; survives a rotation. */
   loopStopped: boolean;
+  /**
+   * The observer connection holding the machine paused (WP6.4): nothing is assigned or started
+   * while it is set; in-flight tasks finish. Cleared by resume, by the holder's socket going away,
+   * and by adoption (a rotation) — the holder's socket is on the previous generation.
+   */
+  pausedBy: string | null;
 }
 
 export interface LedgerConfig {
@@ -297,6 +303,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       loopBackoffMs: 0,
       loopPausedUntil: 0,
       loopStopped: false,
+      pausedBy: null,
     },
     config: {
       defaultLoop: config.defaultLoop ?? null,
@@ -371,6 +378,7 @@ export function executionView(e: ExecutionRecord): ExecutionView {
     program: e.bundle,
     programName: e.manifest.name,
     status: e.status,
+    failure: e.failure,
     human: e.human,
     view: e.manifest.view,
     params: e.params,

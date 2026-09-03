@@ -113,22 +113,22 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
 
   // The Playwright control plane seeds nothing, so the frame is launched the way a visitor would:
   // drop the built module into the editor and launch it with the golden parameters.
-  await page.click("#openEditor");
-  await expect(page.locator("#editor")).toBeVisible();
-  // The compiler loads lazily; the drop door is live once the editor says it is ready.
-  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  await page.locator("#wasmFile").setInputFiles(wasmPath);
-  await expect(page.locator("#launch")).toBeEnabled({ timeout: 30_000 });
+  const editor = await page.context().newPage();
+  await editor.goto("/editor.html");
+  // The drop door is live once the editor says the compiler is ready.
+  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  await editor.locator("#wasmFile").setInputFiles(wasmPath);
+  await expect(editor.locator("#launch")).toBeEnabled({ timeout: 30_000 });
   // A name of its own: the suites share one control plane, and two programs called the same
   // thing would make the panels suite's launch button ambiguous.
-  await page.locator("#programName").fill("mandelbrot-money-shot");
-  await page.locator("#programView").selectOption("tiles");
-  await page.locator("#programParams").fill(JSON.stringify(goldens.params));
-  await page.click("#launch");
-  await expect(page.locator("#launchInfo")).toContainText(/queued as|running as/, {
+  await editor.locator("#programName").fill("mandelbrot-money-shot");
+  await editor.locator("#programView").selectOption("tiles");
+  await editor.locator("#programParams").fill(JSON.stringify(goldens.params));
+  await editor.click("#launch");
+  await expect(editor.locator("#launchInfo")).toContainText(/queued as|running as/, {
     timeout: 60_000,
   });
-  await page.click("#closeEditor");
+  await editor.close(); // the tab's pause (lifted by the launch) is gone with it
 
   // Wait until the frame is well under way, then kill half.
   await expect

@@ -238,6 +238,8 @@ describe("v1 observer messages", () => {
       { t: "programRetired", ...ev, program: H, name: "mandelbrot" },
       { t: "controlApplied", ...ev, op: "stop", nodeIds: [] },
       { t: "controlApplied", ...ev, op: "start", nodeIds: [] },
+      { t: "controlApplied", ...ev, op: "pause", nodeIds: [] },
+      { t: "controlApplied", ...ev, op: "resume", nodeIds: [] },
       { t: "controlPlaneRotating", ...ev, next: 3, reconnectAfterMs: 2500 },
       { t: "machineSleeping", ...ev, reason: "no observers for 10 minutes" },
       { t: "budget", ...ev, executionId: "e1", computeMsUsed: 10, computeMsCap: 100 },

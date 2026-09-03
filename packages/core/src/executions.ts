@@ -157,7 +157,7 @@ function resolveInherit(ledger: Ledger, req: LaunchRequest): ExecutionRecord | n
 
 /** Start the next queued execution when nothing is running; the first act is a plan task. */
 export function maybeStart(ledger: Ledger, now: number): Effect[] {
-  if (ledger.running) return [];
+  if (ledger.running || ledger.meta.pausedBy !== null) return [];
   const nextId = ledger.queue[0];
   if (nextId === undefined) return [];
   const queued = ledger.executions.get(nextId);
@@ -632,6 +632,7 @@ export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   const loop = ledger.config.defaultLoop;
   if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
   if (ledger.meta.loopStopped) return []; // a person pressed Stop (WP6.1)
+  if (ledger.meta.pausedBy !== null) return []; // an editor tab holds a pause (WP6.4)
   if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
   if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];

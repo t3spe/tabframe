@@ -101,7 +101,8 @@ export const TASK_COLOR_LABELS: ReadonlyArray<[TaskColor, string]> = [
   ["failed", "failed"],
 ];
 
-export type Phase = "planning" | "running" | "folding" | "done" | "failed";
+/** `stopped`: ended by a person's Stop (WP6.1) — over, but not a failure. */
+export type Phase = "planning" | "running" | "folding" | "done" | "failed" | "stopped";
 
 export type StageStatus = "running" | "folding" | "done" | "failed";
 
@@ -366,11 +367,12 @@ export function applyMessage(
       // one gets the banner — a deliberate drop is not something to warn about.
       next.queue = next.queue.filter((q) => q.executionId !== msg.executionId);
       if (exec && exec.executionId === msg.executionId) {
+        const stopped = msg.reason === "stopped by a person";
         next.execution = {
           ...exec,
-          phase: "failed",
+          phase: stopped ? "stopped" : "failed",
           status: "failed",
-          failure: msg.reason,
+          failure: stopped ? null : msg.reason,
           stages: exec.stages.map((s) =>
             s.status === "running" || s.status === "folding" ? { ...s, status: "failed" } : s,
           ),
@@ -584,6 +586,8 @@ export function applyMessage(
       // Stop and Start carry the machine's new state themselves (WP6.1).
       if ((msg.op === "stop" || msg.op === "start") && next.machine)
         next.machine = { ...next.machine, stopped: msg.op === "stop" };
+      if ((msg.op === "pause" || msg.op === "resume") && next.machine)
+        next.machine = { ...next.machine, paused: msg.op === "pause" };
       const who = msg.nodeIds.length ? `: ${msg.nodeIds.join(" ")}` : "";
       return note(next, now, "control", `${msg.op}${who}`);
     }
@@ -717,11 +721,13 @@ function toExecutionState(view: ExecutionView): ExecutionState {
   const phase: Phase =
     view.status === "done"
       ? "done"
-      : view.status === "failed" || view.status === "cancelled"
-        ? "failed"
-        : view.taskCount > 0
-          ? "running"
-          : "planning";
+      : view.status === "cancelled" && view.failure === "stopped by a person"
+        ? "stopped"
+        : view.status === "failed" || view.status === "cancelled"
+          ? "failed"
+          : view.taskCount > 0
+            ? "running"
+            : "planning";
   // A snapshot says which stage is current but not what came before: earlier stages are folded
   // and unnamed; the current one is known only if its tasks exist.
   const stages: StageState[] = [];
@@ -734,7 +740,12 @@ function toExecutionState(view: ExecutionView): ExecutionState {
       done: 0,
       failed: 0,
       root: phase === "done" ? view.root : null,
-      status: phase === "done" ? "done" : phase === "failed" ? "failed" : "running",
+      status:
+        phase === "done"
+          ? "done"
+          : phase === "failed" || phase === "stopped"
+            ? "failed"
+            : "running",
       known: true,
     };
   }
