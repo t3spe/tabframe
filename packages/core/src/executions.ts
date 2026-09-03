@@ -175,7 +175,8 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   exec.status = "running";
   exec.startedAt = now;
   ledger.running = exec.executionId;
-  const effects = broadcast(ledger, { t: "executionStarted", execution: executionView(exec) });
+  const effects = exec.human ? [] : releaseYield(ledger); // the loop is back; a person's launch keeps the yield
+  effects.push(...broadcast(ledger, { t: "executionStarted", execution: executionView(exec) }));
   const inheritedRoot = exec.inheritedFrom
     ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
     : null;
@@ -495,7 +496,7 @@ function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Ef
   exec.endedAt = now;
   ledger.running = null;
   if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
-  holdResult(ledger, exec, now);
+  effects.push(...holdResult(ledger, exec, now));
   effects.push(
     ...broadcast(ledger, {
       t: "executionDone",
@@ -557,7 +558,7 @@ export function failExecution(
   exec.status = "failed";
   exec.failure = reason;
   exec.endedAt = now;
-  holdResult(ledger, exec, now);
+  effects.push(...holdResult(ledger, exec, now));
   if (ledger.running === exec.executionId) ledger.running = null;
   if (isDefaultLoop(ledger, exec)) {
     // A failing loop must not spin: back off, doubling, before the next automatic launch.
@@ -586,7 +587,7 @@ export function cancelExecution(
     ledger.queue = ledger.queue.filter((id) => id !== exec.executionId);
     exec.status = "cancelled";
     exec.endedAt = now;
-    holdResult(ledger, exec, now);
+    effects.push(...holdResult(ledger, exec, now));
     effects.push(
       ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
     );
@@ -598,7 +599,7 @@ export function cancelExecution(
   exec.failure = reason;
   exec.endedAt = now;
   ledger.running = null;
-  holdResult(ledger, exec, now);
+  effects.push(...holdResult(ledger, exec, now));
   effects.push(
     ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
   );
@@ -630,19 +631,24 @@ export const YIELD_IDLE_MS = 10 * 60 * 1000;
  * Start is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the
  * stage for as long as the person is around.
  */
-function holdResult(ledger: Ledger, exec: ExecutionRecord, _now: number): void {
-  if (!exec.human) return;
+function holdResult(ledger: Ledger, exec: ExecutionRecord, _now: number): Effect[] {
+  if (!exec.human || ledger.meta.loopYielded) return [];
   ledger.meta.loopYielded = true;
+  return broadcast(ledger, { t: "loopYielded", yielded: true });
+}
+
+/** The loop takes the stage back — ten quiet minutes have passed — and says so. */
+function releaseYield(ledger: Ledger): Effect[] {
+  if (!ledger.meta.loopYielded) return [];
+  ledger.meta.loopYielded = false;
+  return broadcast(ledger, { t: "loopYielded", yielded: false });
 }
 
 /** The loop's gate for automatic work: stopped, yielded and someone still around, or paused. */
 export function loopMayRun(ledger: Ledger, now: number): boolean {
   if (ledger.meta.loopStopped || ledger.meta.pausedBy !== null) return false;
-  if (ledger.meta.loopYielded) {
-    if (now - ledger.meta.lastInteractionAt < YIELD_IDLE_MS) return false;
-    ledger.meta.loopYielded = false; // nobody has touched the page for a while: the loop is back
-  }
-  return true;
+  // Nobody has touched the page for a while: the loop may come back (`releaseYield` when it does).
+  return !ledger.meta.loopYielded || now - ledger.meta.lastInteractionAt >= YIELD_IDLE_MS;
 }
 
 /** The default loop keeps the machine busy while someone is watching (D4, §6.8). */
@@ -653,11 +659,15 @@ export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
   if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
-  return enqueue(
-    ledger,
-    { bundle: loop.bundle, params: loop.params, human: false, inherit: null },
-    now,
-  ).effects;
+  const released = releaseYield(ledger);
+  return [
+    ...released,
+    ...enqueue(
+      ledger,
+      { bundle: loop.bundle, params: loop.params, human: false, inherit: null },
+      now,
+    ).effects,
+  ];
 }
 
 /** Demo controls (design §6.7): pick victims across the whole cluster and command them. */

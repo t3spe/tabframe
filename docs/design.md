@@ -302,7 +302,7 @@ Observers subscribe and receive a paged snapshot, then sequence-numbered events;
 
 Controls: `killHalf`, `freezeHalf`, `throttleHalf` pick half the live nodes at random across the whole cluster — including cloud cores — and command them, then emit `controlApplied` naming the victims; `resumeAll`; `restart` (abandon the current execution, enqueue a fresh one of the same program at the front); `skip` (end the current execution, start the next); `killExecution {id}`; `launch`; `setRedundancy`; `ping`. Spawn is not a message: only the host page can create a thread in its own tab. Controls are rate limited per observer; the caps — 256 nodes, 64 observers, no per-IP limit — are enforced at hello and subscribe.
 
-**Stop, Start, and the loop's place (WP6.1, WP6.4, WP6.8).** `stop` ends the running execution, drops the loop's queued continuations (a person's queued launches stay), and holds the loop — `meta.loopStopped` — until `start`. The loop also **yields to people**: once a person's launch has ended — done, failed, or killed — it launches nothing, neither a new frame nor a queued continuation, until someone presses Start or nobody has interacted with the machine (a control, a launch, a subscribe) for ten minutes; `meta.loopYielded`, carried by snapshots, and the machine view says `yielded`. The dashboard shows Stop in the header at all times, swapping it for Start while the machine is stopped or the loop has yielded. `pause`/`resume` are the editor tab's hold (§6.7 below, WP6.4): nothing new is assigned or started while `meta.pausedBy` names a live socket.
+**Stop, Start, and the loop's place (WP6.1, WP6.4, WP6.8).** `stop` ends the running execution, drops the loop's queued continuations (a person's queued launches stay), and holds the loop — `meta.loopStopped` — until `start`. The loop also **yields to people**: once a person's launch has ended — done, failed, or killed — it launches nothing, neither a new frame nor a queued continuation, until someone presses Start or nobody has interacted with the machine (a control, a launch, a subscribe) for ten minutes; `meta.loopYielded`, carried by snapshots and announced as it changes by the `loopYielded` event, and the machine view says `yielded`. The dashboard shows Stop in the header at all times, swapping it for Start while the machine is stopped or the loop has yielded. `pause`/`resume` are the editor tab's hold (§6.7 below, WP6.4): nothing new is assigned or started while `meta.pausedBy` names a live socket.
 
 ### 6.8 Fleet policy and sleep
 
@@ -396,7 +396,7 @@ Every socket message is one JSON text frame with a type field and the generation
 
 **Subscribe** carries the protocol version and optionally the last sequence number seen. **Snapshot** pages carry nodes with health, the queue, the current execution with stage and root, every task's status, holder, output hash and placement, the counters, and the current sequence number.
 
-**Events:** nodes — `nodeJoined`, `nodeLeft`, `nodeHealth`; executions — `executionQueued`, `executionStarted`, `stageStarted`, `stageDone`, `executionDone` (carrying follow-up params when the program offered any), `executionFailed`, `budget`; tasks — `taskAssigned`, `taskDone`, `taskReassigned`, `taskSpeculated`, `taskVerified`, `taskMismatch`, `taskFailed`; system — `controlApplied`, `programAdded`, `controlPlaneRotating {gen, next}`, `machineSleeping`, `error`.
+**Events:** nodes — `nodeJoined`, `nodeLeft`, `nodeHealth`; executions — `executionQueued`, `executionStarted`, `stageStarted`, `stageDone`, `executionDone` (carrying follow-up params when the program offered any), `executionFailed`, `budget`; tasks — `taskAssigned`, `taskDone`, `taskReassigned`, `taskSpeculated`, `taskVerified`, `taskMismatch`, `taskFailed`; system — `controlApplied`, `programAdded`, `programRetired`, `controlPlaneRotating {gen, next}`, `machineSleeping`, `loopYielded {yielded}` (WP6.8), `error`.
 
 **Controls:** `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `skip`, `killExecution`, `launch`, `runFollowUp`, `setRedundancy`, `stop`, `start`, `pause`, `resume`, `presign` (for bundle uploads), `ping`. The machine view carries `stopped`, `paused`, and `yielded`.
 
@@ -941,7 +941,8 @@ Dated deviations discovered while building, recorded before the code landed (pla
 
 - **2026-09-03 (WP6.8).** Mircea's review of the deployed page. The loop yields to people (§6.7):
   once a person's launch has ended — done, failed, or killed — the loop launches nothing until
-  Start or ten idle minutes (`meta.loopYielded`, `YIELD_IDLE_MS`); this replaces WP4.4's
+  Start or ten idle minutes (`meta.loopYielded`, `YIELD_IDLE_MS`, announced by the `loopYielded`
+  event as it is set and released); this replaces WP4.4's
   twenty-second hold, which let the loop take the stage back from a person who was still looking.
   Stop is in the header at all times and swaps for Start while the machine is stopped or yielded
   (§8.3). The top of the dashboard is one status line, a fixed-grid execution row, and one slot for

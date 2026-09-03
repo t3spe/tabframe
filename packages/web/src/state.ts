@@ -624,6 +624,20 @@ export function applyMessage(
         `control plane rotating to generation ${msg.next}; reconnecting in ${(msg.reconnectAfterMs / 1000).toFixed(1)} s`,
       );
     }
+    case "loopYielded": {
+      // The loop yielded to a person's launch, or took the stage back after ten quiet minutes
+      // (WP6.8); snapshots carry the same flag for pages that subscribe later.
+      const next = advance(state, msg.seq);
+      if (next.machine) next.machine = { ...next.machine, yielded: msg.yielded };
+      return note(
+        next,
+        now,
+        "system",
+        msg.yielded
+          ? "the loop yielded to you: the result stays until Start or ten quiet minutes"
+          : "ten quiet minutes: the loop is back",
+      );
+    }
     case "machineSleeping": {
       const next = advance(state, msg.seq);
       next.sleeping = msg.reason;
