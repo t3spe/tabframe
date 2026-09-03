@@ -45,6 +45,7 @@ export interface RotateDeps {
 
 export type RotateResult =
   | { action: "skipped-off" }
+  | { action: "skipped-recent" }
   | { action: "launched"; microvmId: string; generation: number; endpoint: string | null }
   | {
       action: "rotated";
@@ -73,6 +74,9 @@ const RUN_BACKOFF_MS = [1000, 2000, 4000, 8000];
 export const DRAIN_GRACE_MS = 5_000;
 
 export type RotateHandler = (event?: unknown) => Promise<RotateResult>;
+
+/** A scheduled rotation this soon after the last pointer change is skipped (WP6.7). */
+export const RECENT_ROTATION_MS = 5 * 60 * 1000;
 
 export function createRotateHandler(deps: RotateDeps): RotateHandler {
   const { pointer, microvms, secrets, clock, sleep, log, config } = deps;
@@ -181,6 +185,22 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       await pointer.write({ ...p, pending: null });
       return null;
     }
+    // WP6.7: a pending successor never adopted the current ledger — it booted from a snapshot of
+    // its own and has been asleep with it since. While the current control plane still serves,
+    // promoting the stale one would hand the dashboards an old, sleeping machine (seen as an
+    // "asleep" banner at the start of a rotation, and a successor whose process was half an hour
+    // old). Terminate it and rotate afresh from the live ledger instead; only a machine with
+    // nothing else serving is worth finishing with.
+    const running = p.microvmId ? await microvms.get(p.microvmId) : null;
+    if (running && SERVING_STATES.has(running.state)) {
+      log.warn("rotate: a pending successor with a stale ledger; terminating it, rotating afresh", {
+        microvmId: stale.microvmId,
+        generation: stale.generation,
+      });
+      await terminateQuietly(stale.microvmId, "stale pending successor");
+      await pointer.write({ ...p, pending: null });
+      return null;
+    }
     log.info("rotate: finishing an interrupted rotation", {
       microvmId: stale.microvmId,
       generation: stale.generation,
@@ -219,11 +239,25 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     return drained;
   }
 
-  return async () => {
+  return async (event?: unknown) => {
     const p = await pointer.read();
     if (p.state === "off") {
       log.info("rotate: machine is off, nothing to do");
       return { action: "skipped-off" };
+    }
+    // WP6.7: the hourly rule must not race a rotation somebody just ran — two rotations at once
+    // leave a pending successor behind. A scheduled invocation within five minutes of the last
+    // pointer change is skipped; an operator's `mise run rotate` is not.
+    const scheduled =
+      typeof event === "object" &&
+      event !== null &&
+      (event as { source?: unknown }).source === "aws.events";
+    const updatedAt = p.updatedAt ? Date.parse(p.updatedAt) : Number.NaN;
+    if (scheduled && Number.isFinite(updatedAt) && clock.now() - updatedAt < RECENT_ROTATION_MS) {
+      log.info("rotate: a rotation ran minutes ago; the scheduled one waits for the next hour", {
+        ageMs: clock.now() - updatedAt,
+      });
+      return { action: "skipped-recent" };
     }
     const secret = await secrets.read(config.fleetSecretArn);
 

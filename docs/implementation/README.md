@@ -52,3 +52,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP6.3 | [wp-6.3-panel-tabs.md](wp-6.3-panel-tabs.md) | 2026-09-03 | The ledger, files, and activity panels summarise on the dashboard and open full-width in their own tabs, each under an explanation of what it is |
 | WP6.2 | [wp-6.2-layout-stability.md](wp-6.2-layout-stability.md) | 2026-09-03 | Nothing changes size: every dynamic region keeps a reserved box; a layout test in demo mode and at every beat of the unattended demo |
 | WP6.6 | [wp-6.6-editor-guide.md](wp-6.6-editor-guide.md) | 2026-09-03 | The editor explains itself: the SDK's README as a guide, the machine's limits, and three examples to load (Mandelbrot, hello, word count) |
+| WP6.7 | [wp-6.7-rotation-observations.md](wp-6.7-rotation-observations.md) | 2026-09-03 | The rotation observations: a stale pending successor is no longer promoted over a serving control plane; the hourly rule skips a rotation minutes after the last |
