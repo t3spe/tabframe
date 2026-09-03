@@ -90,6 +90,15 @@ if (panelMode) {
   document.title = `Tabframe · ${panelMode}`;
 }
 const observeOnly = params.has("observe") || demoMode || panelMode !== null;
+// The panels' "open ↗" links carry the page's own query, so a demo opens the same demo and a live
+// page opens an observer; only the panel differs (WP6.3, WP6.8).
+for (const a of document.querySelectorAll<HTMLAnchorElement>("a.open-panel")) {
+  const q = new URLSearchParams(location.search);
+  for (const k of ["root", "file", "path", "size"]) q.delete(k);
+  if (!demoMode) q.set("observe", "");
+  q.set("panel", new URL(a.href, location.origin).searchParams.get("panel") ?? "ledger");
+  a.href = `/?${q.toString()}`;
+}
 const hostId = crypto.randomUUID().slice(0, 8);
 const cores = navigator.hardwareConcurrency || 1;
 const locals = new Map<number, LocalNode>();
@@ -414,19 +423,24 @@ function render(state: ClusterState): void {
   els.seq.textContent = `seq ${state.seq}`;
   els.counts.textContent = `${state.nodes.size} nodes · ${hostCount(state)} hosts`;
   const stopped = state.machine?.stopped === true;
+  const yielded = state.machine?.yielded === true && !stopped;
   const paused = state.machine?.paused === true;
+  const suffix = `${stopped && exec?.phase !== "running" && exec?.phase !== "stopped" ? " · stopped" : ""}${yielded && exec?.phase !== "running" ? " · loop yielded to you" : ""}${paused ? " · paused (editor open)" : ""}`;
   els.exec.textContent = exec
-    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${stopped && exec.phase !== "running" && exec.phase !== "stopped" ? " · stopped" : ""}${paused ? " · paused (editor open)" : ""}`
+    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${suffix}`
     : stopped
       ? "idle · stopped by a person"
-      : paused
-        ? "idle · paused (editor open)"
-        : "idle";
+      : yielded
+        ? "idle · loop yielded to you"
+        : paused
+          ? "idle · paused (editor open)"
+          : "idle";
   $<HTMLButtonElement>("#resume").hidden = !paused;
   els.exec.className = `pill ${exec?.phase === "failed" ? "off" : exec ? "live" : ""}`;
-  // One of the two shows: Stop while the loop may run, Start once a person stopped it.
-  $<HTMLButtonElement>("#stop").hidden = stopped;
-  $<HTMLButtonElement>("#start").hidden = !stopped;
+  // One of the two shows: Stop while the loop may run, Start once a person stopped it or the
+  // loop yielded to one (WP6.8).
+  $<HTMLButtonElement>("#stop").hidden = stopped || yielded;
+  $<HTMLButtonElement>("#start").hidden = !(stopped || yielded);
   els.rate.textContent = `${throughput(state, now).toFixed(1)} tasks/s`;
   const due = state.machine?.nextRotationAt ?? null;
   els.nextRotation.hidden = due === null;
@@ -527,7 +541,13 @@ function render(state: ClusterState): void {
   // Controls reflect the machine.
   els.redundancy.checked = state.machine?.redundancy ?? false;
 
-  // The panels: programs, queue, strip, failure, result, files, task detail.
+  // The panels: programs, queue, strip, failure, result, files, task detail. A frozen panel tab
+  // keeps what it shows; the count of updates it is holding back is on the button (WP6.8).
+  if (panelMode && panelFrozen) {
+    panelFrozenMissed++;
+    freezeButton.textContent = `resume updates (${panelFrozenMissed} held)`;
+    return;
+  }
   panels.render(state);
 
   const lastAct = state.activity.at(-1);
@@ -811,8 +831,32 @@ for (const [button, control] of controlButtons) {
 }
 els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.checked });
 
+/** The files tab can open with a file and a root pinned by its query (WP6.8). */
+const openFile =
+  panelMode === "files" && params.get("file") && params.get("path")
+    ? {
+        hash: params.get("file") as string,
+        path: params.get("path") as string,
+        size: Number(params.get("size") ?? "0") || 0,
+      }
+    : null;
+const openRoot = panelMode === "files" ? params.get("root") : null;
+/** A panel tab can pause its own updates so a reader can inspect it (WP6.8). */
+let panelFrozen = false;
+let panelFrozenMissed = 0;
+const freezeButton = $<HTMLButtonElement>("#freezePanel");
+freezeButton.onclick = () => {
+  panelFrozen = !panelFrozen;
+  if (!panelFrozen) panelFrozenMissed = 0;
+  freezeButton.textContent = panelFrozen ? "resume updates" : "pause updates";
+  freezeButton.dataset.frozen = panelFrozen ? "1" : "0";
+  scheduleRender();
+};
+
 const panels: Panels = mountPanels(document, {
   panelMode,
+  openFile,
+  openRoot,
   blobs: () => blobSource,
   storeBase: () => storeBase,
   send: issue,

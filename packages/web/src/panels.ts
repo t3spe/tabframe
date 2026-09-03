@@ -41,6 +41,10 @@ export interface PanelDeps {
   now(): number;
   /** The one panel this page shows full-width in its own tab (WP6.3), or null on the dashboard. */
   panelMode?: "ledger" | "files" | "activity" | null;
+  /** A file to show at once on the files tab, from the page's query (WP6.8). */
+  openFile?: FileEntry | null;
+  /** A filesystem root to browse at once, from the page's query. */
+  openRoot?: string | null;
 }
 
 export interface Panels {
@@ -139,8 +143,10 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   };
   const cache = new BlobCache(deps.blobs, deps.rerender);
   let selectedTask: string | null = null;
-  let browsingRoot: string | null = null;
-  let selectedFile: FileEntry | null = null;
+  let browsingRoot: string | null = deps.openRoot ?? null;
+  let selectedFile: FileEntry | null = deps.openFile ?? null;
+  /** A viewer tab opened on a file keeps it across executions until the reader browses elsewhere. */
+  let pinned = deps.openFile != null || deps.openRoot != null;
   let dismissedFailure: string | null = null;
   /** Programs whose launch form is open, with the text typed so far. */
   const launchForms = new Map<string, { params: string; error: string | null }>();
@@ -571,11 +577,16 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         const li = el("li", `file${isSelected ? " selected" : ""}`);
         li.dataset.path = f.path;
         li.title = f.hash;
-        li.append(
-          el("span", "mono", f.path),
-          el("span", "muted", ` ${fmtBytes(f.size)} · ${short(f.hash, 8)}`),
-        );
+        // The name opens the file in its own tab, rendered (WP6.8); the row still selects it here.
+        const name = el("a", "mono open-file", f.path);
+        name.href = fileViewerUrl(root, f);
+        name.target = "_blank";
+        name.rel = "noreferrer";
+        name.title = `open ${f.path} in a new tab`;
+        name.onclick = (ev) => ev.stopPropagation();
+        li.append(name, el("span", "muted", ` ${fmtBytes(f.size)} · ${short(f.hash, 8)}`));
         li.onclick = () => {
+          pinned = false;
           selectedFile = isSelected ? null : f;
           deps.rerender();
         };
@@ -587,12 +598,38 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     renderPreview(state);
   }
 
+  /**
+   * The files tab with one file selected and its filesystem root pinned (WP6.8). It keeps the
+   * page's own query — a demo replays the same demo, a live page opens an observer — and only
+   * swaps the panel and the file.
+   */
+  function fileViewerUrl(root: string, f: FileEntry): string {
+    const q = new URLSearchParams(location.search);
+    for (const k of ["root", "file", "path", "size"]) q.delete(k);
+    if (!q.has("demo")) q.set("observe", "");
+    q.set("panel", "files");
+    q.set("root", root);
+    q.set("file", f.hash);
+    q.set("path", f.path);
+    if (f.size) q.set("size", String(f.size));
+    return `/?${q.toString()}`;
+  }
+
   function renderPreview(state: ClusterState): void {
     const f = selectedFile;
     els.filePreview.hidden = !f;
     els.filePreview.replaceChildren();
     if (!f) return;
     const head = el("div", "muted small mono", `${f.path} · ${fmtBytes(f.size)} · ${f.hash}`);
+    const store = deps.storeBase();
+    if (store) {
+      const raw = el("a", "mono", " raw bytes ↗");
+      raw.href = `${store.replace(/\/$/, "")}/${f.hash}`;
+      raw.target = "_blank";
+      raw.rel = "noreferrer";
+      raw.title = "the bytes as the store holds them, by hash";
+      head.append(raw);
+    }
     els.filePreview.append(head);
     const bytes = cache.get(f.hash);
     if (bytes === "pending") return void els.filePreview.append(el("p", "muted", "fetching…"));
@@ -777,12 +814,14 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         tr.dataset.hash = r.output;
         const size = r.size ?? sizes.get(r.output) ?? null;
         if (size !== null) tr.dataset.size = String(size);
-        const hash = el("td", "mono", short(r.output, 8));
+        // The whole hash and the whole address (WP6.8): this is the point of the panel.
+        const hash = el("td", "mono hash", r.output);
         hash.title = r.output;
         const where = el("td");
         if (store) {
-          const a = el("a", "mono", `store/${r.output.slice(0, 6)}…`);
-          a.href = `${store.replace(/\/$/, "")}/${r.output}`;
+          const href = `${store.replace(/\/$/, "")}/${r.output}`;
+          const a = el("a", "mono", href);
+          a.href = href;
           a.target = "_blank";
           a.rel = "noreferrer";
           a.title = "the bytes, by hash, from the store";
@@ -819,6 +858,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   }
 
   function browseRoot(root: string | null): void {
+    pinned = false;
     browsingRoot = root;
     selectedFile = null;
     deps.rerender();
@@ -827,8 +867,10 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   function render(state: ClusterState): void {
     const changedExecution = last?.execution?.executionId !== state.execution?.executionId;
     if (changedExecution) {
-      browsingRoot = null;
-      selectedFile = null;
+      if (!pinned) {
+        browsingRoot = null;
+        selectedFile = null;
+      }
       selectedTask = null;
     }
     last = state;

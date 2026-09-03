@@ -585,7 +585,11 @@ export function applyMessage(
       if (msg.op === "setRedundancy") next.refresh = true;
       // Stop and Start carry the machine's new state themselves (WP6.1).
       if ((msg.op === "stop" || msg.op === "start") && next.machine)
-        next.machine = { ...next.machine, stopped: msg.op === "stop" };
+        next.machine = {
+          ...next.machine,
+          stopped: msg.op === "stop",
+          yielded: msg.op === "start" ? false : next.machine.yielded,
+        };
       if ((msg.op === "pause" || msg.op === "resume") && next.machine)
         next.machine = { ...next.machine, paused: msg.op === "pause" };
       const who = msg.nodeIds.length ? `: ${msg.nodeIds.join(" ")}` : "";

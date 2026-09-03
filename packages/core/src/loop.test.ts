@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
 import {
-  HUMAN_RESULT_HOLD_MS,
   KEEP_ENDED_EXECUTIONS,
   KEEP_ENDED_TASKS,
   LOOP_BACKOFF_MAX_MS,
   LOOP_BACKOFF_MIN_MS,
   pruneExecutions,
+  YIELD_IDLE_MS,
 } from "./executions.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "./snapshot.ts";
@@ -228,86 +228,82 @@ describe("pruning ended executions' tasks", () => {
   });
 });
 
-describe("a person's result holds the stage", () => {
-  test("a continuation the previous frame left in the queue waits out the hold too", () => {
+describe("the loop yields to people (WP6.8)", () => {
+  const alive = (h: ReturnType<typeof harness>) => {
+    h.heartbeat("a");
+    h.send("obs", { t: "ping" });
+  };
+  const finishPlanOf = (
+    h: ReturnType<typeof harness>,
+    id: string,
+    next: Record<string, unknown> | null,
+  ) => {
+    const plan = planAssignOf(h, id);
+    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), { kind: "done", next });
+  };
+
+  test("after a person's launch ends the loop stays out until Start", () => {
     const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
     h.subscribe("obs");
     h.hello("a", "h1");
     h.addProgram("tiles"); // the loop launches e1
     h.tick();
-    const loopFrame = [...h.ledger.executions.values()][0];
-    if (!loopFrame || loopFrame.human) throw new Error("the loop did not launch");
-    h.launch({ preset: 5 }, true); // e2, a person's, queued ahead of continuations
-    // e1 ends offering a follow-up: e3 (automatic) joins the queue behind e2, and e2 starts.
-    const plan1 = planAssignOf(h, loopFrame.executionId);
-    h.planSpec(h.result(plan1.connId, plan1.taskId, plan1.attempt, H("e")), {
-      kind: "done",
-      next: { preset: 1 },
-    });
-    const byId = (id: string) => h.ledger.executions.get(id);
-    expect(byId("e1")?.status).toBe("done");
-    expect(byId("e2")?.status).toBe("running");
-    expect(byId("e3")?.human).toBe(false);
+    h.launch({ preset: 5 }, true); // e2 queued ahead of continuations
+    finishPlanOf(h, "e1", { preset: 1 }); // e1 done offering e3; e2 starts
+    expect(h.ledger.running).toBe("e2");
     expect(h.ledger.queue).toEqual(["e3"]);
-    // e2 ends: e3 does not take the stage until the hold is over.
     h.tick();
-    const plan2 = planAssignOf(h, "e2");
-    h.planSpec(h.result(plan2.connId, plan2.taskId, plan2.attempt, H("e")), {
-      kind: "done",
-      next: null,
-    });
-    expect(byId("e2")?.status).toBe("done");
-    expect(h.ledger.running).toBeNull();
-    const alive = () => {
-      h.heartbeat("a");
-      h.send("obs", { t: "ping" });
-    };
-    for (let t = 0; t < HUMAN_RESULT_HOLD_MS - 1_000; t += 1_000) {
+    finishPlanOf(h, "e2", null);
+    expect(h.ledger.executions.get("e2")?.status).toBe("done");
+    expect(h.ledger.meta.loopYielded).toBe(true);
+    // Minutes of pings and heartbeats change nothing: pings are not interaction, and the loop's
+    // queued continuation waits too.
+    for (let t = 0; t < 5 * 60_000; t += 1_000) {
       h.advance(1_000);
-      alive();
+      alive(h);
       h.tick();
     }
     expect(h.ledger.running).toBeNull();
-    expect(byId("e3")?.status).toBe("queued");
-    h.advance(1_000);
-    alive();
-    h.tick();
+    expect(h.ledger.executions.get("e3")?.status).toBe("queued");
+    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    expect(snap.msg.machine?.yielded).toBe(true);
+    // Start gives the stage back to the loop at once.
+    h.send("obs", { t: "start" });
+    expect(h.ledger.meta.loopYielded).toBe(false);
     expect(h.ledger.running).toBe("e3");
+    expect(h.invariants()).toEqual([]);
   });
 
-  test("the loop waits HUMAN_RESULT_HOLD_MS after a human launch ends before it takes over", () => {
-    const h = harness();
+  test("ten minutes without anyone touching the page and the loop comes back by itself", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
     h.subscribe("obs");
     h.hello("a", "h1");
     h.addProgram("tiles");
-    h.launch({ preset: 0 }, true);
     h.tick();
-    const exec = [...h.ledger.executions.values()][0];
-    if (!exec) throw new Error("nothing launched");
-    const plan = planAssignOf(h, exec.executionId);
-    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
-      kind: "done",
-      next: null,
-    });
-    expect(exec.status).toBe("done");
-    // The loop is configured only now, so the hold is the only thing keeping it back. The node
-    // and the observer keep talking, or the silence window would empty the machine first.
-    h.ledger.config.defaultLoop = { bundle: BUNDLE, params: { preset: 1 } };
-    const alive = () => {
-      h.heartbeat("a");
-      h.send("obs", { t: "ping" });
-    };
-    for (let t = 0; t < HUMAN_RESULT_HOLD_MS - 1_000; t += 1_000) {
+    finishPlanOf(h, "e1", null); // the loop's own frame ends without a follow-up; not a yield
+    expect(h.ledger.meta.loopYielded).toBe(false);
+    h.tick();
+    expect(h.ledger.running).toBe("e2"); // the loop went on
+    h.launch({ preset: 7 }, true); // e3, a person's, queued behind e2
+    finishPlanOf(h, "e2", null);
+    expect(h.ledger.running).toBe("e3");
+    finishPlanOf(h, "e3", null);
+    expect(h.ledger.meta.loopYielded).toBe(true);
+    // A control touches the page; the clock restarts from it.
+    h.send("obs", { t: "resumeAll" });
+    for (let t = 0; t < YIELD_IDLE_MS - 1_000; t += 1_000) {
       h.advance(1_000);
-      alive();
+      alive(h);
       h.tick();
     }
-    expect(h.ledger.executions.size).toBe(1);
+    expect(h.ledger.running).toBeNull();
     h.advance(1_000);
-    alive();
+    alive(h);
     h.tick();
-    expect(h.ledger.executions.size).toBe(2);
-    expect([...h.ledger.executions.values()][1]?.human).toBe(false);
+    expect(h.ledger.meta.loopYielded).toBe(false);
+    expect(h.ledger.running).not.toBeNull();
+    expect(h.invariants()).toEqual([]);
   });
 });
 

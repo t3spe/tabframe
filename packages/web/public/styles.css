@@ -917,25 +917,6 @@ header .pill {
 #rate {
   min-width: 8rem;
 }
-#notice {
-  height: 1.6rem;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-#notice[hidden] {
-  display: block !important;
-  visibility: hidden;
-}
-.machine-banner {
-  min-height: 3.8rem;
-  max-height: 3.8rem;
-  overflow: hidden;
-}
-.machine-banner[hidden] {
-  display: block !important;
-  visibility: hidden;
-}
 .hero {
   position: relative;
 }
@@ -967,48 +948,17 @@ header .pill {
   height: 11rem;
   overflow: auto;
 }
-.execrow {
-  flex-wrap: nowrap;
-  height: 1.8rem;
-  overflow: hidden;
-}
 #execName,
 #execDetail {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#execName {
-  flex: 0 0 auto;
-  max-width: 22rem;
-}
-#execDetail {
-  flex: 0 1 30rem;
-}
 #throughputFigure {
   display: inline-block;
   min-width: 11rem;
   text-align: right;
   white-space: nowrap;
-}
-#failure {
-  height: 2.4rem;
-  overflow: hidden;
-  white-space: nowrap;
-  flex-wrap: nowrap;
-}
-#failure[hidden] {
-  display: flex !important;
-  visibility: hidden;
-}
-#warnings {
-  height: 1.6rem;
-  overflow: hidden;
-  white-space: nowrap;
-}
-#warnings[hidden] {
-  display: block !important;
-  visibility: hidden;
 }
 #strip {
   flex-wrap: nowrap;
@@ -1029,14 +979,6 @@ header .pill {
 .stage > * {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-#followUp {
-  height: 2.2rem;
-  overflow: hidden;
-}
-#followUp[hidden] {
-  display: block !important;
-  visibility: hidden;
 }
 .stage-box {
   position: relative;
@@ -1163,4 +1105,127 @@ header .pill {
 }
 .guide b {
   color: var(--fg);
+}
+
+/* WP6.8: the top of the page. One status line for the rotation banner and the notice; Stop/Start
+   in the header; the execution row on two fixed lines; one message slot shared by failure,
+   warnings, and follow-up. */
+.status-line {
+  height: 1.7rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 1rem;
+  overflow: hidden;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.status-line > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+.status-line > [hidden] {
+  display: none !important;
+}
+.machine-banner {
+  color: var(--fg);
+}
+.machine-banner[data-kind="sleeping"],
+.machine-banner[data-kind="asleep"] {
+  color: var(--warn);
+}
+.notice {
+  color: var(--warn);
+}
+header #stop,
+header #start,
+header #resume {
+  min-width: 4.5rem;
+}
+header button[hidden] {
+  display: none !important;
+}
+.panel-only {
+  display: none !important;
+}
+body[data-panel] .panel-only {
+  display: inline-block !important;
+}
+.execrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6ch auto;
+  grid-template-rows: 1.5rem 1.6rem;
+  column-gap: 1rem;
+  align-items: center;
+  height: 3.3rem;
+  overflow: hidden;
+  margin-bottom: 0.3rem;
+}
+#execName {
+  grid-column: 1;
+  grid-row: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#execDetail {
+  grid-column: 2 / 4;
+  grid-row: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+.execrow .bar {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+}
+#progressText {
+  grid-column: 2;
+  grid-row: 2;
+}
+.execrow .throughput {
+  grid-column: 3;
+  grid-row: 2;
+  margin-left: 0;
+}
+.messages {
+  position: relative;
+  height: 2.4rem;
+  margin: 0.2rem 0 0.4rem;
+}
+.messages > * {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.messages > [hidden] {
+  display: none !important;
+}
+
+/* WP6.8: whole hashes wrap rather than cut; file names are links; a frozen panel says so. */
+#ledger td.hash,
+#ledger td a {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.open-file {
+  color: var(--acc);
+  text-decoration: none;
+}
+.open-file:hover {
+  text-decoration: underline;
+}
+#freezePanel[data-frozen="1"] {
+  border-color: var(--warn);
+  color: var(--warn);
 }

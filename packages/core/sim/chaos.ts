@@ -66,6 +66,7 @@ export interface ChaosWorld extends WorldApi {
   runningExecution(): string | null;
   queuedExecutions(): string[];
   doneExecutions(): string[];
+  loopState(): { stopped: boolean; yielded: boolean };
   redundancyOn(): boolean;
 }
 
@@ -112,7 +113,9 @@ type ControlKind =
   | "skip"
   | "launch"
   | "killExecution"
-  | "runFollowUp";
+  | "runFollowUp"
+  | "stop"
+  | "start";
 
 const CONTROL_WEIGHTS: Array<[ControlKind, number]> = [
   ["setRedundancy", 3],
@@ -125,6 +128,8 @@ const CONTROL_WEIGHTS: Array<[ControlKind, number]> = [
   ["launch", 1.5],
   ["killExecution", 0.5],
   ["runFollowUp", 0.5],
+  ["stop", 0.3],
+  ["start", 1],
 ];
 
 export class Chaos {
@@ -185,9 +190,23 @@ export class Chaos {
       observer.join();
     }
     const chosen = observer;
+    // A stopped machine never moves again by itself, so the last person presses Start. A loop
+    // that merely yielded comes back after ten idle minutes (design §6.8); half the runs press
+    // Start anyway and the other half wait, so both roads to the calm frame get walked.
+    const pressStart = this.world.random() < 0.5;
     this.world.after(500, () => {
       chosen.control({ t: "resumeAll" });
     });
+    // An observer sends one control a second, so Start follows a beat later — and again every
+    // two seconds until it lands, the way a person presses again when a click was lost.
+    const pressStartUntilItLands = (attempt: number): void => {
+      const loop = this.world.loopState();
+      if (!(loop.stopped || (pressStart && loop.yielded)) || attempt >= 20) return;
+      const observer = this.world.observers.find((o) => o.connected) ?? chosen;
+      observer.control({ t: "start" });
+      this.world.after(2_000, () => pressStartUntilItLands(attempt + 1));
+    };
+    this.world.after(1_700, () => pressStartUntilItLands(0));
   }
 
   private spawn(mayLie = true): VirtualNode {
@@ -333,6 +352,15 @@ export class Chaos {
       case "skip":
         if (running && this.mayCancel(observer)) observer.control({ t: "skip" });
         return;
+      case "stop":
+        // A person presses Stop: the frame dies and the loop holds until Start (design §6.8).
+        if (running && this.mayCancel(observer)) observer.control({ t: "stop" });
+        return;
+      case "start": {
+        const loop = this.world.loopState();
+        if (loop.stopped || loop.yielded) observer.control({ t: "start" });
+        return;
+      }
       case "launch": {
         // One launch a minute per observer (design §8.4).
         if (this.world.now - observer.lastLaunchAt < 60_000) return;

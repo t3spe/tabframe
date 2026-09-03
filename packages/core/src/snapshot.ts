@@ -60,6 +60,7 @@ export function deserializeLedger(json: string): Ledger {
       loopBackoffMs: s.meta.loopBackoffMs ?? 0,
       loopPausedUntil: s.meta.loopPausedUntil ?? 0,
       loopStopped: s.meta.loopStopped ?? false,
+      loopYielded: s.meta.loopYielded ?? false,
       pausedBy: null, // whoever held a pause is not on this socket set
     },
     config: s.config,

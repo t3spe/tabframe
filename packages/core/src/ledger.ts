@@ -217,6 +217,12 @@ export interface Meta {
   /** A person pressed Stop (WP6.1): the loop launches nothing until Start; survives a rotation. */
   loopStopped: boolean;
   /**
+   * The loop yielded to a person (WP6.8): set when a person's launch ends, so the loop does not
+   * take the stage back from whoever is looking; cleared by Start, or by ten minutes without anyone
+   * touching the page. Survives a rotation.
+   */
+  loopYielded: boolean;
+  /**
    * The observer connection holding the machine paused (WP6.4): nothing is assigned or started
    * while it is set; in-flight tasks finish. Cleared by resume, by the holder's socket going away,
    * and by adoption (a rotation) — the holder's socket is on the previous generation.
@@ -303,6 +309,7 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       loopBackoffMs: 0,
       loopPausedUntil: 0,
       loopStopped: false,
+      loopYielded: false,
       pausedBy: null,
     },
     config: {

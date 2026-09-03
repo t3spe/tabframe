@@ -302,6 +302,8 @@ Observers subscribe and receive a paged snapshot, then sequence-numbered events;
 
 Controls: `killHalf`, `freezeHalf`, `throttleHalf` pick half the live nodes at random across the whole cluster — including cloud cores — and command them, then emit `controlApplied` naming the victims; `resumeAll`; `restart` (abandon the current execution, enqueue a fresh one of the same program at the front); `skip` (end the current execution, start the next); `killExecution {id}`; `launch`; `setRedundancy`; `ping`. Spawn is not a message: only the host page can create a thread in its own tab. Controls are rate limited per observer; the caps — 256 nodes, 64 observers, no per-IP limit — are enforced at hello and subscribe.
 
+**Stop, Start, and the loop's place (WP6.1, WP6.4, WP6.8).** `stop` ends the running execution, drops the loop's queued continuations (a person's queued launches stay), and holds the loop — `meta.loopStopped` — until `start`. The loop also **yields to people**: once a person's launch has ended — done, failed, or killed — it launches nothing, neither a new frame nor a queued continuation, until someone presses Start or nobody has interacted with the machine (a control, a launch, a subscribe) for ten minutes; `meta.loopYielded`, carried by snapshots, and the machine view says `yielded`. The dashboard shows Stop in the header at all times, swapping it for Start while the machine is stopped or the loop has yielded. `pause`/`resume` are the editor tab's hold (§6.7 below, WP6.4): nothing new is assigned or started while `meta.pausedBy` names a live socket.
+
 ### 6.8 Fleet policy and sleep
 
 The active control plane keeps **two cloud cores** alive while the machine is awake: while any observer is connected or a human-launched execution is running. It launches them a second apart (the account's RunMicrovm rate is one per second) with backoff on throttling, replaces one that dies or nears its four-hour ceiling, and records their MicroVM ids in the ledger so they survive a handover; listing by tag is only a reconciliation fallback.
@@ -396,7 +398,7 @@ Every socket message is one JSON text frame with a type field and the generation
 
 **Events:** nodes — `nodeJoined`, `nodeLeft`, `nodeHealth`; executions — `executionQueued`, `executionStarted`, `stageStarted`, `stageDone`, `executionDone` (carrying follow-up params when the program offered any), `executionFailed`, `budget`; tasks — `taskAssigned`, `taskDone`, `taskReassigned`, `taskSpeculated`, `taskVerified`, `taskMismatch`, `taskFailed`; system — `controlApplied`, `programAdded`, `controlPlaneRotating {gen, next}`, `machineSleeping`, `error`.
 
-**Controls:** `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `skip`, `killExecution`, `launch`, `runFollowUp`, `setRedundancy`, `presign` (for bundle uploads), `ping`.
+**Controls:** `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `skip`, `killExecution`, `launch`, `runFollowUp`, `setRedundancy`, `stop`, `start`, `pause`, `resume`, `presign` (for bundle uploads), `ping`. The machine view carries `stopped`, `paused`, and `yielded`.
 
 ### 8.4 Sizes, limits, codes
 
@@ -936,3 +938,15 @@ Dated deviations discovered while building, recorded before the code landed (pla
   than a line in the notice strip, and the canvas stays on screen while the observer reconnects, as
   §9.4 promises. A ledger panel shows, per settled task, the output hash, the size, and where the
   bytes live, making the hashes-not-bytes claim visible on the page.
+
+- **2026-09-03 (WP6.8).** Mircea's review of the deployed page. The loop yields to people (§6.7):
+  once a person's launch has ended — done, failed, or killed — the loop launches nothing until
+  Start or ten idle minutes (`meta.loopYielded`, `YIELD_IDLE_MS`); this replaces WP4.4's
+  twenty-second hold, which let the loop take the stage back from a person who was still looking.
+  Stop is in the header at all times and swaps for Start while the machine is stopped or yielded
+  (§8.3). The top of the dashboard is one status line, a fixed-grid execution row, and one slot for
+  the messages, so nothing overlaps or moves. The ledger shows whole output hashes and store
+  addresses (links to the bytes); the panel tabs get a freeze toggle that holds the page's updates
+  (not the machine); file names are links that open the viewer in a new tab on that file. The
+  churn simulation's chaos observers now press Stop and Start too, and its calm phase owes the
+  loop its yield: half the runs press Start, the other half wait the ten minutes out.
