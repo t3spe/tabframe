@@ -838,6 +838,11 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.2).** Nothing on the dashboard changes size as the machine runs (§8.3):
+  hidden regions keep their box, lists scroll inside fixed heights, text that can grow is cut, the
+  picture's box is fixed, the connection banner overlays the stage. Measured by the demo suite at
+  every beat.
+
 - **2026-09-03 (WP6.3).** The dashboard's ledger, files, and activity panels are one-line
   summaries with a link; each opens full-width in its own observer tab (`?panel=…`) under an
   explanation of what it shows and how to read it, with everything rather than the newest few

@@ -120,3 +120,48 @@ test("demo: a machine with nothing to do says it is going to sleep, and why", as
   // The failure that preceded it is still on the page.
   await expect(page.locator("#failure")).toContainText("trap: unreachable");
 });
+
+test("demo: nothing changes size — the page's regions keep their boxes from idle to a paused frame", async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  const selectors = [
+    "header",
+    ".hero",
+    "#stage",
+    ".execrow",
+    "#strip",
+    "#failure",
+    ".stage-box",
+    "#grid",
+    "#pulses",
+    "#taskDetail",
+    "#counters",
+    ".controls",
+    "#nodes",
+    "aside",
+    "#programs",
+    "#queue",
+    "#ledgerPanel",
+    "#activityPanel",
+  ];
+  const boxes = () =>
+    page.evaluate((sels) => {
+      const out: Record<string, string> = {};
+      for (const sel of sels) {
+        const r = document.querySelector(sel)?.getBoundingClientRect();
+        if (r) out[sel] = `${Math.round(r.width)}×${Math.round(r.height)}`;
+      }
+      return out;
+    }, selectors);
+  await page.goto("/?demo=1&speed=12&pause=300");
+  await expect(page.locator("#machine")).toHaveText("live · demo");
+  const atStart = await boxes();
+  await waitPaused(page);
+  const atPause = await boxes();
+  expect(atPause).toEqual(atStart);
+  // Controls that toggle keep their slot too.
+  await page.click("#killHalf");
+  await expect(page.locator("#activity")).toContainText(/killHalf/);
+  expect(await boxes()).toEqual(atStart);
+});
