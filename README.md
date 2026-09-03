@@ -22,6 +22,11 @@ advance while anyone watches) and a three-stage **word count** over *Moby-Dick* 
 reduce by partition, merge to a top-25). You can also compile your own: the editor holds the
 Mandelbrot source and the AssemblyScript compiler runs in a browser worker.
 
+Since M6 a third program ships with the image: **tiny GPT**, an 822 k-parameter character-level
+transformer trained on that same corpus, whose whole forward pass runs in WebAssembly on the cores —
+one continuation per task, four milliseconds a token, the same bytes on every core
+(`docs/feasibility-transformer.md`).
+
 ## Why it looks the way it does
 
 Three constraints carry the whole fault-tolerance story; everything else follows from them.

@@ -1,0 +1,7 @@
+{
+  "name": "tinygpt",
+  "view": "text",
+  "persist": false,
+  "defaultParams": { "prompts": "Call me Ishmael|The whale|It was|Ahab", "tokens": 96 },
+  "description": "A 0.8 M-parameter character-level GPT trained on Moby-Dick, running its forward pass in WebAssembly: one continuation per prompt per task, greedy decoding, identical bytes on every core."
+}

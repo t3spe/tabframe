@@ -1,0 +1,10 @@
+{
+  "name": "@tabframe/program-tinygpt",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Tabframe demo program: a tiny character-level GPT predicting the next token (AssemblyScript)",
+  "dependencies": {
+    "@tabframe/sdk-as": "workspace:*"
+  }
+}

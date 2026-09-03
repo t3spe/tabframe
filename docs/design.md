@@ -838,6 +838,12 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.5).** A third shipped program, `tinygpt` (§5.6): a 822 k-parameter
+  character-level GPT trained offline on the corpus, int8 weights as a bundle input, the forward
+  pass in AssemblyScript, one continuation per task and a collect stage for the text view; 4 ms per
+  token, token-for-token equal to the PyTorch reference, deterministic bytes. The feasibility
+  numbers are in `docs/feasibility-transformer.md`.
+
 - **2026-09-03 (WP6.7).** The "asleep" banner at the start of a rotation and the half-hour-old
   successor were one thing: the rotate function's repair path promoted a pending successor from an
   interrupted rotation without a handover — its own boot snapshot, asleep. Now a pending successor
