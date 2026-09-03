@@ -411,25 +411,26 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   // The rotating banner's countdown is under two seconds, so what the banner said is collected
   // while the generation advances rather than asserted at one instant; a banner of any other
   // kind is logged with what the page knew of the machine.
+  // The banner is read in one evaluate — shown, kind, text, and the machine the page knew — so a
+  // banner that lasts two seconds is not lost between round trips.
   const bannersSeen = new Map<string, string>();
   await expect
     .poll(
       async () => {
-        if (await banner.isVisible()) {
-          const kind = (await banner.getAttribute("data-kind")) ?? "?";
-          if (!bannersSeen.has(kind)) {
-            const machine = await page.evaluate(() =>
-              JSON.stringify(
-                (window as unknown as { tabframe: { state: { machine: unknown } } }).tabframe.state
-                  .machine,
-              ),
-            );
-            bannersSeen.set(
-              kind,
-              `${(await banner.textContent())?.slice(0, 80)} · machine ${machine}`,
-            );
-            beat(`banner ${kind}: ${bannersSeen.get(kind)}`);
-          }
+        const seen = await page.evaluate(() => {
+          const box = document.getElementById("machineBanner");
+          const shown = box !== null && !box.hidden;
+          const w = window as unknown as { tabframe: { state: { machine: unknown } } };
+          return {
+            shown,
+            kind: shown ? (box?.dataset.kind ?? "?") : null,
+            text: shown ? (box?.textContent ?? "").slice(0, 80) : "",
+            machine: JSON.stringify(w.tabframe.state.machine),
+          };
+        });
+        if (seen.shown && seen.kind !== null && !bannersSeen.has(seen.kind)) {
+          bannersSeen.set(seen.kind, `${seen.text} · machine ${seen.machine}`);
+          beat(`banner ${seen.kind}: ${bannersSeen.get(seen.kind)}`);
         }
         return (await generation(page)) > startGeneration;
       },

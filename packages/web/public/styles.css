@@ -1110,27 +1110,33 @@ header .pill {
 /* WP6.8: the top of the page. One status line for the rotation banner and the notice; Stop/Start
    in the header; the execution row on two fixed lines; one message slot shared by failure,
    warnings, and follow-up. */
+/* The banner and the notice share one line-high slot; each keeps the slot's box when hidden
+   (visibility, not display), so nothing measured on the page changes size (WP6.2, WP6.8). */
 .status-line {
+  position: relative;
   height: 1.7rem;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0 1rem;
   overflow: hidden;
-  white-space: nowrap;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
 }
 .status-line > * {
+  position: absolute;
+  inset: 0;
+  line-height: 1.7rem;
+  padding: 0 1rem;
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   border: 0;
-  padding: 0;
   background: transparent;
 }
+.status-line > #machineBanner {
+  z-index: 1;
+}
 .status-line > [hidden] {
-  display: none !important;
+  display: block !important;
+  visibility: hidden;
 }
 .machine-banner {
   color: var(--fg);
@@ -1209,7 +1215,8 @@ body[data-panel] .panel-only {
   text-overflow: ellipsis;
 }
 .messages > [hidden] {
-  display: none !important;
+  display: block !important;
+  visibility: hidden;
 }
 
 /* WP6.8: whole hashes wrap rather than cut; file names are links; a frozen panel says so. */

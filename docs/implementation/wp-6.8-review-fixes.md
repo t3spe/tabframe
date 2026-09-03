@@ -74,7 +74,11 @@ yield was carried by snapshots only, so a connected page learned of it at its ne
 (hence `loopYielded`); the next pass opened on a machine still yielded from the previous one
 (hence the opening Start); and one redundancy click was lost in a reconnect (hence the retry). All
 three were the demo finding real gaps, not test flakiness, and the fixes went out as the next
-generation.
+generation. That generation's passes found two more: the status line's and the message slot's
+hidden children used `display: none`, so the failure box measured 0×0 until the editor beat showed
+it (now every child keeps the slot's box with `visibility: hidden`, the WP6.2 rule); and the
+rotation beat read the banner's visibility, kind, and text in separate round trips and once missed
+a banner that lasted two seconds (now one evaluate).
 
 ## Drift
 
