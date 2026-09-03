@@ -78,8 +78,8 @@ export const machineView = z.object({
   awake: z.boolean(),
   reason: z.string().max(128).nullable(),
   redundancy: z.boolean(),
-  /** A person pressed Stop: the loop waits for Start (WP6.1). */
-  stopped: z.boolean().default(false),
+  /** A person pressed Stop: the loop waits for Start (WP6.1). Absent means no. */
+  stopped: z.boolean().optional(),
   /** Next scheduled rotation, when known. */
   nextRotationAt: millis.nullable(),
   uptimeMs: millis,
