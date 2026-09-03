@@ -309,16 +309,16 @@ describe("rotation", () => {
       generation: 7,
       pending: { microvmId: "mvm-new", endpoint: successor.endpoint, generation: 8 },
     });
+    // WP6.7: the old control plane still serves, so the pending successor — which never adopted
+    // the live ledger — is terminated and a fresh rotation follows from the live one.
     const result = await rotate(pointer)();
-    expect(result).toMatchObject({ action: "repaired", microvmId: "mvm-new", generation: 8 });
-    expect(microvms.runs).toHaveLength(0); // nothing new was launched
-    expect(pointer.writes.at(-1)).toMatchObject({
-      microvmId: "mvm-new",
-      generation: 8,
-      pending: null,
-    });
-    expect(microvms.terminated).toEqual(["mvm-old"]);
-    expect(cp.calls).toEqual(["drain:mvm-old"]);
+    expect(result).toMatchObject({ action: "rotated", from: "mvm-old", generation: 8 });
+    expect(microvms.runs).toHaveLength(1);
+    expect(microvms.terminated[0]).toBe("mvm-new");
+    expect(microvms.terminated).toContain("mvm-old");
+    expect(pointer.writes.at(-1)?.pending).toBeNull();
+    expect(pointer.writes.at(-1)?.microvmId).not.toBe("mvm-new");
+    expect(cp.calls.some((c) => c.startsWith("handover:mvm-old"))).toBe(true);
   });
 
   test("a pending successor that died is forgotten, and the run carries on", async () => {
@@ -367,5 +367,57 @@ describe("rotation", () => {
     expect(await rotate(pointer)()).toEqual({ action: "skipped-off" });
     expect(microvms.runs).toHaveLength(0);
     expect(pointer.writes).toHaveLength(0);
+  });
+
+  // ---- WP6.7: what an interrupted or racing rotation leaves behind ------------------------------
+
+  test("a pending successor is terminated while the current control plane still serves; the rotation starts afresh", async () => {
+    microvms.add({ microvmId: "mvm-9", state: "RUNNING" });
+    microvms.add({ microvmId: "mvm-stale", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-9",
+      generation: 7,
+      pending: { microvmId: "mvm-stale", endpoint: "stale.example", generation: 8 },
+    });
+    const result = await rotate(pointer)();
+    // Not promoted: it never adopted the live ledger. Gone, and a fresh successor took over.
+    expect(result.action).toBe("rotated");
+    expect(microvms.terminated).toContain("mvm-stale");
+    expect(microvms.terminated).toContain("mvm-9");
+    expect(microvms.runs).toHaveLength(1);
+    expect(pointer.writes.at(-1)?.pending).toBeNull();
+    expect(pointer.writes.at(-1)?.microvmId).not.toBe("mvm-stale");
+  });
+
+  test("a pending successor is still promoted when nothing else serves", async () => {
+    microvms.add({ microvmId: "mvm-9", state: "TERMINATED" });
+    microvms.add({ microvmId: "mvm-next", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-9",
+      generation: 7,
+      pending: { microvmId: "mvm-next", endpoint: "next.example", generation: 8 },
+    });
+    const result = await rotate(pointer)();
+    expect(result).toMatchObject({ action: "repaired", microvmId: "mvm-next", generation: 8 });
+  });
+
+  test("a scheduled rotation minutes after the last pointer change is skipped; an operator's is not", async () => {
+    microvms.add({ microvmId: "mvm-9", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-9",
+      generation: 7,
+      updatedAt: new Date(clock.now() - 60_000).toISOString(),
+    });
+    expect(
+      await rotate(pointer)({ source: "aws.events", "detail-type": "Scheduled Event" }),
+    ).toEqual({
+      action: "skipped-recent",
+    });
+    expect(microvms.runs).toHaveLength(0);
+    const manual = await rotate(pointer)();
+    expect(manual.action).toBe("rotated");
   });
 });

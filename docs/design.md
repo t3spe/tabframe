@@ -838,6 +838,14 @@ Dated deviations discovered while building, recorded before the code landed (pla
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
   own, not only with the tasks.
 
+- **2026-09-03 (WP6.7).** The "asleep" banner at the start of a rotation and the half-hour-old
+  successor were one thing: the rotate function's repair path promoted a pending successor from an
+  interrupted rotation without a handover — its own boot snapshot, asleep. Now a pending successor
+  is terminated while the current control plane serves and the rotation starts afresh; it is
+  promoted only when nothing else serves; and the hourly rule skips a rotation younger than five
+  minutes (§9.4). A rotation on a busy machine measured clean: reconnect in two seconds, awake
+  throughout.
+
 - **2026-09-03 (WP6.6).** The editor explains itself (§5.6): the SDK's README is embedded at
   build time and rendered as a guide under the source, with the machine's limits stated in
   numbers; three examples load from a select — Mandelbrot, a new `hello` (one task, a line of
