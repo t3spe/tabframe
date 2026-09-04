@@ -18,7 +18,17 @@ review-loops goal: once the three loops are merged, deploy once and run the unat
   `/health` on the new control plane shows the whole build stamp (`49b9647`, `main`, not ungated),
   image version 25.0, `authoritative: true`, and two cores linked by their tokens. 1334 s end to end,
   of which the guard, the build, and the whole test suite were the first eight minutes.
-- **Three unattended demo passes** DEMO_RESULT
+- **The first three demo passes failed at the editor**, all three in the same place: the compiler
+  worker reported "Failed to fetch". Loop 3's tightened policy named the hosts a page may connect to
+  and left out `data:` and `blob:`; binaryen's wasm ships inside the compiler worker as a data URL
+  and is fetched at start. Locally the worker script carried no policy — the local server sent it
+  for pages only — while CloudFront attaches it to every response, so only the deployed worker was
+  bound. The policy now allows `data:` and `blob:` connections, and the local server sends it for
+  scripts too, so the browser suites run the worker under the deployed policy. Two of the three
+  passes also had to click kill half twice: the line the dashboard's activity snippet writes for a
+  control was pushed out of its fourteen rows within a second by the reassignments the kill caused,
+  so the script never saw it. The snippet now keeps the latest control line of the last minute in
+  view. DEMO_RESULT
 
 ## Records
 
