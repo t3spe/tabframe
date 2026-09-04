@@ -620,31 +620,87 @@ function renderMachineBanner(state: ClusterState, now: number): void {
   box.replaceChildren(title, body, hint);
 }
 
-/** Tasks done per second over the last minute as a strip of bars; the figure names the rate and the cluster. */
+/** Round up to 1, 2, or 5 times a power of ten: a scale a reader can name. */
+export function niceCeil(x: number): number {
+  if (x <= 1) return 1;
+  const p = 10 ** Math.floor(Math.log10(x));
+  const m = x / p;
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+}
+
+let chartScale = 1;
+let chartScaleAt = 0;
+/**
+ * Tasks done per second over the last minute as one quiet area line (WP7.2): drawn at the screen's
+ * pixel density, on a scale that rises at once to a round number above the peak and comes down
+ * only after a minute below half of it, with a caption that says what the picture is. The figure
+ * beside it names the rate and the cluster.
+ */
 function renderChart(state: ClusterState, now: number): void {
-  const series = throughputSeries(state, now);
+  const full = throughputSeries(state, now);
+  const series = full.slice(0, -1); // the current second is still filling; it would always dip
   const c = els.chart;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth || 240;
+  const cssH = c.clientHeight || 36;
+  const w = Math.round(cssW * dpr);
+  const h = Math.round(cssH * dpr);
+  if (c.width !== w || c.height !== h) {
+    c.width = w;
+    c.height = h;
+  }
   const g = c.getContext("2d") as CanvasRenderingContext2D;
-  const w = c.width;
-  const h = c.height;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.fillStyle = BG;
-  g.fillRect(0, 0, w, h);
-  const top = Math.max(...series);
-  const scale = Math.max(1, top);
-  const bw = w / series.length;
-  series.forEach((v, i) => {
-    if (v === 0) return;
-    const bh = Math.max(1, Math.round(((h - 2) * v) / scale));
-    g.fillStyle = i === series.length - 1 ? SELECTED : "#2f4f7a";
-    g.fillRect(Math.floor(i * bw), h - bh, Math.max(1, Math.floor(bw) - 1), bh);
-  });
+  g.fillRect(0, 0, cssW, cssH);
+  const peak = Math.max(0, ...series);
+  if (peak > chartScale) {
+    chartScale = niceCeil(peak);
+    chartScaleAt = now;
+  } else if (peak < chartScale / 2 && now - chartScaleAt > 60_000) {
+    chartScale = niceCeil(peak);
+    chartScaleAt = now;
+  }
+  const baseY = cssH - 1.5;
+  const top = 13; // room for the caption
+  const y = (v: number): number => baseY - ((baseY - top) * Math.min(v, chartScale)) / chartScale;
+  const stepX = cssW / Math.max(1, series.length - 1);
+  g.strokeStyle = "#232a33";
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0, baseY + 0.5);
+  g.lineTo(cssW, baseY + 0.5);
+  g.stroke();
+  if (series.some((v) => v > 0)) {
+    g.beginPath();
+    g.moveTo(0, baseY);
+    for (const [i, v] of series.entries()) g.lineTo(i * stepX, y(v));
+    g.lineTo((series.length - 1) * stepX, baseY);
+    g.closePath();
+    g.fillStyle = "rgba(110, 168, 255, 0.18)";
+    g.fill();
+    g.beginPath();
+    for (const [i, v] of series.entries()) {
+      if (i === 0) g.moveTo(0, y(v));
+      else g.lineTo(i * stepX, y(v));
+    }
+    g.strokeStyle = "#6ea8ff";
+    g.lineWidth = 1.25;
+    g.lineJoin = "round";
+    g.stroke();
+  }
   const unit = state.execution?.view === "tiles" ? "tiles" : "tasks";
+  g.fillStyle = "#7d8794";
+  g.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  g.textBaseline = "top";
+  g.fillText(`last 60 s · peak ${peak} ${unit}/s · scale ${chartScale}`, 4, 2);
   const rate = throughput(state, now);
   els.figure.textContent = `${rate.toFixed(1)} ${unit}/s · ${state.nodes.size} nodes`;
   els.figure.dataset.rate = rate.toFixed(1);
   els.figure.dataset.nodes = String(state.nodes.size);
-  els.figure.dataset.peak = String(top);
-  c.title = `${unit} done per second over the last minute; peak ${top}/s`;
+  els.figure.dataset.peak = String(peak);
+  c.dataset.scale = String(chartScale);
+  c.title = `${unit} done per second over the last minute, one line; the scale (${chartScale}/s) moves at most once a minute`;
 }
 
 let pulsesDrawn = "";

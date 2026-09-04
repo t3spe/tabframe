@@ -59,9 +59,9 @@
         <button type="button" id="restart" title="Abandon the execution and relaunch the same program first">restart</button>
         <button type="button" id="skip" title="End the execution and start the next in the queue">skip</button>
         <button type="button" id="killExecution" class="danger" title="Cancel the running execution" hidden>kill execution</button>
-        <label><input type="checkbox" id="redundancy"> redundancy: every task twice</label>
         <span id="tileStats" class="muted" style="margin-left:auto; font-family:var(--mono); font-size:12px"></span>
       </div>
+      <div class="toggle-row"><label title="Every task is computed twice on different nodes and the bytes must agree; a liar is caught"><input type="checkbox" id="redundancy"> redundancy: every task twice</label></div>
     </div>
     <table id="nodes" hidden>
       <thead><tr><th>node</th><th>host</th><th>kind</th><th>health</th><th>visible</th><th class="num">done</th><th class="num">in flight</th><th class="num">last</th><th>joined</th></tr></thead>

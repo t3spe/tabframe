@@ -165,3 +165,55 @@ test("demo: nothing changes size — the page's regions keep their boxes from id
   await expect(page.locator("#activity")).toContainText(/killHalf/);
   expect(await boxes()).toEqual(atStart);
 });
+
+test("demo: the throughput line is crisp on a slow scale; counters, toggle, and flashes fit their rows (WP7.2)", async ({
+  page,
+}) => {
+  await page.goto("/?demo=1&speed=12&pause=300");
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  await expect
+    .poll(() => page.locator('#counters .chip[data-counter="done"] b').textContent(), {
+      timeout: 60_000,
+    })
+    .not.toMatch(/^(—|0)$/);
+  // Drawn at the screen's pixel density: the canvas's pixel box is its CSS box times the ratio.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const c = document.querySelector("#throughputChart") as HTMLCanvasElement;
+        const dpr = window.devicePixelRatio || 1;
+        return (
+          c.width === Math.round(c.clientWidth * dpr) &&
+          c.height === Math.round(c.clientHeight * dpr)
+        );
+      }),
+    )
+    .toBe(true);
+  // The scale is a round number and moves slowly: over five seconds of a steady frame it takes at
+  // most two values (one rise as the frame gets going).
+  const scales = new Set<string>();
+  for (let i = 0; i < 10; i++) {
+    scales.add((await page.locator("#throughputChart").getAttribute("data-scale")) ?? "?");
+    await page.waitForTimeout(500);
+  }
+  expect(scales.size).toBeLessThanOrEqual(2);
+  for (const v of scales) expect(Number(v)).toBeGreaterThan(0);
+  const title = (await page.locator("#throughputChart").getAttribute("title")) ?? "";
+  expect(title).toContain("moves at most once a minute");
+  // Eight counters, all inside their box — read in one evaluate, since the chips are rebuilt on
+  // every state update and a locator can resolve to a detached one between two round trips.
+  const fit = await page.evaluate(() => {
+    const box = (document.querySelector("#counters") as HTMLElement).getBoundingClientRect();
+    return [...document.querySelectorAll("#counters .chip")].map((el) => {
+      const b = el.getBoundingClientRect();
+      return b.width > 0 && b.right <= box.right + 1 && b.bottom <= box.bottom + 1;
+    });
+  });
+  expect(fit).toHaveLength(8);
+  expect(fit.every(Boolean)).toBe(true);
+  // The redundancy toggle is one line under the buttons; the flashes are one line under the legend.
+  const toggle = await page.locator(".toggle-row label").boundingBox();
+  expect(toggle?.height ?? 99).toBeLessThan(28);
+  const pulses = await page.locator("#pulses").boundingBox();
+  expect(pulses?.height ?? 99).toBeLessThan(26);
+});
