@@ -114,6 +114,35 @@ describe("params and manifest", () => {
   });
 });
 
+describe("buildBundle with a source and input references (WP7.6)", () => {
+  test("the source is uploaded but not a file; referenced inputs are files but not uploaded", async () => {
+    const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
+    const source = new TextEncoder().encode("export function plan(): void {}");
+    const manifest = buildManifest({
+      name: "copy",
+      view: "text",
+      description: "",
+      defaultParams: {},
+      source: "b".repeat(64),
+    });
+    if (!manifest.ok) throw new Error(manifest.error);
+    expect(manifest.value.source).toBe("b".repeat(64));
+    const ref = { path: "/in/weights.bin", hash: "c".repeat(64), size: 822685 };
+    const b = await buildBundle(wasm, manifest.value, [], { source, inputRefs: [ref] });
+    expect(Object.keys(b.files).sort()).toEqual([
+      "/in/weights.bin",
+      "/manifest.json",
+      "/program.wasm",
+    ]);
+    expect(b.files["/in/weights.bin"]).toEqual({ hash: ref.hash, size: ref.size });
+    // module, manifest, source, bundle manifest: four blobs; the weights are not among them.
+    expect(b.blobs.length).toBe(4);
+    expect(b.blobs.some((x) => x === source)).toBe(true);
+    const parsed = fsManifest.parse(JSON.parse(new TextDecoder().decode(b.bundleBytes)));
+    expect(Object.keys(parsed.files).some((f) => f.includes("source"))).toBe(false);
+  });
+});
+
 describe("buildBundle", () => {
   test("produces the same bundle hash the control plane's seeding produces for the same inputs", async () => {
     const manifest = shippedManifest();

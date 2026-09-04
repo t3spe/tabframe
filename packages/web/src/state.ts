@@ -145,6 +145,8 @@ export interface ProgramInfo {
   view: ProgramView["view"] | null;
   description: string | null;
   defaultParams: Record<string, unknown>;
+  /** The program's source text in the store, by hash, when it has one (WP7.6). */
+  source: string | null;
 }
 
 /** The last execution that failed, kept until one succeeds so the reader sees what went wrong. */
@@ -615,6 +617,7 @@ export function applyMessage(
         view: known?.view ?? null,
         description: known?.description ?? null,
         defaultParams: known?.defaultParams ?? {},
+        source: known?.source ?? null,
       });
       return note(next, now, "system", `program ${msg.name} added (${msg.program.slice(0, 8)}…)`);
     }
@@ -696,6 +699,7 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
           view: p.view,
           description: p.description,
           defaultParams: p.defaultParams,
+          source: p.source ?? null,
         },
       ]),
     );

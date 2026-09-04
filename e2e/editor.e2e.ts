@@ -169,6 +169,70 @@ test("launch uploads the bundle through the observer socket and the control plan
   await page.locator("#programParams").fill("[1, 2]");
   await page.click("#launch");
   await expect(page.locator("#launchInfo")).toContainText("params must be a JSON object");
+  // The machine lists the upload; opened from there it has no source (a dropped .wasm), so the
+  // module itself is loaded, compile is off, and launch would run it as it is (WP7.6).
+  await page.reload();
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  const option = page.locator(`#example option[value="machine:${bundle}"]`);
+  await expect(option).toHaveCount(1, { timeout: 30_000 });
+  await expect(option).toContainText("no source");
+  await page.locator("#example").selectOption(`machine:${bundle}`);
+  await expect(page.locator("#exampleNote")).toContainText("no source", { timeout: 30_000 });
+  await expect(page.locator("#source")).toHaveValue(/has no source/);
+  await expect(page.locator("#compile")).toBeDisabled();
+  await expect(page.locator("#launch")).toBeEnabled();
+  await expect(page.locator("#moduleHash")).toHaveText(moduleHash);
+});
+
+test("a program compiled and launched here can be reopened from the machine with its source (WP7.6)", async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  await openEditor(page);
+  await page.locator("#example").selectOption("hello");
+  await expect(page.locator("#source")).toHaveValue(/hello, \$\{who\}/);
+  await page.locator("#programName").fill("hello-src");
+  await page.click("#compile");
+  await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
+    timeout: 180_000,
+  });
+  await page.click("#launch");
+  await expect(page.locator("#launchInfo")).toContainText("launch sent", { timeout: 30_000 });
+  const bundle = await page.locator("#bundleHash").textContent();
+  await expect(page.locator("#launchInfo")).toContainText(/answered|queued as|running as/, {
+    timeout: 30_000,
+  });
+  // Leave the machine idle for the suites that follow.
+  const dash = await page.context().newPage();
+  await dash.goto("/?observe");
+  await expect(dash.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  const kill = dash.locator("#killExecution");
+  await expect(kill).toBeVisible({ timeout: 15_000 });
+  await kill.click();
+  await expect(dash.locator("#failure")).toContainText("cancelled by an operator", {
+    timeout: 15_000,
+  });
+  await dash.close();
+  // A fresh editor lists it under "on the machine"; opening it brings the very text back from the
+  // store, the manifest's fields, and a name for the copy; compile is on, launch waits for it.
+  await page.reload();
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  const option = page.locator(`#example option[value="machine:${bundle}"]`);
+  await expect(option).toHaveCount(1, { timeout: 30_000 });
+  await expect(option).toHaveText("hello-src · text");
+  await expect(page.locator("#example optgroup[label='on the machine']")).toHaveCount(1);
+  await expect(page.locator("#example optgroup[label='examples'] option")).toHaveCount(3);
+  await page.locator("#example").selectOption(`machine:${bundle}`);
+  await expect(page.locator("#exampleNote")).toContainText("source loaded", { timeout: 30_000 });
+  await expect(page.locator("#source")).toHaveValue(/hello, \$\{who\}/);
+  await expect(page.locator("#programName")).toHaveValue("hello-src-edit");
+  await expect(page.locator("#programParams")).toHaveValue('{"who":"world"}');
+  await expect(page.locator("#compile")).toBeEnabled();
+  await expect(page.locator("#launch")).toBeDisabled();
+  // Reset returns to the machine's copy, not to an example.
+  await page.locator("#source").fill("garbage");
+  await page.click("#resetSource");
+  await expect(page.locator("#source")).toHaveValue(/hello, \$\{who\}/, { timeout: 30_000 });
 });
 
 test("the editor explains itself: a guide from the SDK's README, the machine's limits, and three examples to load", async ({

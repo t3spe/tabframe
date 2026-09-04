@@ -22,6 +22,7 @@ export async function buildFixturePrograms(): Promise<string> {
     sources.some((f) => f.endsWith(".ts") && statSync(f).mtimeMs > statSync(built).mtimeMs);
   if (stale) await compileProgram(path.join(src, "assembly/index.ts"), built);
   copyFileSync(path.join(src, "manifest.json"), path.join(out, "manifest.json"));
+  copyFileSync(path.join(src, "assembly/index.ts"), path.join(out, "source.ts")); // as the image ships it (WP7.6)
   return PROGRAMS_DIR;
 }
 

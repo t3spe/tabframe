@@ -289,6 +289,13 @@ describe("manifests", () => {
     expect(m.persist).toBe(false);
     expect(m.defaultParams).toEqual({});
     expect(programManifest.safeParse({ name: "", view: "tiles" }).success).toBe(false);
+    // The source hash is optional and must be a hash when present (WP7.6).
+    expect(programManifest.parse({ name: "m", view: "tiles" }).source).toBeUndefined();
+    const h = "a".repeat(64);
+    expect(programManifest.parse({ name: "m", view: "tiles", source: h }).source).toBe(h);
+    expect(programManifest.safeParse({ name: "m", view: "tiles", source: "nope" }).success).toBe(
+      false,
+    );
     expect(
       fsManifest.safeParse({ version: 1, files: { "/in/corpus.txt": { hash: H, size: 1 } } })
         .success,

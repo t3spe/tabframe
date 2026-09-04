@@ -45,6 +45,9 @@ if (existsSync(programs)) {
       for (const f of readdirSync(inputs))
         copyFileSync(path.join(inputs, f), path.join(out, "programs", name, "in", f));
     }
+    // The source (WP7.6): the seeder stores it and the editor opens the shipped program from it.
+    const source = path.join(programs, name, "assembly", "index.ts");
+    if (existsSync(source)) copyFileSync(source, path.join(out, "programs", name, "source.ts"));
   }
 }
 console.log(`[stage-image] ${path.relative(root, out)} ready (${readdirSync(out).join(", ")})`);

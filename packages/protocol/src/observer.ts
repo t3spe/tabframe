@@ -105,6 +105,8 @@ export const programView = z.object({
   description: z.string().max(512).nullable(),
   defaultParams: params,
   addedAt: millis,
+  /** The program's source text in the store, by hash, when it has one (WP7.6). */
+  source: hash.nullable().optional(),
 });
 
 export const snapshot = z.object({

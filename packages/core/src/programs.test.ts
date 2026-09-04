@@ -18,6 +18,7 @@ describe("programs in the snapshot", () => {
         description: null,
         defaultParams: { preset: 0 },
         addedAt: expect.any(Number),
+        source: null,
       },
     ]);
   });

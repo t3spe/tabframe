@@ -981,3 +981,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   `/guide.html`, linked from the top of the editor as "What is a program? ↗", with the limits
   sentence shared between the two. Deploy 1 of M7 (WP7.1–7.4) went out as generation 99 and passed
   three unattended demo passes.
+
+- **2026-09-04 (WP7.6).** A program's source is a blob in the store and its manifest names the
+  hash (`programManifest.source`, §5.1); the seeder stores the shipped programs' sources and the
+  image ships them; the editor (§5.6) lists every program on the machine before its examples and
+  opens one from the store — source, fields, and inputs kept by hash for the edited copy — and a
+  launch uploads the compiled text with the module. A dropped module has no source and opens as a
+  module. The source is never a file of the bundle, so a program cannot read its own text.

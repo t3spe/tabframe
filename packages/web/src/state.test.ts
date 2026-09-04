@@ -617,6 +617,7 @@ describe("dashboard v2: programs, stages, attempts, failures", () => {
       at: 1,
     });
     expect(programList(s).map((p) => p.name)).toEqual(["mandelbrot"]);
+    expect(programList(s)[0]?.source).toBeNull(); // the snapshot named none (WP7.6)
     expect(s.programs.get(HASH)?.defaultParams).toEqual({ preset: 0 });
     s = applyMessage(s, { t: "programAdded", ...env, seq: 2, program: "b".repeat(64), name: "wc" });
     expect(programList(s).map((p) => p.name)).toEqual(["mandelbrot", "wc"]);
