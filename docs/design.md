@@ -966,3 +966,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   one area line drawn at the device pixel ratio, on a round scale that rises at once and falls only
   after a minute below half, with a caption that names the window, the peak, and the scale. The
   counters take two rows, the redundancy toggle its own line, the flashes one line of text.
+
+- **2026-09-03 (WP7.3).** The programs panel no longer rebuilds its DOM on every event (§8.3): one
+  row per program and one launch form per open program are kept and updated in place, so a person
+  typing params keeps the caret; params are parsed on blur and on launch.
