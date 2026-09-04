@@ -7,6 +7,8 @@
     "**/node_modules",
     "packages/infra/**",
     "packages/web/**",
-    "packages/sdk-as/examples"
+    "packages/sdk-as/examples",
+    "**/dist-test",
+    "**/image-dist"
   ]
 }

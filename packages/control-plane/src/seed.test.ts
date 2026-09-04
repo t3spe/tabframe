@@ -88,4 +88,32 @@ describe("seedPrograms", () => {
     expect(w?.module).toBe(m.module);
     expect(w?.bundle).not.toBe(m.bundle);
   });
+  test("a program's source goes into the store and the manifest names it; one without a source has none (WP7.6)", async () => {
+    const store = new LocalStore("http://s/blob");
+    const found = [
+      ...discoverPrograms(dir),
+      ...discoverPrograms(path.join(PROGRAMS_DIR, "..", "repo-layout")),
+    ];
+    expect(found.find((p) => p.name === "mandelbrot")?.source?.length).toBeGreaterThan(1000);
+    expect(found.find((p) => p.name === "wordy")?.source).toBeUndefined();
+    const { seeded } = await seedPrograms(store, found);
+    const m = seeded.find((p) => p.name === "mandelbrot");
+    if (!m?.manifest.source) throw new Error("mandelbrot has no source hash");
+    expect(m.manifest.source).toMatch(/^[0-9a-f]{64}$/);
+    const text = new TextDecoder().decode((await store.get(m.manifest.source)) as Uint8Array);
+    expect(text).toContain("export function plan");
+    // The bundle's /manifest.json blob carries the same hash, so a reader of the bundle finds it.
+    const bundle = fsManifest.parse(
+      JSON.parse(new TextDecoder().decode((await store.get(m.bundle)) as Uint8Array)),
+    );
+    const manifestEntry = bundle.files[BUNDLE_PATHS.manifest];
+    if (!manifestEntry) throw new Error("no manifest entry");
+    const stored = JSON.parse(
+      new TextDecoder().decode((await store.get(manifestEntry.hash)) as Uint8Array),
+    ) as { source?: string };
+    expect(stored.source).toBe(m.manifest.source);
+    // The source is not a file of the bundle: the program cannot see it.
+    expect(Object.keys(m.files).some((f) => f.includes("source"))).toBe(false);
+    expect(seeded.find((p) => p.name === "wordy")?.manifest.source).toBeUndefined();
+  });
 });

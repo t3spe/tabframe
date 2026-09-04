@@ -28,6 +28,12 @@ export const programManifest = z.object({
   persist: z.boolean().default(false),
   defaultParams: z.record(z.string(), z.unknown()).default({}),
   description: z.string().max(512).optional(),
+  /**
+   * The hash of the program's source text in the store (WP7.6): the editor uploads it with the
+   * module and can reopen the program on any browser; the seeder sets it for shipped programs.
+   * Absent for a module dropped as a .wasm.
+   */
+  source: hash.optional(),
 });
 export type ProgramManifest = z.infer<typeof programManifest>;
 

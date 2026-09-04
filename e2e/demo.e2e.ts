@@ -315,6 +315,22 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect(page.locator("#resume")).toBeVisible();
   beat("paused while the editor is open");
   await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  // The editor lists every program on the machine and opens one from the store, source and all
+  // (WP7.6): tiny GPT's forward pass, with its weights kept by hash.
+  await expect(editor.locator("#example optgroup[label='on the machine'] option")).not.toHaveCount(
+    0,
+    { timeout: 30_000 },
+  );
+  const tiny = editor.locator("#example option", { hasText: /^tinygpt · text$/ });
+  await expect(tiny).toHaveCount(1);
+  await editor.locator("#example").selectOption({ label: "tinygpt · text" });
+  await expect(editor.locator("#exampleNote")).toContainText("1 input file kept by hash", {
+    timeout: 60_000,
+  });
+  await expect(editor.locator("#source")).toHaveValue(/weights/);
+  beat("the editor opened tiny GPT from the machine, source and weights by hash");
+  await editor.locator("#example").selectOption("mandelbrot");
+  await expect(editor.locator("#source")).toHaveValue(/Mandelbrot/);
   const source = await editor.locator("#source").inputValue();
   expect(source).toContain("const CYCLE: f64 = 48.0;");
   await editor

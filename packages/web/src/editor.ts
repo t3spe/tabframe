@@ -2,6 +2,7 @@
 // loaded worker, diagnostics with line numbers, a manifest and params form, compile → bundle →
 // launch through the observer socket, and the drop-a-`.wasm` door. Loaded by host.ts on demand,
 // so the dashboard never pays for it.
+import { BUNDLE_PATHS, fsManifest, programManifest } from "@tabframe/protocol";
 import { type PresignRequester, StoreClient } from "@tabframe/store/client";
 import { sha256Hex } from "@tabframe/store/hash";
 import type { WorkerReply, WorkerRequest } from "./compiler-worker.ts";
@@ -15,6 +16,7 @@ import {
   examples,
   fmtBytes,
   formatDiagnostic,
+  type InputRef,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
@@ -23,7 +25,7 @@ import {
   parseParams,
   shippedManifest,
 } from "./editor-core.ts";
-import type { ClusterState } from "./state.ts";
+import { type ClusterState, type ProgramInfo, programList } from "./state.ts";
 
 /** What the page gives the editor: the socket's upload and launch paths, and the cluster feed. */
 export interface EditorHost {
@@ -88,6 +90,16 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
 
   let module: Uint8Array | null = null;
   let moduleFrom: "compiled" | "dropped" | null = null;
+  /** The text the module was compiled from: it is what a launch uploads as the program's source. */
+  let compiledSource: string | null = null;
+  /** What the source box holds: an embedded example, or a program opened from the machine (WP7.6). */
+  type Loaded =
+    | { kind: "example"; key: string }
+    | { kind: "machine"; bundle: string; name: string; inputRefs: InputRef[]; hasSource: boolean };
+  let loaded: Loaded = { kind: "example", key: "mandelbrot" };
+  /** The machine's programs, from the snapshot the pause subscription brings (WP7.6). */
+  let machinePrograms: ProgramInfo[] = [];
+  let machineListSig = "";
   let lastCompile: CompileResult | null = null;
   let compilerLoadMs: number | null = null;
   let busy = false;
@@ -220,7 +232,9 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     try {
       await ensureWorker();
       status("compiling…", "wait");
-      const result = await compileInWorker(els.source.value);
+      const text = els.source.value;
+      const result = await compileInWorker(text);
+      compiledSource = text;
       lastCompile = result;
       renderDiagnostics(result.diagnostics);
       const errors = result.diagnostics.filter((d) => d.level === "error").length;
@@ -265,11 +279,19 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       info(els.launchInfo, params.error, true);
       return false;
     }
+    // A compiled module travels with its source (WP7.6): the manifest names the source blob's hash,
+    // so this program can be reopened in the editor from any browser. A dropped module has none.
+    const sourceBytes =
+      moduleFrom === "compiled" && compiledSource !== null
+        ? new TextEncoder().encode(compiledSource)
+        : null;
+    const sourceHash = sourceBytes ? await sha256Hex(sourceBytes) : undefined;
     const manifest = buildManifest({
       name: els.name.value,
       view: els.view.value,
       description: els.description.value,
       defaultParams: params.value,
+      ...(sourceHash ? { source: sourceHash } : {}),
     });
     if (!manifest.ok) {
       info(els.launchInfo, manifest.error, true);
@@ -283,7 +305,10 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     els.launch.disabled = true;
     launchedAt = Date.now();
     try {
-      const bundle = await buildBundle(module, manifest.value);
+      const bundle = await buildBundle(module, manifest.value, [], {
+        ...(sourceBytes ? { source: sourceBytes } : {}),
+        inputRefs: loaded.kind === "machine" ? loaded.inputRefs : [],
+      });
       info(els.launchInfo, `uploading ${bundle.blobs.length} blobs…`);
       const store = new StoreClient(base, { presign: (items) => host.presign(items) });
       await store.putMany(bundle.blobs);
@@ -315,8 +340,10 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     }
   }
 
-  /** The control plane answers a launch with an error message or with a queued execution. */
+  /** Every cluster state: the machine's program list for the select, then a launch's answer. */
   function onCluster(state: ClusterState): void {
+    machinePrograms = programList(state);
+    rebuildSelect();
     if (!awaitingAnswer) return;
     const err = state.activity.filter((a) => a.kind === "error" && a.at >= launchedAt).at(-1);
     if (err) {
@@ -387,39 +414,156 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   // ---- wiring -------------------------------------------------------------------------------------
   els.compile.onclick = () => void compile();
   els.launch.onclick = () => void launch();
-  // The examples (WP6.6): Mandelbrot as before, and the two others to read and try. Reset goes
-  // back to whichever is selected.
+  // The select (WP6.6, WP7.6): every program on the machine first — opened from the store, source
+  // and all — then the embedded examples. Reset goes back to whichever is loaded.
   const all = examples();
-  let current = all[0] as (typeof all)[0];
   const loadExample = (key: string, say: boolean): void => {
     const ex = all.find((e) => e.key === key);
     if (!ex) return;
-    current = ex;
+    loaded = { kind: "example", key };
     els.source.value = ex.source;
     els.params.value = JSON.stringify(ex.manifest.defaultParams);
     els.name.value = ex.manifest.name;
     els.view.value = ex.manifest.view;
     els.description.value = ex.manifest.description ?? "";
+    els.compile.disabled = false;
     if (els.exampleNote) els.exampleNote.textContent = ex.note;
     renderDiagnostics([]);
     if (say) info(els.note, `loaded ${ex.manifest.name}`);
   };
-  if (els.example) {
-    els.example.replaceChildren(
-      ...all.map((ex) => {
+  const fetchBlob = async (hash: string): Promise<Uint8Array> => {
+    const base = host.storeBase();
+    if (!base) throw new Error("not connected to the machine");
+    const r = await fetch(`${base.replace(/\/$/, "")}/${hash}`);
+    if (!r.ok) throw new Error(`${hash.slice(0, 8)}…: HTTP ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  };
+  const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+  /**
+   * A program from the machine (WP7.6, D5): its bundle names its manifest, its module, and its
+   * inputs; the manifest names its source when it has one. With a source, the box gets the text
+   * and a launch of the edited copy keeps the inputs by hash; without one, the module itself is
+   * loaded and a launch runs it as it is with the params on the right.
+   */
+  const loadMachineProgram = async (bundle: string): Promise<void> => {
+    const p = machinePrograms.find((x) => x.bundle === bundle);
+    if (!p) return;
+    status(`loading ${p.name} from the store…`, "wait");
+    try {
+      const fs = fsManifest.parse(JSON.parse(decode(await fetchBlob(bundle))));
+      const manifestEntry = fs.files[BUNDLE_PATHS.manifest];
+      const moduleEntry = fs.files[BUNDLE_PATHS.module];
+      if (!manifestEntry || !moduleEntry)
+        throw new Error("the bundle lacks its manifest or module");
+      const manifest = programManifest.parse(
+        JSON.parse(decode(await fetchBlob(manifestEntry.hash))),
+      );
+      const inputRefs: InputRef[] = Object.entries(fs.files)
+        .filter(([path]) => path.startsWith(BUNDLE_PATHS.inputs))
+        .map(([path, e]) => ({ path, hash: e.hash, size: e.size }));
+      els.name.value = `${manifest.name}-edit`.slice(0, 64);
+      els.view.value = manifest.view;
+      els.description.value = manifest.description ?? "";
+      els.params.value = JSON.stringify(manifest.defaultParams);
+      renderDiagnostics([]);
+      const inputsNote = inputRefs.length
+        ? ` · ${inputRefs.length} input ${inputRefs.length === 1 ? "file" : "files"} kept by hash, nothing to re-upload`
+        : "";
+      if (manifest.source) {
+        const source = await fetchBlob(manifest.source);
+        els.source.value = decode(source);
+        els.compile.disabled = false;
+        module = null;
+        moduleFrom = null;
+        compiledSource = null;
+        els.launch.disabled = true;
+        info(els.moduleInfo, "compile to get a module, then launch");
+        if (els.exampleNote)
+          els.exampleNote.textContent = `from the machine · source loaded (${fmtBytes(source.length)})${inputsNote} · edit, compile, launch as ${els.name.value}`;
+        status(`${p.name} loaded from the store`, "live");
+      } else {
+        const wasm = await fetchBlob(moduleEntry.hash);
+        els.source.value = `// ${manifest.name} has no source: it was dropped as a .wasm.\n// Its module is loaded; launch runs it as it is with the params on the right.`;
+        els.compile.disabled = true;
+        compiledSource = null;
+        await showModule(wasm, "dropped");
+        if (els.exampleNote)
+          els.exampleNote.textContent = `from the machine · no source (a dropped .wasm)${inputsNote} · launch runs the module as it is`;
+        status(`${p.name}'s module loaded from the store`, "live");
+      }
+      loaded = {
+        kind: "machine",
+        bundle,
+        name: manifest.name,
+        inputRefs,
+        hasSource: !!manifest.source,
+      };
+    } catch (err) {
+      status("compiler: idle", "");
+      info(
+        els.note,
+        `could not open ${p.name}: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      );
+    }
+  };
+  /** The select is rebuilt only when the machine's list changed, and keeps its selection. */
+  function rebuildSelect(): void {
+    if (!els.example) return;
+    const sig = machinePrograms
+      .map((p) => `${p.bundle}:${p.name}:${p.view}:${p.source ?? ""}`)
+      .join("|");
+    if (sig === machineListSig && els.example.childElementCount > 0) return;
+    machineListSig = sig;
+    const selected = els.example.value;
+    els.example.replaceChildren();
+    if (machinePrograms.length > 0) {
+      const onMachine = document.createElement("optgroup");
+      onMachine.label = "on the machine";
+      for (const p of machinePrograms) {
         const o = document.createElement("option");
-        o.value = ex.key;
-        o.textContent = ex.label;
-        return o;
-      }),
-    );
-    els.example.onchange = () => loadExample(els.example?.value ?? "mandelbrot", true);
-    if (els.exampleNote) els.exampleNote.textContent = current.note;
+        o.value = `machine:${p.bundle}`;
+        o.textContent = `${p.name} · ${p.view ?? "view unknown"}${p.source ? "" : " · no source"}`;
+        onMachine.append(o);
+      }
+      els.example.append(onMachine);
+    }
+    const group = document.createElement("optgroup");
+    group.label = "examples";
+    for (const ex of all) {
+      const o = document.createElement("option");
+      o.value = ex.key;
+      o.textContent = ex.label;
+      group.append(o);
+    }
+    els.example.append(group);
+    els.example.value = [...els.example.options].some((o) => o.value === selected)
+      ? selected
+      : loaded.kind === "example"
+        ? loaded.key
+        : "mandelbrot";
+  }
+  if (els.example) {
+    rebuildSelect();
+    els.example.onchange = () => {
+      const v = els.example?.value ?? "mandelbrot";
+      if (v.startsWith("machine:")) void loadMachineProgram(v.slice("machine:".length));
+      else loadExample(v, true);
+    };
+    if (els.exampleNote) els.exampleNote.textContent = all[0]?.note ?? "";
   }
   els.reset.onclick = () => {
-    loadExample(current.key, false);
-    info(els.note, `source reset to ${current.manifest.name}`);
+    if (loaded.kind === "machine") {
+      void loadMachineProgram(loaded.bundle);
+      info(els.note, `source reset to ${loaded.name} as the machine has it`);
+      return;
+    }
+    const key = loaded.key;
+    loadExample(key, false);
+    info(els.note, `source reset to ${all.find((e) => e.key === key)?.manifest.name ?? key}`);
   };
+  // The machine's programs arrive with the first snapshot; subscribe from the start.
+  if (!unsubscribe) unsubscribe = host.subscribe(onCluster);
   els.source.onkeydown = (e) => {
     // Tab inserts two spaces instead of leaving the field.
     if (e.key === "Tab") {

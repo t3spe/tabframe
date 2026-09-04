@@ -120,6 +120,8 @@ export interface ManifestFields {
   view: string;
   description: string;
   defaultParams: Record<string, unknown>;
+  /** The hash of the source text the module was compiled from, when it was (WP7.6). */
+  source?: string;
 }
 
 /** The manifest fields become a program manifest, validated by the protocol's schema. */
@@ -130,6 +132,7 @@ export function buildManifest(fields: ManifestFields): Parsed<ProgramManifest> {
     persist: false,
     defaultParams: fields.defaultParams,
     ...(fields.description.trim() ? { description: fields.description.trim() } : {}),
+    ...(fields.source ? { source: fields.source } : {}),
   });
   if (!r.success) {
     const issue = r.error.issues[0];
@@ -154,8 +157,16 @@ export interface BundleInput {
   bytes: Uint8Array;
 }
 
+/** An input kept by hash from the program a copy was opened from: already in the store, never re-uploaded (WP7.6). */
+export interface InputRef {
+  /** The bundle path, `/in/<file>`. */
+  path: string;
+  hash: string;
+  size: number;
+}
+
 export interface Bundle {
-  /** Module, manifest, inputs, then the bundle manifest itself — everything a launch uploads. */
+  /** Module, manifest, inputs, the source when there is one, then the bundle manifest itself — everything a launch uploads. */
   blobs: Uint8Array[];
   files: FsManifest["files"];
   bundleBytes: Uint8Array;
@@ -173,6 +184,7 @@ export async function buildBundle(
   module: Uint8Array,
   manifest: ProgramManifest,
   inputs: BundleInput[] = [],
+  extra: { source?: Uint8Array; inputRefs?: InputRef[] } = {},
 ): Promise<Bundle> {
   const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
   const moduleHash = await sha256Hex(module);
@@ -188,6 +200,10 @@ export async function buildBundle(
     };
     blobs.push(input.bytes);
   }
+  // Inputs kept by hash are named, not uploaded; the source is uploaded, not named (the manifest
+  // carries its hash, so it is not a file the program can see).
+  for (const ref of extra.inputRefs ?? []) files[ref.path] = { hash: ref.hash, size: ref.size };
+  if (extra.source) blobs.push(extra.source);
   const bundleManifest: FsManifest = { version: 1, files };
   const bundleBytes = new TextEncoder().encode(canonicalStringify(bundleManifest));
   blobs.push(bundleBytes);

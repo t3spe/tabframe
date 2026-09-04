@@ -22,6 +22,8 @@ export interface DiscoveredProgram {
   manifest: ProgramManifest;
   /** Files under `in/`, as `/in/<file>`. */
   inputs: Array<{ path: string; bytes: Uint8Array }>;
+  /** The program's source (`assembly/index.ts` in the repo, `source.ts` in the image), when present (WP7.6). */
+  source?: Uint8Array;
 }
 
 export interface SeededProgram {
@@ -63,6 +65,9 @@ export function discoverPrograms(dir: string): DiscoveredProgram[] {
           });
       }
     }
+    const sourcePath = [path.join(base, "assembly", "index.ts"), path.join(home, "source.ts")].find(
+      (f) => existsSync(f),
+    );
     found.push({
       name,
       dir: home,
@@ -70,6 +75,7 @@ export function discoverPrograms(dir: string): DiscoveredProgram[] {
       manifestBytes,
       manifest,
       inputs,
+      ...(sourcePath ? { source: new Uint8Array(readFileSync(sourcePath)) } : {}),
     });
   }
   return found;
@@ -94,17 +100,25 @@ export async function seedPrograms(
       continue;
     }
     const module = await store.put(p.wasm);
-    const manifestHash = await store.put(p.manifestBytes);
+    // The source goes into the store and the manifest names it (WP7.6), so the editor can open the
+    // shipped program the way it opens an upload; the manifest blob is re-serialised with the hash.
+    let manifest = p.manifest;
+    let manifestBytes = p.manifestBytes;
+    if (p.source) {
+      manifest = { ...p.manifest, source: await store.put(p.source) };
+      manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
+    }
+    const manifestHash = await store.put(manifestBytes);
     const files: FsManifest["files"] = {
       [BUNDLE_PATHS.module]: { hash: module, size: p.wasm.length },
-      [BUNDLE_PATHS.manifest]: { hash: manifestHash, size: p.manifestBytes.length },
+      [BUNDLE_PATHS.manifest]: { hash: manifestHash, size: manifestBytes.length },
     };
     for (const input of p.inputs) {
       files[input.path] = { hash: await store.put(input.bytes), size: input.bytes.length };
     }
     const bundleManifest: FsManifest = { version: 1, files };
     const bundle = await store.put(new TextEncoder().encode(canonicalStringify(bundleManifest)));
-    seeded.push({ name: p.name, bundle, module, manifest: p.manifest, files });
+    seeded.push({ name: p.name, bundle, module, manifest, files });
   }
   return { seeded, rejected };
 }

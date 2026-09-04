@@ -497,6 +497,7 @@ export function programView(p: ProgramRecord): ProgramView {
     description: p.manifest.description ?? null,
     defaultParams: p.manifest.defaultParams,
     addedAt: p.addedAt,
+    source: p.manifest.source ?? null,
   };
 }
 /** Room left for task rows once the envelope and page fields are accounted for. */
