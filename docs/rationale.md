@@ -127,9 +127,9 @@ In order of what I would do first:
 The assignment grades scoping against an eight-hour ceiling and asks for the time spent. This
 build went well past that ceiling by deliberate choice: an evening of brainstorming, a day of
 design walkthrough (the decisions D1–D20 and the design record), and then the build itself — M0
-to M6 across one long session from the evening of 2026-09-01 through 2026-09-03, every milestone
+to M7 across one long session from the evening of 2026-09-01 through 2026-09-04, every milestone
 verified against AWS. I kept a time log with two columns because the honest number has two parts.
-`docs/timelog.md` records **about 40 hours** of session time in total (measured from the transcripts;
+`docs/timelog.md` records **about 45 hours** of session time in total (measured from the transcripts;
 the build session is still open as this is written and the log is finalised with it), plus eight and a
 half hours of worker sessions that ran in parallel, of which **<<developer hours>>** were my own hours
 at the keyboard.
