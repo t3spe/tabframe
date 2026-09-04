@@ -136,9 +136,12 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   }
   // The default loop starts a frame as soon as someone watches; the fleet adds two cores.
   await expect(page.locator("#exec")).toContainText("mandelbrot", { timeout: 120_000 });
+  // Three nodes: this tab's and the two cloud cores. The cores share one host label ("fleet",
+  // WP8.2), so the host count is two here, not three as before that change.
   await expect
-    .poll(() => counts(page).then((c) => c.hosts), { timeout: 150_000 })
+    .poll(() => counts(page).then((c) => c.nodes), { timeout: 150_000 })
     .toBeGreaterThanOrEqual(3);
+  expect((await counts(page)).hosts).toBeGreaterThanOrEqual(2);
   layoutPage = page;
   await beatAndMeasure(`rendering with ${JSON.stringify(await counts(page))}`);
   await expect.poll(() => counter(page, "done"), { timeout: 120_000 }).toBeGreaterThan(10);

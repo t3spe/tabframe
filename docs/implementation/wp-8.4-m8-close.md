@@ -28,7 +28,13 @@ review-loops goal: once the three loops are merged, deploy once and run the unat
   passes also had to click kill half twice: the line the dashboard's activity snippet writes for a
   control was pushed out of its fourteen rows within a second by the reassignments the kill caused,
   so the script never saw it. The snippet now keeps the latest control line of the last minute in
-  view. DEMO_RESULT
+  view.
+- **The third deploy** (generation 129, image version 26) went through with the IAM gate judging
+  the diff on its own — no broadening, no flag. **Three unattended demo passes then went green**
+  (1.9, 1.9, and 1.8 minutes; kill half applied on the first click each time) once the demo's first
+  step counted nodes rather than hosts: loop 2 gave every cloud core the one host label "fleet", so
+  two cores are one host and a threshold of three hosts could never be met with one tab. The machine
+  was right; the check was stale.
 
 ## Records
 
