@@ -41,7 +41,7 @@ test("the editor opens from the dashboard in its own tab and holds the machine p
   await expect(editor.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
   await expect(editor.locator("#pauseState")).toContainText("paused");
   // The dashboard sees the pause and offers Resume.
-  await expect(page.locator("#exec")).toContainText("paused (editor open)", { timeout: 15_000 });
+  await expect(page.locator("#loop")).toContainText("paused by the editor", { timeout: 15_000 });
   await expect(page.locator("#resume")).toBeVisible();
   // Closing the tab lifts it: the control plane resumes when the holder's socket goes away.
   await editor.close();

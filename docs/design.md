@@ -400,6 +400,8 @@ Every socket message is one JSON text frame with a type field and the generation
 
 **Controls:** `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `skip`, `killExecution`, `launch`, `runFollowUp`, `setRedundancy`, `stop`, `start`, `pause`, `resume`, `presign` (for bundle uploads), `ping`. The machine view carries `stopped`, `paused`, and `yielded`.
 
+**The header's one slot (WP7.1).** The dashboard's header has one slot for Stop / Start / Resume and it always means "what you can do to the machine right now": Resume while an editor tab holds the machine paused; Stop while anything runs, the loop's frame or a person's launch; Start when nothing runs and the loop is held by Stop or has yielded; Stop again when the loop is free, to hold it before its next frame. A separate loop pill names the loop's state (running · held by Stop · yielded to you · paused by the editor). Every control says what it will do in its tooltip and what it did in the activity line, which the issuing page also shows as a notice for a few seconds.
+
 ### 8.4 Sizes, limits, codes
 
 | Message | Typical | Cap |
@@ -951,3 +953,10 @@ Dated deviations discovered while building, recorded before the code landed (pla
   (not the machine); file names are links that open the viewer in a new tab on that file. The
   churn simulation's chaos observers now press Stop and Start too, and its calm phase owes the
   loop its yield: half the runs press Start, the other half wait the ten minutes out.
+
+- **2026-09-03 (WP7.1).** The third review's first two items. The header's Stop / Start / Resume
+  slot follows what a visitor can do now rather than the loop's flags alone (§8.3): Stop while
+  anything runs, Start only when idle and held, Resume while paused; a loop pill states the loop's
+  state and the execution pill stops carrying it. Stop's tooltip names what it would end; the
+  activity lines for stop, start, pause, and resume say what happened in words, and a page's own
+  controls echo in its notice (rule R2 of the M7 walkthrough).

@@ -15,11 +15,12 @@
   <span id="counts" class="pill">0 nodes · 0 hosts</span>
   <span id="seq" class="pill">seq 0</span>
   <span id="exec" class="pill">idle</span>
+  <span id="loop" class="pill loop" data-loop="running" title="The automatic loop renders frame after frame while someone watches">loop · running</span>
   <span id="rate" class="pill">0.0 tasks/s</span>
   <span class="spacer"></span>
-  <button type="button" id="stop" class="danger" title="End the running execution, drop the loop's queued frames, and keep the machine idle until Start">stop</button>
-  <button type="button" id="start" title="Let the loop run again" hidden>start</button>
-  <button type="button" id="resume" title="Lift the pause an editor tab holds" hidden>resume</button>
+  <button type="button" id="stop" class="danger" title="Ends what is running and holds the automatic loop until Start; a launch of yours still runs at once">stop</button>
+  <button type="button" id="start" title="Lets the automatic loop run again" hidden>start</button>
+  <button type="button" id="resume" title="Resumes the machine an editor tab holds paused" hidden>resume</button>
   <button type="button" id="freezePanel" class="panel-only" hidden title="Stop this tab from updating so you can read it; updates queue and apply on resume">pause updates</button>
   <button type="button" id="openEditor" title="Open the editor in its own tab; the machine pauses while it is open">editor ↗</button>
 </header>
