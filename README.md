@@ -109,7 +109,7 @@ Every milestone was verified against the deployed machine; the records are in `d
 | The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`m3-verification.md`](docs/m3-verification.md)) |
 | Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
 
-559 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
+560 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
 tests in Playwright, and CI on every push with no AWS credentials.
 
 ## Limits, stated plainly

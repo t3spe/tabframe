@@ -673,12 +673,12 @@ function render(state: ClusterState): void {
     ? `${state.activity.length} lines · last: ${fmtTime(lastAct.at)} ${lastAct.text}`
     : "nothing yet";
   // The activity list is redrawn when it changed (WP8.2), not on every frame.
-  const activitySig = `${state.activity.length}:${state.activity.at(-1)?.seq ?? 0}:${state.activity.at(-1)?.at ?? 0}`;
+  const lastControl = latestControl(state, now);
+  const activitySig = `${state.activity.length}:${state.activity.at(-1)?.seq ?? 0}:${state.activity.at(-1)?.at ?? 0}:${lastControl?.at ?? 0}`;
   if (activitySig !== activityDrawn) {
     activityDrawn = activitySig;
     els.activity.replaceChildren(
-      ...state.activity
-        .slice(panelMode === "activity" ? 0 : -14)
+      ...visibleActivity(state, now)
         .reverse()
         .map((a) => {
           const li = document.createElement("li");
@@ -1177,3 +1177,28 @@ function expose(): void {
 }
 let spawnedOnce = false;
 void main();
+
+/** The newest control line of the last minute (WP8.4): what a person just did must stay readable. */
+function latestControl(state: ClusterState, now: number) {
+  for (let i = state.activity.length - 1; i >= 0; i--) {
+    const a = state.activity[i];
+    if (!a) break;
+    if (now - a.at > 60_000) return null;
+    if (a.kind === "control") return a;
+  }
+  return null;
+}
+
+/**
+ * The activity tab shows everything; the dashboard's snippet shows the last fourteen lines — but a
+ * kill half is followed within a second by more than fourteen reassignments and departures, and
+ * the line saying what the click did used to vanish before a reader (or the demo script) saw it
+ * (WP8.4). The latest control line of the last minute keeps its place at the bottom of the snippet.
+ */
+function visibleActivity(state: ClusterState, now: number) {
+  if (panelMode === "activity") return [...state.activity];
+  const recent = state.activity.slice(-14);
+  const control = latestControl(state, now);
+  if (control && !recent.includes(control)) recent[0] = control;
+  return recent;
+}

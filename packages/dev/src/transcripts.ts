@@ -54,7 +54,7 @@ export const PATTERNS: readonly ScrubPattern[] = [
   },
   { name: "account-id", re: /\b\d{12}\b/g, replacement: "************" },
   // The operator scripts' own mask keeps the last four digits; an export keeps none.
-  { name: "masked-account-tail", re: /\*{8}\d{4}\b/g, replacement: "************" },
+  { name: "masked-account-tail", re: /\*{8}\d{4,}\b/g, replacement: "************" },
   {
     name: "email",
     re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g,

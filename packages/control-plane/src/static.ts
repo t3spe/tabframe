@@ -58,7 +58,11 @@ export async function serveStatic(
       "content-length": data.length,
       "cache-control": cache,
       "x-content-type-options": "nosniff",
-      ...(rel.endsWith(".html") ? { "content-security-policy": LOCAL_PAGE_CSP } : {}),
+      // Pages and scripts both (WP8.4): a worker's policy comes from its script's response, and
+      // CloudFront attaches the policy to every page response, so the local server must too.
+      ...(rel.endsWith(".html") || rel.endsWith(".js")
+        ? { "content-security-policy": LOCAL_PAGE_CSP }
+        : {}),
     });
     res.end(data);
   } catch {
