@@ -23,6 +23,7 @@ import {
   type ClusterState,
   type ExecutionState,
   ledgerRows,
+  type ProgramInfo,
   programList,
   stageStrip,
   type TaskState,
@@ -149,7 +150,24 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   let pinned = deps.openFile != null || deps.openRoot != null;
   let dismissedFailure: string | null = null;
   /** Programs whose launch form is open, with the text typed so far. */
-  const launchForms = new Map<string, { params: string; error: string | null }>();
+  /**
+   * The programs panel keeps one DOM row per program and one launch form per open program, and
+   * updates them in place (WP7.3): a rebuild on every state event replaced the textarea a person
+   * was typing in, ten times a second, and the caret went with it.
+   */
+  type ProgramRow = {
+    row: HTMLDivElement;
+    name: HTMLElement;
+    view: HTMLElement;
+    running: HTMLElement;
+    launch: HTMLButtonElement;
+    desc: HTMLElement;
+    bundleLine: HTMLElement;
+    formSlot: HTMLDivElement;
+  };
+  const programRows = new Map<string, ProgramRow>();
+  type LaunchForm = { box: HTMLDivElement; input: HTMLTextAreaElement; error: HTMLElement };
+  const launchForms = new Map<string, LaunchForm>();
   let last: ClusterState | null = null;
   /** What each panel last drew; a panel redraws only when its signature moves. */
   const drawn = new Map<string, string>();
@@ -170,86 +188,134 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     const programs = programList(state);
     const running =
       state.execution && state.execution.phase !== "done" ? state.execution.program : null;
-    const sig = JSON.stringify([
-      programs.map((p) => [p.bundle, p.name, p.view, p.description]),
-      running,
-      [...launchForms.entries()],
-    ]);
-    if (!changed("programs", sig)) return;
-    els.programs.replaceChildren();
     if (programs.length === 0) {
-      els.programs.append(
-        el(
-          "p",
-          "muted",
-          "No programs yet. The machine seeds its demos at boot; the editor uploads more.",
-        ),
-      );
+      if (programRows.size > 0 || els.programs.childElementCount === 0) {
+        programRows.clear();
+        launchForms.clear();
+        els.programs.replaceChildren(
+          el(
+            "p",
+            "muted",
+            "No programs yet. The machine seeds its demos at boot; the editor uploads more.",
+          ),
+        );
+      }
       return;
     }
+    for (const [bundle, r] of programRows) {
+      if (programs.some((p) => p.bundle === bundle)) continue;
+      r.row.remove();
+      programRows.delete(bundle);
+      launchForms.delete(bundle);
+    }
     for (const p of programs) {
-      const row = el("div", "program");
-      row.dataset.bundle = p.bundle;
-      const head = el("div", "program-head");
-      head.append(el("b", undefined, p.name));
-      head.append(el("span", "pill", p.view ?? "view unknown"));
-      if (running === p.bundle) head.append(el("span", "pill live", "running"));
-      const launch = el("button", undefined, launchForms.has(p.bundle) ? "cancel" : "launch…");
-      launch.type = "button";
-      launch.dataset.launch = p.name;
-      launch.onclick = () => {
-        if (launchForms.has(p.bundle)) launchForms.delete(p.bundle);
-        else launchForms.set(p.bundle, { params: JSON.stringify(p.defaultParams), error: null });
-        deps.rerender();
-      };
-      head.append(launch);
-      row.append(head);
-      if (p.description) row.append(el("div", "muted small", p.description));
-      row.append(el("div", "mono muted small", `bundle ${short(p.bundle)}`));
-      const form = launchForms.get(p.bundle);
-      if (form) {
-        const box = el("div", "launch-form");
-        const label = el("label", undefined, "params (JSON object)");
-        const input = el("textarea");
-        input.rows = 2;
-        input.value = form.params;
-        input.spellcheck = false;
-        // Typing edits the form's text without a redraw, so the caret stays where it is.
-        input.oninput = () => {
-          form.params = input.value;
-          drawn.set("programs", `${drawn.get("programs") ?? ""}~`);
-        };
-        label.append(input);
-        box.append(label);
-        const go = el("button", undefined, `launch ${p.name}`);
-        go.type = "button";
-        go.dataset.launchGo = p.name;
-        go.onclick = () => {
-          let params: Record<string, unknown>;
-          try {
-            const parsed: unknown = JSON.parse(form.params || "{}");
-            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-              throw new Error("params must be a JSON object");
-            params = parsed as Record<string, unknown>;
-          } catch (err) {
-            form.error = err instanceof Error ? err.message : String(err);
-            deps.rerender();
-            return;
-          }
-          const sent = deps.send({ t: "launch", bundle: p.bundle, params, inherit: null });
-          form.error = sent ? null : "not connected";
-          if (sent) launchForms.delete(p.bundle);
-          deps.rerender();
-        };
-        box.append(go);
-        if (form.error) box.append(el("div", "bad small", form.error));
-        row.append(box);
+      let r = programRows.get(p.bundle);
+      if (!r) {
+        r = buildProgramRow(p);
+        programRows.set(p.bundle, r);
       }
-      els.programs.append(row);
+      r.name.textContent = p.name;
+      r.view.textContent = p.view ?? "view unknown";
+      r.running.hidden = running !== p.bundle;
+      r.launch.textContent = launchForms.has(p.bundle) ? "cancel" : "launch…";
+      r.launch.dataset.launch = p.name;
+      r.desc.textContent = p.description ?? "";
+      r.desc.hidden = !p.description;
+      r.bundleLine.textContent = `bundle ${short(p.bundle)}`;
+    }
+    // Rows are moved only when the order really changed (a program came or went): moving a node
+    // that holds the focus would blur it.
+    const wanted = programs.map((p) => (programRows.get(p.bundle) as ProgramRow).row);
+    const current = [...els.programs.children];
+    if (wanted.length !== current.length || wanted.some((node, i) => node !== current[i])) {
+      const active = document.activeElement;
+      els.programs.replaceChildren(...wanted);
+      if (active instanceof HTMLElement && els.programs.contains(active)) active.focus();
     }
   }
 
-  // ---- queue -----------------------------------------------------------------------------------
+  function buildProgramRow(p: ProgramInfo): ProgramRow {
+    const row = el("div", "program");
+    row.dataset.bundle = p.bundle;
+    const head = el("div", "program-head");
+    const name = el("b");
+    const view = el("span", "pill");
+    const running = el("span", "pill live", "running");
+    running.hidden = true;
+    const launch = el("button");
+    launch.type = "button";
+    launch.title = "Launch this program with params of your choosing; it goes ahead of the loop";
+    head.append(name, view, running, launch);
+    const desc = el("div", "muted small");
+    const bundleLine = el("div", "mono muted small");
+    const formSlot = el("div");
+    row.append(head, desc, bundleLine, formSlot);
+    launch.onclick = () => {
+      const open = launchForms.get(p.bundle);
+      if (open) {
+        open.box.remove();
+        launchForms.delete(p.bundle);
+        launch.textContent = "launch…";
+        return;
+      }
+      const form = buildLaunchForm(p, () => {
+        launchForms.delete(p.bundle);
+        launch.textContent = "launch…";
+      });
+      launchForms.set(p.bundle, form);
+      formSlot.append(form.box);
+      launch.textContent = "cancel";
+      form.input.focus();
+    };
+    return { row, name, view, running, launch, desc, bundleLine, formSlot };
+  }
+
+  /** The form parses its params on blur and on launch, never on a keystroke; it says what is wrong. */
+  function buildLaunchForm(p: ProgramInfo, done: () => void): LaunchForm {
+    const box = el("div", "launch-form");
+    const label = el("label", undefined, "params (JSON object)");
+    const input = el("textarea");
+    input.rows = 2;
+    input.value = JSON.stringify(p.defaultParams);
+    input.spellcheck = false;
+    label.append(input);
+    const error = el("div", "bad small");
+    error.hidden = true;
+    const parse = (): Record<string, unknown> | null => {
+      try {
+        const parsed: unknown = JSON.parse(input.value || "{}");
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+          throw new Error("params must be a JSON object");
+        error.hidden = true;
+        return parsed as Record<string, unknown>;
+      } catch (err) {
+        error.textContent = err instanceof Error ? err.message : String(err);
+        error.hidden = false;
+        return null;
+      }
+    };
+    input.onblur = () => void parse();
+    input.oninput = () => {
+      error.hidden = true;
+    };
+    const go = el("button", undefined, `launch ${p.name}`);
+    go.type = "button";
+    go.dataset.launchGo = p.name;
+    go.onclick = () => {
+      const params = parse();
+      if (!params) return;
+      const sent = deps.send({ t: "launch", bundle: p.bundle, params, inherit: null });
+      if (!sent) {
+        error.textContent = "not connected; the launch was not sent";
+        error.hidden = false;
+        return;
+      }
+      box.remove();
+      done();
+    };
+    box.append(label, go, error);
+    return { box, input, error };
+  }
 
   function renderQueue(state: ClusterState): void {
     const now = deps.now();

@@ -288,3 +288,44 @@ test("demo: a file's name opens the file in its own tab, rendered, with the raw 
   await expect(viewer.locator("#filePreview")).toContainText("/out/2/0");
   await viewer.close();
 });
+
+test("demo: typing params in a program's launch form keeps the caret while the machine streams events (WP7.3)", async ({
+  page,
+}) => {
+  await page.goto("/?demo=1&speed=12&program=mandelbrot");
+  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+  await expect(page.locator('[data-launch="wordcount"]')).toBeVisible({ timeout: 30_000 });
+  await page.click('[data-launch="wordcount"]');
+  const input = page.locator("#programs .launch-form textarea");
+  await expect(input).toBeFocused();
+  // Mark the node: if the panel rebuilt it, the mark would be gone.
+  await input.evaluate((node) => {
+    (node as HTMLElement).dataset.marker = "same-node";
+  });
+  await input.fill("");
+  await input.pressSequentially('{"k":7,"top":12}', { delay: 90 }); // sixteen keystrokes, 1.4 s
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue('{"k":7,"top":12}');
+  await expect(input).toHaveAttribute("data-marker", "same-node");
+  // The launch button stayed the same node too, and the launch goes out with exactly that object.
+  await page.click('[data-launch-go="wordcount"]');
+  await expect(page.locator("#programs .launch-form")).toHaveCount(0);
+  await expect
+    .poll(
+      async () =>
+        `${await page.locator("#queue").textContent()} ${await page.locator("#exec").textContent()}`,
+      {
+        timeout: 30_000,
+      },
+    )
+    .toContain("wordcount");
+  // Bad params are named on blur, and never leave the page.
+  await page.click('[data-launch="wordcount"]');
+  await input.fill("[1, 2]");
+  await input.evaluate((node) => (node as HTMLElement).blur());
+  await expect(page.locator("#programs .launch-form .bad")).toContainText(
+    "params must be a JSON object",
+  );
+  await page.click('[data-launch-go="wordcount"]');
+  await expect(page.locator("#programs .launch-form")).toHaveCount(1);
+});
