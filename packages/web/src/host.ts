@@ -11,6 +11,7 @@ import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { connectionCopy, fmtCountdown, machineCopy, ROTATING_DETAIL } from "./banners.ts";
 import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
+import { loadSessionUrl } from "./page-config.ts";
 import { gridIndexAt, gridLayout, mountPanels, type Panels } from "./panels.ts";
 import {
   applyMessage,
@@ -521,7 +522,10 @@ function render(state: ClusterState): void {
   $<HTMLButtonElement>("#stop").hidden = slot !== "stop";
   $<HTMLButtonElement>("#start").hidden = slot !== "start";
   $<HTMLButtonElement>("#resume").hidden = slot !== "resume";
-  $<HTMLButtonElement>("#stop").title = stopTitle(state);
+  // Stop's tooltip is what it does now, plus why it cannot apply while disconnected (WP8.3).
+  const stopButton = $<HTMLButtonElement>("#stop");
+  stopButton.dataset.baseTitle = stopTitle(state);
+  stopButton.title = reasoned(stopButton, machine === "live" ? null : "not connected yet");
   noticeOwnControl(state);
   els.rate.textContent = `${throughput(state, now).toFixed(1)} tasks/s`;
   const due = state.machine?.nextRotationAt ?? null;
@@ -577,28 +581,36 @@ function render(state: ClusterState): void {
     els.progressFill.style.width = prog.total ? `${(100 * prog.done) / prog.total}%` : "0%";
     els.progressText.textContent = `${prog.done}/${prog.total}`;
     const c = exec.counters;
-    els.counters.replaceChildren(
-      ...(
-        [
-          ["pending", c.pending],
-          ["assigned", c.assigned],
-          ["done", c.done],
-          ["failed", c.failed],
-          ["reassigned", c.reassigned],
-          ["speculated", c.speculated],
-          ["verified", c.verified],
-          ["mismatched", c.mismatched],
-        ] as [string, number][]
-      ).map(([label, value]) => {
-        const chip = document.createElement("span");
-        chip.className = `chip${value > 0 && (label === "failed" || label === "mismatched") ? " chip-bad" : ""}`;
-        chip.dataset.counter = label;
-        const num = document.createElement("b");
-        num.textContent = String(value);
-        chip.append(num, ` ${label}`);
-        return chip;
-      }),
-    );
+    // Eight chips updated in place (WP8.3), not rebuilt sixty times a second (rule R5).
+    const counters = [
+      ["pending", c.pending],
+      ["assigned", c.assigned],
+      ["done", c.done],
+      ["failed", c.failed],
+      ["reassigned", c.reassigned],
+      ["speculated", c.speculated],
+      ["verified", c.verified],
+      ["mismatched", c.mismatched],
+    ] as [string, number][];
+    if (els.counters.childElementCount !== counters.length) {
+      els.counters.replaceChildren(
+        ...counters.map(([label]) => {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.dataset.counter = label;
+          chip.append(document.createElement("b"), ` ${label}`);
+          return chip;
+        }),
+      );
+    }
+    counters.forEach(([label, value], i) => {
+      const chip = els.counters.children[i] as HTMLElement;
+      const num = chip.firstElementChild as HTMLElement;
+      const text = String(value);
+      if (num.textContent !== text) num.textContent = text;
+      const cls = `chip${value > 0 && (label === "failed" || label === "mismatched") ? " chip-bad" : ""}`;
+      if (chip.className !== cls) chip.className = cls;
+    });
   } else {
     els.execName.textContent = "No execution";
     els.execDetail.textContent = state.queue.length
@@ -645,7 +657,9 @@ function render(state: ClusterState): void {
   // keeps what it shows; the count of updates it is holding back is on the button (WP6.8).
   if (panelMode && panelFrozen) {
     // The count is of states that arrived while frozen (WP8.2), not of frames rendered.
-    if (state.seq !== frozenSeenSeq) {
+    if (frozenSeenSeq === null) {
+      frozenSeenSeq = state.seq; // the state on screen at the freeze is not "held"
+    } else if (state.seq !== frozenSeenSeq) {
       frozenSeenSeq = state.seq;
       panelFrozenMissed++;
     }
@@ -1041,10 +1055,11 @@ const openRoot =
 let panelFrozen = false;
 let panelFrozenMissed = 0;
 let activityDrawn = "";
-let frozenSeenSeq = -1;
+let frozenSeenSeq: number | null = null; // null until the first state seen while frozen (WP8.3)
 const freezeButton = $<HTMLButtonElement>("#freezePanel");
 freezeButton.onclick = () => {
   panelFrozen = !panelFrozen;
+  frozenSeenSeq = null;
   if (!panelFrozen) panelFrozenMissed = 0;
   freezeButton.textContent = panelFrozen ? "resume updates" : "pause updates";
   freezeButton.dataset.frozen = panelFrozen ? "1" : "0";
@@ -1105,10 +1120,14 @@ async function main(): Promise<void> {
     return;
   }
   setMachine("connecting");
-  const config = (await (await fetch("/config.json", { cache: "no-store" })).json()) as {
-    sessionUrl: string;
-  };
-  sessionUrl = new URL(config.sessionUrl, location.origin).toString();
+  // Retried with a backoff (WP8.3): one blip on this fetch used to strand the page.
+  sessionUrl = await loadSessionUrl(location.origin, {
+    onRetry: (attempt, delayMs, reason) =>
+      setMachine(
+        "connecting",
+        `the page's configuration could not be fetched (${reason}); trying again in ${Math.round(delayMs / 1000)} s (attempt ${attempt})`,
+      ),
+  });
   client = new ObserverClient(sessionUrl, {
     onState: setMachine,
     onDropped: (count) => {

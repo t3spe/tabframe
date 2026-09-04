@@ -3,6 +3,7 @@
 // does the control plane by itself when this socket goes away.
 import { mountEditor } from "./editor.ts";
 import { type MachineState, ObserverClient } from "./observer.ts";
+import { loadSessionUrl } from "./page-config.ts";
 import type { ClusterState } from "./state.ts";
 
 const $ = <T extends Element>(sel: string): T => {
@@ -71,10 +72,14 @@ function mainDemo(): void {
 
 async function main(): Promise<void> {
   if (new URLSearchParams(location.search).has("demo")) return mainDemo();
-  const config = (await (await fetch("/config.json", { cache: "no-store" })).json()) as {
-    sessionUrl: string;
-  };
-  const sessionUrl = new URL(config.sessionUrl, location.origin).toString();
+  // Retried with a backoff (WP8.3): the editor used to sit on its static "connecting" text for ever.
+  const sessionUrl = await loadSessionUrl(location.origin, {
+    onRetry: (attempt, delayMs) =>
+      setMachine(
+        "connecting",
+        `configuration not fetched yet; trying again in ${Math.round(delayMs / 1000)} s (attempt ${attempt})`,
+      ),
+  });
   client = new ObserverClient(sessionUrl, {
     onState: setMachine,
     onDropped: (count) => {

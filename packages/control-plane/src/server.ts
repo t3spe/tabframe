@@ -30,7 +30,7 @@ import {
 import { type WebSocket, WebSocketServer } from "ws";
 import { resolveBundle } from "./bundles.ts";
 import type { Config, Role } from "./config.ts";
-import { type CoreFleet, createCoreFleet } from "./cores.ts";
+import { type CoreFleet, type CoreFleetConfig, createCoreFleet } from "./cores.ts";
 import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
 import { log } from "./log.ts";
 import { type DiscoveredProgram, discoverPrograms, seedPrograms } from "./seed.ts";
@@ -112,7 +112,17 @@ export async function createControlPlane(
   let ledger: Ledger | null = null;
   let fleetSecret: string | null = null;
   let cores: CoreFleet | null = deps.cores ?? null;
+  let fleetConfig: CoreFleetConfig | null = null;
   let selfMicrovmId: string | null = null;
+  /** The image version this process runs, asked of the platform after /run (WP8.3). */
+  let runningImageVersion: string | null = null;
+  /**
+   * Standby until named (WP8.3): a successor is a control plane from /run, but it launches no
+   * cores and writes no `latest` until the pointer names it or a handover is adopted into it —
+   * before that, a rotation that dies leaves nothing of it behind but itself.
+   */
+  let authoritative = true;
+  let authorityTimer: ReturnType<typeof setInterval> | null = null;
   const readPointer =
     deps.pointer ??
     (config.mode === "image" && config.pointerParam
@@ -121,6 +131,27 @@ export async function createControlPlane(
           return () => ssm.read();
         })()
       : null);
+  authoritative = readPointer === null;
+  /** Poll the pointer until it names this process; a handover adopted into it settles it sooner. */
+  function awaitAuthority(): void {
+    if (authoritative || !readPointer || authorityTimer) return;
+    const check = () =>
+      readPointer()
+        .then((p) => {
+          if (p.microvmId !== null && p.microvmId === selfMicrovmId) grantAuthority("pointer");
+        })
+        .catch((err) => log("authority-check-failed", { error: String(err) }));
+    void check();
+    authorityTimer = setInterval(() => void check(), AUTHORITY_POLL_MS);
+  }
+  function grantAuthority(how: string): void {
+    if (authoritative) return;
+    authoritative = true;
+    if (authorityTimer) clearInterval(authorityTimer);
+    authorityTimer = null;
+    log("authoritative", { how });
+    if (ledger) dispatch({ kind: "tick" });
+  }
   let sessionUrl: string | null = config.sessionUrl;
   let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
@@ -177,16 +208,17 @@ export async function createControlPlane(
     }
     ledger.config.cloudCores = canRunCores();
     if (canRunCores() && !cores) {
-      cores = createCoreFleet({
+      fleetConfig = {
         imageArn: config.imageArn as string,
-        imageVersion: config.imageVersion,
+        imageVersion: runningImageVersion ?? config.imageVersion,
         coreRoleArn: config.coreRoleArn as string,
         region: config.region,
         sessionUrl: sessionUrl as string,
         storeBase: base,
         generation: gen,
         fleetSecret,
-      });
+      };
+      cores = createCoreFleet(fleetConfig);
     }
     role = "control-plane";
     log("role", { role, generation, adopted: adopted !== null });
@@ -289,7 +321,9 @@ export async function createControlPlane(
     try {
       named = await readPointer();
     } catch (err) {
-      log("lease-expired", { checked: false, error: String(err) });
+      // Not knowing is not permission (WP8.3): the lease is re-armed and the question asked again.
+      log("lease-expired", { checked: false, rearmed: true, error: String(err) });
+      if (ledger.meta.phase === "active") beginHandover(ledger, clock.now());
       return;
     }
     const superseded =
@@ -326,7 +360,9 @@ export async function createControlPlane(
       .catch((err) => log("core-check-failed", { error: String(err) }));
   }, config.coreCheckMs);
   const snapshotTimer = setInterval(() => {
-    if (ledger && role === "control-plane") {
+    // Only the named, active control plane writes `latest` (WP8.2 gated the hook path; WP8.3 the
+    // timer): a predecessor after its handover and a successor before its adopt both used to.
+    if (ledger && role === "control-plane" && ledger.meta.phase === "active" && authoritative) {
       void snapshotter
         .write(ledger, clock.now())
         .catch((err) => log("snapshot-failed", { error: String(err) }));
@@ -336,6 +372,22 @@ export async function createControlPlane(
   function dispatch(event: Event): void {
     if (!ledger) return;
     execute(apply(ledger, event, clock.now()));
+  }
+
+  // Bundle resolutions are memoised, rejections included, and never run twice at once (WP8.3):
+  // one uploaded eight-megabyte module used to cost a fetch and a validation per launch attempt.
+  const resolutions = new Map<string, ReturnType<typeof resolveBundle>>();
+  function resolveMemo(bundle: string): ReturnType<typeof resolveBundle> {
+    const known = resolutions.get(bundle);
+    if (known) return known;
+    const pending = resolveBundle(store, bundle, DEFAULT_TASK_LIMITS.memoryPagesMax);
+    resolutions.set(bundle, pending);
+    while (resolutions.size > RESOLUTION_MEMO) {
+      const oldest = resolutions.keys().next().value;
+      if (oldest === undefined) break;
+      resolutions.delete(oldest);
+    }
+    return pending;
   }
 
   function execute(effects: Effect[]): void {
@@ -398,9 +450,19 @@ export async function createControlPlane(
           break;
         case "launchCore": {
           if (!cores) break;
+          if (!authoritative) {
+            log("core-launch-deferred", { reason: "not yet named by the pointer" });
+            break;
+          }
           void cores
             .launch()
             .then(({ microvmId, token }) => {
+              if (!ledger || ledger.meta.phase !== "active") {
+                // Acked after a handover (WP8.3): no surviving ledger would know this core.
+                log("core-launched-late", { microvmId });
+                void cores?.terminate(microvmId).catch(() => {});
+                return;
+              }
               log("core-launched", { microvmId });
               dispatch({ kind: "coreLaunched", microvmId, token });
             })
@@ -418,7 +480,7 @@ export async function createControlPlane(
         }
         case "resolveBundle": {
           const { bundle, connId, params, inherit } = e;
-          void resolveBundle(store, bundle, DEFAULT_TASK_LIMITS.memoryPagesMax)
+          void resolveMemo(bundle)
             .then((r) => {
               if (!r.ok) {
                 log("bundle-rejected", { bundle: bundle.slice(0, 12), reason: r.reason });
@@ -466,10 +528,14 @@ export async function createControlPlane(
     // calls, so a full house of tabs cannot block a handover or a drain (WP8.2). The client's
     // address is logged once, to learn whether the proxy forwards it (a per-address quota needs it).
     if (conns.size >= CLIENT_CONNECTION_CAP) {
-      socket.write(
-        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 10\r\nConnection: close\r\n\r\n",
-      );
-      socket.destroy();
+      // The handshake completes and the socket closes at once with a code the page can read
+      // (WP8.3): a browser learns nothing from a refused upgrade but "it failed".
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        ws.close(
+          CLOSE.machineFull,
+          `machine full: ${CLIENT_CONNECTION_CAP} clients; retry in 10 s`,
+        );
+      });
       return;
     }
     if (!loggedForwarding) {
@@ -571,6 +637,18 @@ export async function createControlPlane(
       fleetSecret = payload.fleetSecret;
       sessionUrl = payload.sessionUrl ?? sessionUrl;
       selfMicrovmId = microvmId;
+      // Cores follow the version this process runs (WP8.3): a rolled-back control plane used to
+      // launch cores at the image's latest version.
+      if (microvmId && cores?.describe) {
+        void cores
+          .describe(microvmId)
+          .then((info) => {
+            runningImageVersion = info?.imageVersion ?? null;
+            if (fleetConfig) fleetConfig.imageVersion = runningImageVersion ?? config.imageVersion;
+            log("image-version", { imageVersion: runningImageVersion });
+          })
+          .catch((err) => log("image-version-failed", { error: String(err) }));
+      }
       log("run", {
         microvmId,
         role: payload.role,
@@ -592,6 +670,7 @@ export async function createControlPlane(
         }
         if (role !== "neutral") return false; // a second /run raced us while we read
         becomeControlPlane(payload.generation, payload.storeBase ?? storeBase, adopted);
+        awaitAuthority();
         return true;
       }
       role = "core";
@@ -708,6 +787,7 @@ export async function createControlPlane(
       }
       becomeControlPlane(gen, adopted.meta.storeBase || storeBase, adopted);
       adoptedOnce = true;
+      grantAuthority("adopt");
       await seeding;
       dispatch({ kind: "tick" });
       log("adopt", { generation: gen, nodes: adopted.nodes.size });
@@ -737,8 +817,9 @@ export async function createControlPlane(
         mode: config.mode,
         generation,
         protocol: PROTOCOL_VERSION,
-        build: process.env.TABFRAME_BUILD ?? null,
-        imageVersion: config.imageVersion ?? null,
+        build: buildStamp(),
+        imageVersion: runningImageVersion ?? config.imageVersion ?? null,
+        authoritative,
         awake: ledger?.meta.awake ?? null,
         sleepReason: ledger?.meta.sleepReason ?? null,
         nodes: nodes.length,
@@ -747,7 +828,9 @@ export async function createControlPlane(
           core: nodes.filter((n) => n.kind === "core").length,
         },
         cores: [...(ledger?.cores.values() ?? [])].map((c) => ({
-          microvmId: c.microvmId,
+          // The tail only (WP8.3): the whole id is what an impostor would need, and /health
+          // answers any holder of the private-port token.
+          microvmId: `…${c.microvmId.slice(-8)}`,
           ageMs: clock.now() - c.launchedAt,
           linked: c.nodeId !== null,
         })),
@@ -850,6 +933,7 @@ export async function createControlPlane(
     async close() {
       clearInterval(timer);
       clearInterval(snapshotTimer);
+      if (authorityTimer) clearInterval(authorityTimer);
       clearInterval(coreReaper);
       for (const ws of conns.values()) ws.terminate();
       conns.clear();
@@ -858,6 +942,11 @@ export async function createControlPlane(
     },
   };
 }
+
+/** How often a standby control plane asks the pointer whether it is named (WP8.3). */
+const AUTHORITY_POLL_MS = 5_000;
+/** Bundle resolutions remembered per process (WP8.3). */
+const RESOLUTION_MEMO = 32;
 
 /** The /validate self-test: a hello, a heartbeat, and a tick against a scratch ledger. */
 export function selfTest(): boolean {
@@ -911,4 +1000,17 @@ function fail(res: ServerResponse, err: unknown): void {
   log("request-error", { error: String(err) });
   if (!res.headersSent) sendJson(res, 500, { error: "internal" });
   else res.end();
+}
+
+/** The build stamp the image was staged with (WP8.1), whole since WP8.3: sha, branch, ungated, at. */
+function buildStamp(): Record<string, unknown> | string | null {
+  const whole = process.env.TABFRAME_BUILD_JSON;
+  if (whole) {
+    try {
+      return JSON.parse(whole) as Record<string, unknown>;
+    } catch {
+      // fall through to the short form
+    }
+  }
+  return process.env.TABFRAME_BUILD ?? null;
 }

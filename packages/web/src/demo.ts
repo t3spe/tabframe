@@ -255,6 +255,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   let paused = false;
   /** Stop and the editor's pause, as the demo answers them (WP8.1): the header reflects a click. */
   let stopped = false;
+  let launchedByPerson = false;
   let pausedByEditor = false;
   let timers = new Set<ReturnType<typeof setTimeout>>();
   let frame = 0;
@@ -402,8 +403,8 @@ export function startDemo(opts: DemoOptions): DemoHandle {
 
   // ---- executions ------------------------------------------------------------------------------
 
-  const startNext = (): void => {
-    if (stopped) return; // held by Stop until Start (WP8.1)
+  const startNext = (force = false): void => {
+    if (stopped && !force) return; // held by Stop until Start (WP8.1); a person's launch runs anyway (WP8.3)
     // A machine that went to sleep wakes for the next execution; its snapshot says so.
     if (asleep) {
       asleep = false;
@@ -465,16 +466,18 @@ export function startDemo(opts: DemoOptions): DemoHandle {
     beats.clear();
     tally.reassigned = tally.speculated = tally.verified = tally.mismatched = 0;
     const executionId = `e${++executionCounter}`;
+    const human = launchedByPerson; // a launch from the programs panel is the person's (WP8.3)
+    launchedByPerson = false;
     emit({
       t: "executionQueued",
-      entry: { executionId, programName: "mandelbrot", human: false, queuedAt: vnow },
+      entry: { executionId, programName: "mandelbrot", human, queuedAt: vnow },
     });
     execution = {
       executionId,
       program: PROGRAM,
       programName: "mandelbrot",
       status: "running",
-      human: false,
+      human,
       view: "tiles",
       params: { preset: frame % PRESETS.length, palette: "ocean" },
       stage: 0,
@@ -1037,7 +1040,8 @@ export function startDemo(opts: DemoOptions): DemoHandle {
       case "start":
         stopped = false;
         emit({ t: "controlApplied", op: "start", nodeIds: [] });
-        if (!execution) after(400, startNext);
+        launchedByPerson = true;
+        if (!execution) after(400, () => startNext(true));
         return;
       case "pause":
         pausedByEditor = true;

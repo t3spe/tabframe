@@ -65,6 +65,9 @@ export function deserializeLedger(json: string): Ledger {
       handoverAt: null,
       coreLaunches: s.meta.coreLaunches ?? [],
       lastControlAt: {},
+      presignItems: { tokens: 12_000, refilledAt: 0 },
+      presignBytesMachine: { tokens: 512 * 1024 * 1024, refilledAt: 0 },
+      launchesAt: [],
       pausedBy: null, // whoever held a pause is not on this socket set
     },
     config: s.config,

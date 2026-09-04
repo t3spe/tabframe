@@ -301,6 +301,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   let acknowledged = false;
   let launchedAt = 0;
   let launchedName = "";
+  let launchedBundle = "";
   let unsubscribe: (() => void) | null = null;
 
   async function launch(): Promise<boolean> {
@@ -349,6 +350,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       await store.putMany(bundle.blobs);
       awaitingAnswer = true;
       launchedName = manifest.value.name;
+      launchedBundle = bundle.bundle;
       const sent = host.launch(bundle.bundle, params.value);
       if (!sent) {
         info(els.launchInfo, "the socket closed before the launch was sent", true);
@@ -391,11 +393,15 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       awaitingAnswer = false;
       return;
     }
+    // Matched on the bundle hash (WP8.3), not the name: another visitor's namesake program, or
+    // the person's own previous run, used to be reported as this launch.
     const running =
-      state.execution?.human && state.execution.programName === launchedName
-        ? state.execution
-        : null;
-    const mine = [...state.queue].reverse().find((q) => q.human && q.programName === launchedName);
+      state.execution?.human && state.execution.program === launchedBundle ? state.execution : null;
+    const mine = [...state.queue]
+      .reverse()
+      .find(
+        (q) => q.human && (q.bundle ? q.bundle === launchedBundle : q.programName === launchedName),
+      );
     if (running) {
       info(els.launchInfo, `running as ${running.executionId} · ${running.phase}`);
       if (running.phase === "done" || running.phase === "failed") awaitingAnswer = false;

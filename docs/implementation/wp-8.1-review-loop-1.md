@@ -8,9 +8,9 @@ aggregate, critique, incorporate; three loops. This is loop one.
 ## How the loop ran
 
 Five independent reviewers (fresh agents, read-only, no AWS access) each returned at most twelve
-findings with severity, location, cause, and fix. The 52 findings were de-duplicated into the
+findings with severity, location, cause, and fix. The 54 findings (two rows, 8 and 25, each merge two reviewers) were de-duplicated into the
 table below (52 rows); each was accepted, deferred to a later loop, or rejected with the reason (the
-critique): 46 accepted in full or in part, 6 deferred to loops 2–3, and one (11) rejected as a change but kept as a bound. The accepted ones landed on this branch with tests; CI gates the merge; the next loop
+critique): 45 accepted in full or in part, 6 deferred to loops 2–3, and one (11) rejected as a change but kept as a bound. The accepted ones landed on this branch with tests; CI gates the merge; the next loop
 reviews the tree with these changes in.
 
 ## The findings and what was done

@@ -15,13 +15,18 @@ export interface Pointer {
    * between the launch and the pointer flip leaves this behind, and the next run finishes or
    * rolls it back rather than leaving an orphan MicroVM burning money.
    */
-  pending: { microvmId: string; endpoint: string | null; generation: number } | null;
+  pending: { microvmId: string; endpoint: string | null; generation: number; at?: number } | null;
   /**
    * The predecessor a rotation promoted over and has not yet drained and terminated (WP8.2). A
    * rotation that dies between the pointer flip and the retire leaves this behind; the next run
    * finishes the retire instead of leaving a second active generation running for hours.
    */
   retiring?: { microvmId: string; endpoint: string | null } | null;
+  /**
+   * An image version the operator pinned with `mise run rollback` (WP8.3): every launch until
+   * `up` clears it boots this version, hourly rotations included. Null means the image's latest.
+   */
+  pinnedImageVersion?: string | null;
 }
 
 export const EMPTY_POINTER: Pointer = {
@@ -32,6 +37,8 @@ export const EMPTY_POINTER: Pointer = {
   imageVersion: null,
   updatedAt: "",
   pending: null,
+  retiring: null,
+  pinnedImageVersion: null,
 };
 
 export interface PointerStore {
@@ -66,7 +73,19 @@ export function parsePointer(raw: string | undefined | null): Pointer {
     imageVersion: asString(o.imageVersion),
     updatedAt: asString(o.updatedAt) ?? "",
     pending: parsePending(o.pending),
+    // Both survive a round trip through SSM (WP8.3: `retiring` used to be written and never read
+    // back, so the retire a dead run left behind was never finished in production).
+    retiring: parseRetiring(o.retiring),
+    pinnedImageVersion: asString(o.pinnedImageVersion),
   };
+}
+
+function parseRetiring(value: unknown): { microvmId: string; endpoint: string | null } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const r = value as Record<string, unknown>;
+  const microvmId = asString(r.microvmId);
+  if (!microvmId) return null;
+  return { microvmId, endpoint: asString(r.endpoint) };
 }
 
 function parsePending(value: unknown): Pointer["pending"] {
@@ -76,7 +95,13 @@ function parsePending(value: unknown): Pointer["pending"] {
   const generation =
     typeof p.generation === "number" && Number.isInteger(p.generation) ? p.generation : null;
   if (!microvmId || generation === null) return null;
-  return { microvmId, endpoint: asString(p.endpoint), generation };
+  const at = typeof p.at === "number" && Number.isFinite(p.at) ? p.at : undefined;
+  return {
+    microvmId,
+    endpoint: asString(p.endpoint),
+    generation,
+    ...(at !== undefined ? { at } : {}),
+  };
 }
 
 export function serializePointer(pointer: Pointer): string {

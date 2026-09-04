@@ -62,10 +62,29 @@ export class TaskRunner {
   async run(a: Assign, gen: number): Promise<Outcome> {
     this.current = a.taskId;
     try {
-      const [module, manifest] = await Promise.all([
-        this.module(a.program),
-        this.manifest(a.fsRoot),
+      // The deadline covers the fetches too (WP8.3): a module or manifest fetch that hangs used to
+      // hold the attempt for ever — the sandbox kill only ever started after the fetch — and with
+      // one node the control plane had nobody else to give the task to.
+      const fetched = await Promise.race([
+        Promise.all([this.module(a.program), this.manifest(a.fsRoot)]),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), a.deadlineMs + 1_000)),
       ]);
+      if (fetched === null) {
+        this.deps.log?.("task-fetch-overran", { taskId: a.taskId, deadlineMs: a.deadlineMs });
+        return {
+          kind: "result",
+          msg: {
+            t: "result",
+            taskId: a.taskId,
+            attempt: a.attempt,
+            error: RELEASED,
+            writes: [],
+            log: null,
+            computeMs: 0,
+          },
+        };
+      }
+      const [module, manifest] = fetched;
       const input =
         a.kind === "run"
           ? encodeRunInput({

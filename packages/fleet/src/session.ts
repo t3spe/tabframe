@@ -6,17 +6,20 @@ import {
   TOKEN_REFRESH_MINUTES,
   TOKEN_TTL_MINUTES,
 } from "./config.ts";
-import type { PointerStore } from "./pointer.ts";
+import type { Pointer, PointerStore } from "./pointer.ts";
 import {
   type Clock,
   type Invoker,
   type Logger,
   type MicrovmClient,
+  type MicrovmInfo,
   SERVING_STATES,
 } from "./types.ts";
 
 export interface FunctionUrlEvent {
   requestContext?: { http?: { method?: string; path?: string } };
+  /** The function URL passes the query string whole (WP8.3: `probe=1` is the canary's). */
+  rawQueryString?: string;
   rawPath?: string;
   headers?: Record<string, string | undefined>;
 }
@@ -26,6 +29,9 @@ export interface FunctionUrlResponse {
   headers: Record<string, string>;
   body: string;
 }
+
+/** How long a warm session instance trusts its last pointer and MicroVM lookup (WP8.3). */
+export const LOOKUP_MEMO_MS = 5_000;
 
 export type SessionBody =
   | { off: true }
@@ -52,6 +58,7 @@ export type SessionHandler = (event: FunctionUrlEvent) => Promise<FunctionUrlRes
 export function createSessionHandler(deps: SessionDeps): SessionHandler {
   const { pointer, microvms, invoker, clock, log, config } = deps;
   let cache: TokenCache | null = null;
+  let memo: { at: number; pointer: Pointer; info: MicrovmInfo | null } | null = null;
   let lastHealAt = Number.NEGATIVE_INFINITY;
 
   const cors = {
@@ -108,17 +115,40 @@ export function createSessionHandler(deps: SessionDeps): SessionHandler {
     if (method === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
     if (method !== "GET") return respond(405, { error: "method not allowed" });
 
-    const p = await pointer.read();
+    // `?probe=1` is the canary's question (WP8.3): what is the state, without healing anything —
+    // a heal from a monitor would keep a machine nobody watches booting all night.
+    const probe = event.rawQueryString?.includes("probe=1") ?? false;
+    const now = clock.now();
+    // The pointer and the MicroVM's state are remembered for five seconds per warm instance
+    // (WP8.3): every visitor's fetch used to cost an SSM read and a GetMicrovm, and one curl loop
+    // could throttle both for everyone.
+    let p: Pointer;
+    let info: MicrovmInfo | null;
+    if (memo && now - memo.at < LOOKUP_MEMO_MS) {
+      p = memo.pointer;
+      info = memo.info;
+    } else {
+      p = await pointer.read();
+      info = p.state === "on" && p.microvmId ? await microvms.get(p.microvmId) : null;
+      memo = { at: now, pointer: p, info };
+    }
     if (p.state === "off") return respond(200, { off: true });
-    if (!p.microvmId) return heal("pointer has no control plane");
+    if (!p.microvmId)
+      return probe
+        ? respond(200, { starting: true, retryAfterMs: config.retryAfterMs })
+        : heal("pointer has no control plane");
 
-    const info = await microvms.get(p.microvmId);
-    if (!info) return heal(`control plane ${p.microvmId} not found`);
+    if (!info)
+      return probe
+        ? respond(200, { starting: true, retryAfterMs: config.retryAfterMs })
+        : heal(`control plane ${p.microvmId} not found`);
     if (info.state === "PENDING") {
       return respond(200, { starting: true, retryAfterMs: config.retryAfterMs });
     }
     if (!SERVING_STATES.has(info.state))
-      return heal(`control plane ${p.microvmId} is ${info.state}`);
+      return probe
+        ? respond(200, { starting: true, retryAfterMs: config.retryAfterMs })
+        : heal(`control plane ${p.microvmId} is ${info.state}`);
 
     const endpoint = info.endpoint ?? p.endpoint;
     if (!endpoint) return heal(`control plane ${p.microvmId} has no endpoint`);

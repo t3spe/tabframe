@@ -7,6 +7,9 @@ export interface PresignRequester {
   presign(items: PresignItem[]): Promise<PresignedUpload[]>;
 }
 
+/** How long one blob fetch may take before it is retried or reported (WP8.3). */
+export const FETCH_TIMEOUT_MS = 15_000;
+
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
@@ -74,10 +77,13 @@ export class StoreClient {
   }
 
   async get(hash: string, range?: { offset: number; length: number }): Promise<Uint8Array | null> {
+    // Each try is bounded (WP8.3): a fetch that never answers is a hung node, not a slow one.
     const init: RequestInit = range
       ? { headers: { range: `bytes=${range.offset}-${range.offset + range.length - 1}` } }
       : {};
-    const res = await this.withRetries(() => this.fetchImpl(this.urlFor(hash), init));
+    const res = await this.withRetries(() =>
+      this.fetchImpl(this.urlFor(hash), { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }),
+    );
     if (res.status === 404 || res.status === 403) return null;
     if (!res.ok && res.status !== 206) throw new Error(`fetch of ${hash} failed: ${res.status}`);
     return new Uint8Array(await res.arrayBuffer());

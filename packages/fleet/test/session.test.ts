@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { SessionConfig } from "../src/config.ts";
-import { createSessionHandler, type FunctionUrlEvent, type SessionBody } from "../src/session.ts";
+import {
+  createSessionHandler,
+  type FunctionUrlEvent,
+  LOOKUP_MEMO_MS,
+  type SessionBody,
+} from "../src/session.ts";
 import {
   FakeClock,
   FakeInvoker,
@@ -108,6 +113,7 @@ describe("session handler", () => {
     const h = handler(pointer);
     await h(event());
     await pointer.write({ ...(await pointer.read()), microvmId: "mvm-2", generation: 2 });
+    clock.advance(LOOKUP_MEMO_MS); // the warm instance trusts its last lookup for five seconds (WP8.3)
     const res = body(await h(event()));
     if (!("token" in res)) throw new Error("expected a session");
     expect(res.generation).toBe(2);

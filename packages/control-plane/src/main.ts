@@ -29,6 +29,7 @@ try {
       sha?: string;
     };
     if (stamp.sha) process.env.TABFRAME_BUILD = stamp.sha;
+    process.env.TABFRAME_BUILD_JSON = JSON.stringify(stamp); // the whole stamp for /health (WP8.3)
   }
 } catch {
   // no stamp beside the entry: a local run

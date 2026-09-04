@@ -335,3 +335,23 @@ describe("host and store failures are releases, not program faults (WP8.1)", () 
     expect((await p)[0]?.hash).toBe("b".repeat(64));
   });
 });
+
+test("a module fetch that hangs releases the task at the deadline instead of holding it for ever (WP8.3)", async () => {
+  const runner = new TaskRunner({
+    store: new StoreClient(
+      BASE,
+      { presign: async () => [] },
+      (() => new Promise<Response>(() => {})) as unknown as typeof fetch,
+    ),
+    createSandbox: () => ({
+      run: async () => ({ ok: false, error: "never runs", log: "" }),
+      dispose: () => {},
+    }),
+    compile: async () => ({}) as WebAssembly.Module,
+    now: () => 0,
+  });
+  const started = Date.now();
+  const outcome = await runner.run(assign({ deadlineMs: 50 }), 1);
+  expect(outcome).toMatchObject({ kind: "result", msg: { error: RELEASED, computeMs: 0 } });
+  expect(Date.now() - started).toBeLessThan(3_000);
+});

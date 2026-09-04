@@ -38,7 +38,7 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 2. `mise run deploy`. The image build takes three to five minutes; the first build after a long
    gap has taken fifty. If CloudFormation reports the image "did not stabilize", check the build
    history — the platform has retried and succeeded on its own once while CloudFormation gave up;
-   a plain re-run of `cdk deploy` then completes.
+   `mise run deploy:stacks` then completes it (the staged image, then `up`; WP8.2).
 3. `up` at the end of the deploy rotates: the old control plane hands its ledger to the new one,
    the clients are drained with a jittered reconnect delay, and the render continues on the new
    generation. Expect about eight seconds of churn.
@@ -46,11 +46,13 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
    scheduler, the node, or the store; `verify:m2` for the editor, seeding, or programs; `verify:m3`
    for the fleet.
 
-**Rollback.** The image keeps every version, and `/health` names the one running. `mise run
-rollback -- <version>` pins the rotate function to that version (its `TABFRAME_IMAGE_VERSION`,
-read at every invocation, so the hourly rotations honour it too) and rotates once; the successor
-boots from the pinned version and adopts the current ledger. `mise run rollback -- --clear` removes
-the pin; a deploy also clears it, because it redeploys the function (WP8.2). A rollback of the page is a
+**Rollback.** The image keeps every version; `/health` names the one running (asked of the
+platform, WP8.3) and `mise run health` prints the pointer's. `mise run rollback -- <version>` writes
+the pin into the pointer (`pinnedImageVersion`, read by every rotation, hourly ones included) and
+rotates once; the successor boots from the pinned version, adopts the current ledger, and launches
+its cores at the version it runs itself. `mise run rollback -- --clear` removes the pin, and so does
+`up`, which ends every deploy (WP8.3: the pin used to be a hand-edited function environment that a
+control-plane-only deploy left in place). A rollback of the page is a
 re-deploy of the Web stack from the previous commit.
 
 ## Rotation, and when it goes wrong
@@ -63,8 +65,11 @@ The rotate function is idempotent and safe to invoke at any time. It reads the p
 - a control plane serving → launches the successor with the latest snapshot key, `/handover`,
   `/adopt`, flips the pointer, `/drain`, waits five seconds, terminates the old one.
 
-A run that dies half-way leaves a `pending` record in the pointer; the next run finishes it (the
-successor is promoted) or forgets it (the successor is gone). A `/handover` that fails costs nothing
+A run that dies half-way leaves a `pending` record in the pointer. The next run promotes that
+successor only if nothing else serves; if the old control plane still does, the stale successor is
+terminated and the rotation starts afresh (WP6.7); if it is gone, the record is forgotten. A run
+that died after the flip leaves a `retiring` record instead, and the next run drains and terminates
+that predecessor before anything else (WP8.2). A `/handover` that fails costs nothing
 but the last five seconds of work: the successor booted from the snapshot, and every task is
 idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 
@@ -73,7 +78,8 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 - **`/health`** (private port, fleet secret): role, phase, generation, awake and why not, nodes by
   kind, cores with their age and whether their node is connected, programs, running execution,
   queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and since WP8.1 the
-  `build` stamp (commit, branch, and whether the deploy was ungated) and the `imageVersion` it runs.
+  `build` stamp (`sha` with `-dirty` when the tree was, `branch`, `ungated`, `at`; served whole since
+  WP8.3) and the `imageVersion` it runs.
 - **`/diag`** (private port, fleet secret): DNS, a store put-and-get round trip with its latency,
   which store driver, snapshotter status, memory, the environment facts that matter
   (`TABFRAME_SANDBOX_WORKER`, cloud cores enabled).
@@ -94,7 +100,10 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
   was proven on 2026-09-03 with a one-cent test budget, since deleted.
 - What costs money while the machine is up: the control plane MicroVM (always, until `down`), two
   cores while anyone is watching, snapshot writes every five seconds while the ledger changes,
-  CloudFront and S3 for the page and blobs. Idle, it is one suspended MicroVM's snapshot storage.
+  CloudFront and S3 for the page and blobs. Idle, it is one suspended MicroVM's snapshot storage
+  until the platform's eight-hour ceiling ends it; after that nothing runs until a visitor's
+  session call heals (WP8.3: the scheduled rule and the canary leave that heal to a visitor, so an
+  idle night no longer boots a generation an hour).
 - Cost Explorer lags a day; `aws ce get-cost-and-usage` is the query, and the plan's WP4.7 keeps
   the first real number.
 
@@ -102,11 +111,11 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 
 | Symptom | Cause | Action |
 |---|---|---|
-| A page cannot connect; sockets answer 429 | the endpoint holds **16 concurrent connections per MicroVM** (a non-adjustable quota, design §9.7) | count what is connected (`mise run health`); close what should not be there. Leaked headless browsers from a killed runbook have done this twice — `pkill -f headless_shell`. |
+| A page cannot connect; sockets answer 429, or the banner says the machine is full | the endpoint holds **16 concurrent connections per MicroVM** (a non-adjustable quota, design §9.7) | count what is connected (`mise run health`); close what should not be there. Leaked headless browsers from a killed runbook have done this twice — `pkill -f headless_shell`. |
 | Rotation logs say `/handover … answered 429` | client sockets crowd out the fleet's private-port calls | nothing: the successor adopted the snapshot; the rotation completed |
 | Every task fails with `Cannot find module '/app/node-worker.ts'` | the bundled image cannot spawn its own file as a worker | the image stages `node-worker.js` beside `main.js`; a build without it is broken — rebuild |
 | Executions fail every few seconds and the loop relaunches | a program fault or an upload failure | the default loop backs off (5 s doubling to 5 min); read the failure reason on the dashboard or in `/snapshot`; `killExecution` from the page stops the current one |
-| `did not stabilize` on the image update | CloudFormation gave up before the platform's retry succeeded | re-run `cdk deploy`; check `latestActiveImageVersion` |
+| `did not stabilize` on the image update | CloudFormation gave up before the platform's retry succeeded | re-run `mise run deploy:stacks`; check `latestActiveImageVersion` |
 | A program shipped in the image is not on the machine | the ledger was adopted from a snapshot seeded before the program existed | fixed since WP2.7 (seeding by bundle hash); if it recurs, `mise run rotate` |
 | The session function returns `starting` for minutes | no control plane and the heal did not complete | `mise run logs:fleet`; `mise run up` |
 | The machine is up but nothing renders | asleep (ten minutes without an observer) or no nodes | open the page; the first visitor wakes it, cores follow within seconds |

@@ -62,10 +62,13 @@ export function onResult(
     // The node gave up at its own deadline: the attempt is released, the task is not judged — but
     // the time it held the task is charged to the execution (WP8.2: a program that spins for ever
     // used to be free), and a task released too many times is a program fault, not bad luck.
-    if (attempt) attempt.outcome = "released";
+    // Only the running attempt can be released (WP8.3): a replayed release charged the budget again
+    // and again, so a single node could fail any execution with a handful of frames.
+    if (!attempt) return { effects, settlement: { kind: "none" } };
+    attempt.outcome = "released";
     const exec = task ? ledger.executions.get(task.executionId) : undefined;
-    if (exec?.status === "running" && known)
-      exec.computeMsUsed += Math.max(0, Math.min(now, known.deadlineAt) - known.assignedAt);
+    if (exec?.status === "running")
+      exec.computeMsUsed += Math.max(0, Math.min(now, attempt.deadlineAt) - attempt.assignedAt);
     if (task && exec?.status === "running") {
       const released = task.attempts.filter((a) => a.outcome === "released").length;
       if (released >= RELEASES_PER_TASK_CAP && task.status !== "done" && task.status !== "failed") {
@@ -82,19 +85,10 @@ export function onResult(
     if (task) effects.push(...releaseIfOrphaned(ledger, task, node.nodeId));
     return { effects, settlement: { kind: "none" } };
   }
-  node.tasksDone += 1;
-  node.lastTaskMs = msg.computeMs;
-  node.ewmaMs =
-    node.ewmaMs === null ? msg.computeMs : Math.round(node.ewmaMs * 0.7 + msg.computeMs * 0.3);
   if (!task) return { effects, settlement: { kind: "none" } };
   if (attempt) attempt.outcome = msg.error === undefined ? "result" : "error";
   const exec = ledger.executions.get(task.executionId);
   if (exec?.status !== "running") return { effects, settlement: { kind: "none" } };
-  if (task.kind === "run") {
-    exec.computeSamples.push(msg.computeMs);
-    if (exec.computeSamples.length > 50) exec.computeSamples.shift();
-  }
-  exec.computeMsUsed += msg.computeMs;
 
   const record: ResultRecord =
     msg.error === undefined
@@ -130,6 +124,20 @@ export function onResult(
     return { effects, settlement: { kind: "none" } };
   // Bounded evidence (WP8.1): every record travels in snapshots and handovers.
   if (task.results.length >= RESULTS_PER_TASK_CAP) return { effects, settlement: { kind: "none" } };
+  // The budget, the deadline samples, and the node's speed are charged once per attempt the ledger
+  // handed out (WP8.3), after the duplicate checks: a replayed report used to spend the execution's
+  // budget every time it arrived and feed the deadline model with copies.
+  if (attempt) {
+    node.tasksDone += 1;
+    node.lastTaskMs = msg.computeMs;
+    node.ewmaMs =
+      node.ewmaMs === null ? msg.computeMs : Math.round(node.ewmaMs * 0.7 + msg.computeMs * 0.3);
+    if (task.kind === "run") {
+      exec.computeSamples.push(msg.computeMs);
+      if (exec.computeSamples.length > 50) exec.computeSamples.shift();
+    }
+    exec.computeMsUsed += msg.computeMs;
+  }
 
   // A result for a settled task is a duplicate: verify or contest it.
   if (task.status === "done" && task.accepted) {

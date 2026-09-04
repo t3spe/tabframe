@@ -31,6 +31,14 @@ describe("scrub", () => {
       ["token", `bearer ${JWT}`, "bearer <token>"],
       ["email", `mail ${EMAIL} and git@github.com`, "mail <email> and <email>"],
       ["presigned-url", `PUT ${PRESIGNED} ok`, "PUT <presigned-url> ok"],
+      // WP8.3: credentials in the shapes tool output shows them.
+      ["aws-key-id", "key AKIAIOSFODNN7EXAMPLE x", "key <aws-key-id> x"],
+      [
+        "amz-credential",
+        "q=1&X-Amz-Security-Token=IQoJb3JpZ2luX2VjEBcaCXVzLXdlc3QtMg&X-Amz-Date=20260904",
+        "q=1&X-Amz-Credential=<redacted>&X-Amz-Date=20260904",
+      ],
+      ["masked-account-tail", "account ********6595 ok", "account ************ ok"],
     ];
     for (const [name, input, expected] of cases) {
       const { text, counts } = scrub(input);
@@ -43,7 +51,10 @@ describe("scrub", () => {
       "microvm-endpoint",
       "lambda-url",
       "microvm-id",
+      "aws-key-id",
+      "amz-credential",
       "account-id",
+      "masked-account-tail",
       "email",
     ]);
   });

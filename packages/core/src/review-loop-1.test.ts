@@ -207,6 +207,7 @@ describe("redundancy off (WP8.1)", () => {
     if (!plan) throw new Error("no plan");
     h.result(plan.connId, plan.taskId, plan.attempt, H("a"));
     expect(h.ledger.tasks.get(plan.taskId)?.status).not.toBe("done"); // waiting for a twin that never comes
+    h.advance(2_000); // the redundancy flip is a destructive control since WP8.3: one per two seconds
     const off = h.send("o1", { t: "setRedundancy", on: false });
     expect(h.ledger.tasks.get(plan.taskId)?.status).toBe("done");
     expect(off.some((e) => e.kind === "fetchBlob" && e.purpose.type === "stageSpec")).toBe(true);

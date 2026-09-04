@@ -29,6 +29,12 @@ export function connectionCopy(state: Exclude<MachineState, "live">, detail?: st
         body: "A fresh MicroVM is booting the control plane from its snapshot, which takes about a minute; the page connects as soon as it answers.",
         hint: "Nothing to do but keep this tab open. Tiles start landing once a node joins — this tab lends one unless it is only observing.",
       };
+    case "full":
+      return {
+        title: "The machine is full.",
+        body: "Fourteen tabs are connected already; the control plane holds sixteen connections and keeps two for its own rotation.",
+        hint: "Close a tab, or wait: this page tries again in ten seconds.",
+      };
     case "outdated":
       return {
         title: "This page is out of date.",

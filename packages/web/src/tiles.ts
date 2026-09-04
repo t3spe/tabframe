@@ -35,15 +35,33 @@ interface Painted {
   flag: TileFlag | null;
 }
 
-/** Fetches from `<storeBase>/<hash>` with the cache the CDN allows: blobs are immutable. */
+/**
+ * Fetches from `<storeBase>/<hash>`. The browser's default cache mode (WP8.3): the CDN's
+ * `immutable` header keeps a 200 for a year, while `force-cache` would have replayed a stored 404
+ * for a tile asked for a moment before its upload landed. A 5xx or a network error is retried
+ * three times before it is reported.
+ */
 export function storeSource(storeBase: string, fetchImpl: typeof fetch = fetch): BlobSource {
   const base = storeBase.replace(/\/$/, "");
   return {
     async get(hash) {
-      const res = await fetchImpl(`${base}/${hash}`, { cache: "force-cache" });
-      if (res.status === 404 || res.status === 403) return null;
-      if (!res.ok) throw new Error(`blob ${res.status}`);
-      return new Uint8Array(await res.arrayBuffer());
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)));
+        try {
+          const res = await fetchImpl(`${base}/${hash}`);
+          if (res.status === 404 || res.status === 403) return null;
+          if (res.status >= 500) {
+            lastError = new Error(`blob ${res.status}`);
+            continue;
+          }
+          if (!res.ok) throw new Error(`blob ${res.status}`);
+          return new Uint8Array(await res.arrayBuffer());
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
     },
   };
 }

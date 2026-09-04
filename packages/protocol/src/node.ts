@@ -64,7 +64,6 @@ export const presign = z.object({
   ...envelope,
   items: z
     .array(z.object({ hash, size: z.number().int().positive().max(LIMITS.maxOutputBytes) }))
-    .max(64)
     .min(1)
     .max(LIMITS.maxPresignItems),
 });

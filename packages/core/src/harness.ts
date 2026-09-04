@@ -70,6 +70,7 @@ export function harness(
   gen = 3,
   random?: () => number,
 ): Harness {
+  const coreTokens = new Map<string, string>();
   const ledger = createLedger(gen, { storeBase: "https://cdn.test/blob", ...config }, 1_000_000);
   let now = 1_000_000;
   let seed = 12345;
@@ -90,6 +91,12 @@ export function harness(
       now += ms;
     },
     event(e) {
+      // A launch without a token gets one (WP8.3): the ledger links a core only on a token match.
+      if (e.kind === "coreLaunched" && e.token === undefined) {
+        const token = coreTokens.get(e.microvmId) ?? `tok-${e.microvmId}`.padEnd(32, "0"); // the schema wants 16+ chars
+        coreTokens.set(e.microvmId, token);
+        e = { ...e, token };
+      }
       return apply(ledger, e, now, { rng });
     },
     connect: (connId, role) => apply(ledger, { kind: "connected", connId, role }, now, { rng }),
@@ -102,7 +109,16 @@ export function harness(
     tick: () => apply(ledger, { kind: "tick" }, now, { rng }),
     hello(connId, hostId = "h1", kind = "tab") {
       h.connect(connId, "node");
-      return h.send(connId, { t: "hello", hostId, kind, cores: 8, sandboxVersion: "1" });
+      // A core's hello carries the token its launch was given (WP8.2; strict since WP8.3).
+      const coreToken = kind === "core" ? coreTokens.get(hostId.replace(/^core-/, "")) : undefined;
+      return h.send(connId, {
+        t: "hello",
+        hostId,
+        kind,
+        cores: 8,
+        sandboxVersion: "1",
+        ...(coreToken ? { coreToken } : {}),
+      });
     },
     subscribe(connId) {
       h.connect(connId, "observer");

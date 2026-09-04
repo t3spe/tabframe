@@ -20,6 +20,18 @@ const env: cdk.Environment = {
 };
 
 const budgetEmail = process.env.TABFRAME_BUDGET_EMAIL;
+// Without the address the budget and the alarm mail are simply absent from the templates, and a
+// deploy would delete them (WP8.3). CI synthesises with the placeholder and has no address; an
+// operator who means it says so.
+if (
+  !budgetEmail &&
+  process.env.TABFRAME_IMAGE_PLACEHOLDER !== "1" &&
+  process.env.TABFRAME_NO_BUDGET !== "1"
+) {
+  throw new Error(
+    "TABFRAME_BUDGET_EMAIL is not set: the budget and the alarm subscription would be removed. Set it in .env.local, or TABFRAME_NO_BUDGET=1 to deploy without them on purpose.",
+  );
+}
 
 function stagingDirOrRefuse(): string {
   const dir = process.env.TABFRAME_IMAGE_DIR ?? resolve(repoRoot, "packages/infra/image-dist");

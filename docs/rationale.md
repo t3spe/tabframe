@@ -13,7 +13,9 @@ assignment offered a coordinator-and-workers demo; I chose to push on the word *
 program is a WebAssembly module with `plan` and `run`, both of which execute on the cores; the
 control plane never runs program code, not even the planner. Mandelbrot is the money shot because
 a tile landing is legible; word count is there because a machine that can only draw fractals is a
-screensaver. Both ship through the same path as anything a reviewer writes in the in-page editor.
+screensaver; tiny GPT, an 822 k-parameter transformer whose forward pass runs on the cores (M6), is
+there to show the machine is general. All three ship through the same path as anything a reviewer
+writes in the in-page editor.
 
 Three constraints carry the whole fault-tolerance story, and I took them literally rather than as
 guidance: tasks are idempotent and delivered at least once; results are single-assignment and
@@ -100,7 +102,7 @@ of the design record is the honest history.
   sockets per control plane are the extensions I would build next rather than the corners I
   rounded.
 - **MicroVMs, knowing what they cost.** The connection ceiling means one control plane serves
-  about seven tabs that each lend a node (fifteen that only watch), and the demo is scoped to that. The decision on record is to document it
+  about seven tabs that each lend a node (fourteen that only watch), and the demo is scoped to that. The decision on record is to document it
   now and evaluate hosting the control plane on an EC2 instance after packaging — no per-VM
   connection quota, the same process and protocol, but a different rotation mechanism and the
   loss of snapshot boot and suspend/resume.

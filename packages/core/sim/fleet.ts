@@ -69,14 +69,16 @@ export class SimFleet {
     this.vms.set(microvmId, vm);
     this.world.stats.coresLaunched += 1;
     this.world.note(`fleet launches ${microvmId}`);
+    const token = `sim-token-${microvmId}`.padEnd(32, "0");
     this.world.after(this.world.between(...RUN_API_MS), () => {
       if (!vm.alive) return;
-      this.world.dispatch({ kind: "coreLaunched", microvmId });
+      this.world.dispatch({ kind: "coreLaunched", microvmId, token });
     });
     this.world.after(this.world.between(...BOOT_MS), () => {
       if (!vm.alive) return;
       vm.node = this.world.spawnNode({
         hostId: `core-${microvmId}`,
+        coreToken: token,
         kind: "core",
         // A quarter vCPU that bursts to one: slower than a laptop tab, and steady.
         speed: Math.round((1.4 + this.world.random() * 1.4) * 100) / 100,

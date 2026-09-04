@@ -3,6 +3,7 @@ import { toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
 import type { ExecutionRecord, Ledger, NodeRecord, TaskRecord } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
+import { COMPUTE_MS_REPORT_CAP } from "./results.ts";
 
 /** Median of the execution's recent compute samples times the factor, floored (design §6.4). */
 export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
@@ -11,6 +12,18 @@ export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
   const sorted = [...samples].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
   return Math.max(ledger.config.deadlineFloorMs, Math.round(median * ledger.config.deadlineFactor));
+}
+
+/**
+ * A task released at its deadline gets a longer one next time (WP8.3): doubled per release, three
+ * times at most (eight times the first) and never past ten minutes — so a legitimately slow program
+ * is not killed at the floor on every node for ever, while a program that never returns still fails
+ * within about a minute (2 + 4 + 8 + 16 + 16 + 16 s at the floor) rather than after ten.
+ */
+export const DEADLINE_DOUBLINGS = 3;
+export function deadlineFor(task: TaskRecord, base: number): number {
+  const released = task.attempts.filter((a) => a.outcome === "released").length;
+  return Math.min(COMPUTE_MS_REPORT_CAP, base * 2 ** Math.min(released, DEADLINE_DOUBLINGS));
 }
 
 export function runningAttempts(task: TaskRecord): number {
@@ -57,7 +70,9 @@ function freshNodeFree(ledger: Ledger, task: TaskRecord): boolean {
 
 /** The node gave this task up at its deadline once already. */
 function releasedBy(task: TaskRecord, nodeId: string): boolean {
-  return task.attempts.some((a) => a.nodeId === nodeId && a.outcome === "released");
+  return task.attempts.some(
+    (a) => a.nodeId === nodeId && (a.outcome === "released" || a.outcome === "lost"),
+  );
 }
 
 /** Some other node with a free slot could take the task instead. */
@@ -175,7 +190,7 @@ function assignTask(
     attempt,
     nodeId: node.nodeId,
     assignedAt: now,
-    deadlineAt: now + deadline,
+    deadlineAt: now + deadlineFor(task, deadline),
     speculative,
     outcome: "running",
   });
@@ -200,7 +215,7 @@ function assignTask(
     count: task.kind === "plan" ? 1 : exec.stageTaskIds.length,
     input: toBase64(task.input),
     fsRoot: exec.root,
-    deadlineMs: deadline,
+    deadlineMs: deadlineFor(task, deadline),
     limits: ledger.config.taskLimits,
   };
   const effects: Effect[] = [{ kind: "send", connId: node.connId, msg }];
@@ -222,7 +237,7 @@ export function releaseNode(ledger: Ledger, node: NodeRecord): Effect[] {
     const task = ledger.tasks.get(taskId);
     if (!task) continue;
     for (const a of task.attempts)
-      if (a.nodeId === node.nodeId && a.outcome === "running") a.outcome = "released";
+      if (a.nodeId === node.nodeId && a.outcome === "running") a.outcome = "lost";
     if (
       task.status === "assigned" &&
       runningAttempts(task) === 0 &&

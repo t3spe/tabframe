@@ -146,7 +146,8 @@ describe("stage specs", () => {
       .tuple(fc.uint8Array({ maxLength: 64 }), fc.option(arbPlace, { nil: null }))
       .map(([input, place]) => (place ? { input, place } : { input }));
     const arbCanvas = fc.option(
-      fc.record({ w: fc.integer({ min: 1, max: 4096 }), h: fc.integer({ min: 1, max: 4096 }) }),
+      // Within the WP8.3 cap: 4096 a side and four megapixels in all.
+      fc.record({ w: fc.integer({ min: 1, max: 2048 }), h: fc.integer({ min: 1, max: 2048 }) }),
       { nil: null },
     );
     const arbStage: fc.Arbitrary<StageSpec> = fc

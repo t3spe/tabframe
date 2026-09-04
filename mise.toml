@@ -125,11 +125,13 @@ depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m0.ts"
 
 [tasks."verify:m2"]
+env = { AWS_PROFILE = "tabframe", _.file = ".env.local" }
 description = "M2 runbook: edit and compile a program in the deployed page, run word count, make a program fault"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m2.ts"
 
 [tasks."verify:m3"]
+env = { AWS_PROFILE = "tabframe", _.file = ".env.local" }
 description = "M3 runbook: a real rotation under load — churn seconds, drain jitter, session-function concurrency"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m3.ts"
@@ -137,9 +139,11 @@ run = "node packages/infra/scripts/verify-m3.ts"
 [tasks.demo]
 env = { AWS_PROFILE = "tabframe", _.file = ".env.local" }
 description = "WP4.4: run the demo script unattended against the deployed machine (TABFRAME_VIDEO=1 records)"
+depends = ["whoami"]
 run = "node packages/infra/scripts/demo.ts"
 
 [tasks."verify:m1"]
+env = { AWS_PROFILE = "tabframe", _.file = ".env.local" }
 description = "M1 runbook: browser tabs render a frame on the deployed machine, kill half mid-frame, golden hashes, uploads, snapshots"
 depends = ["whoami"]
 run = "node packages/infra/scripts/verify-m1.ts"
@@ -175,6 +179,7 @@ depends = ["whoami"]
 run = "aws logs tail /aws/lambda/microvms/tabframe --follow --format short"
 
 [tasks."logs:fleet"]
+env = { AWS_PROFILE = "tabframe", _.file = ".env.local" }
 description = "Tail the session and rotate functions' logs"
 depends = ["whoami"]
 run = "aws logs tail /aws/lambda/tabframe-rotate --follow --format short & aws logs tail /aws/lambda/tabframe-session --follow --format short; wait"

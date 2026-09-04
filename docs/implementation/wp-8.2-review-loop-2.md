@@ -14,10 +14,13 @@ deferred with a reason, or rejected with the reason (the critique). Of the 52 ro
 landed on this branch with tests; CI gates the merge; loop three reviews the tree with these
 changes in and reads this note first.
 
-Three of loop one's claims did not hold and are marked *loop-1 regression*: the presign cap made
-many-file tasks loop across the cluster; the IAM scoping was never applied; the build stamp never
-reached the image. Two of loop one's documentation repairs did damage (the drift log, a typo). All
-five are fixed here.
+7 rows carry the marker *loop-1 regression* (rows 6, 13, 15, 23, 24, 31, 34): loop-one changes that did not
+hold or were incomplete — the presign cap made many-file tasks loop across the cluster, the IAM
+scoping was never applied, the build stamp never reached the image, the presign budget was a lifetime
+cap, the compile worker was never replaced, the editor still swallowed dropped launches, the ledger
+signature missed verifies. Two of loop one's documentation repairs did damage (the drift log, a
+typo). All of them are fixed here; loop 3 found the typo fix had missed (the phrase breaks across a
+line) and finished it.
 
 ## The findings and what was done
 

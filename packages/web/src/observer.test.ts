@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
-import { CONTROL_HOLD_MS, CONTROL_SPACING_MS, ObserverClient } from "./observer.ts";
+import { LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
+import {
+  CONTROL_HOLD_MS,
+  CONTROL_SPACING_MS,
+  MACHINE_FULL_RETRY_MS,
+  ObserverClient,
+} from "./observer.ts";
 
 // WP4.4: a control clicked while the socket is between subscribes (a silent resubscribe after a
 // gap or a refresh, a rotation) is held for the next live socket instead of being dropped.
@@ -190,6 +195,53 @@ describe("controls across a resubscribe", () => {
     await tick();
     expect(states).toContain("off");
     expect(client.send({ t: "killHalf" })).toBe(false);
+    client.stop();
+  });
+});
+
+describe("loop 3 (WP8.3)", () => {
+  test("controls queued behind the spacing timer survive a silent resubscribe and go out once", async () => {
+    const { client, socket } = await live();
+    // Two clicks right after the subscribe: both wait behind the 250 ms spacing.
+    expect(client.send({ t: "killHalf" })).toBe(true);
+    expect(client.send({ t: "stop" })).toBe(true);
+    // A sequence gap before they went out: the client swaps sockets.
+    socket.deliver({ t: "controlApplied", ...env, seq: 3, at: 2, op: "resumeAll", nodeIds: [] });
+    await new Promise((r) => setTimeout(r, 5));
+    await tick();
+    await tick();
+    const next = FakeSocket.instances[1] as FakeSocket;
+    next.open();
+    next.deliver(snapshot(4));
+    await new Promise((r) => setTimeout(r, CONTROL_SPACING_MS * 3 + 20));
+    const all = [...socket.frames(), ...next.frames()]
+      .map((f) => f.t)
+      .filter((t) => t !== "subscribe");
+    expect(all.sort()).toEqual(["killHalf", "stop"]);
+    client.stop();
+  });
+
+  test("a healthy session resets the reconnect backoff", async () => {
+    const { client, socket } = await live();
+    socket.close(1006, "");
+    expect(client.lastDelayMs).toBe(LIMITS.reconnectMinMs);
+    await new Promise((r) => setTimeout(r, LIMITS.reconnectMinMs + 20));
+    await tick();
+    await tick();
+    const next = FakeSocket.instances[1] as FakeSocket;
+    next.open();
+    next.deliver(snapshot(2));
+    next.close(1006, "");
+    // Without the reset this would be the second step of the schedule, up to twice as long.
+    expect(client.lastDelayMs).toBe(LIMITS.reconnectMinMs);
+    client.stop();
+  });
+
+  test("a full machine is a state of its own, retried after the server's ten seconds", async () => {
+    const { client, states, socket } = await live();
+    socket.close(4008, "machine full: 14 clients; retry in 10 s");
+    expect(states.at(-1)).toBe("full");
+    expect(client.lastDelayMs).toBe(MACHINE_FULL_RETRY_MS);
     client.stop();
   });
 });

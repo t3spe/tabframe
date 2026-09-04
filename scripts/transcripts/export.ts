@@ -28,12 +28,9 @@ const outDir = path.resolve(root, arg("--out", "docs/transcripts"));
 const maxResultLines = Number(arg("--max-result-lines", "40"));
 const expand = (p: string): string => (p.startsWith("~/") ? path.join(homedir(), p.slice(2)) : p);
 const workersDir = expand(
-  process.env.TABFRAME_TRANSCRIPTS_DIR ?? "~/homework/tabframe-transcripts",
+  process.env.TABFRAME_TRANSCRIPTS_DIR ?? `${homedir()}/homework/tabframe-transcripts`,
 );
-const mainFile = expand(
-  process.env.TABFRAME_MAIN_TRANSCRIPT ??
-    "~/.claude/projects/-home-mircea-homework/2f9f4ebc-d551-4417-ad7d-e749c7e0ea1a.jsonl",
-);
+const mainFile = expand(process.env.TABFRAME_MAIN_TRANSCRIPT ?? sessionJsonlFromEnv());
 
 const sources: Array<{ file: string; label: string }> = [];
 if (existsSync(mainFile))
@@ -87,3 +84,16 @@ const index = [
 ].join("\n");
 writeFileSync(path.join(outDir, "index.md"), index);
 console.log(`${rows.length} transcripts → ${path.relative(root, outDir)}/`);
+
+/** The main session's transcript, named by the environment only (WP8.3): no operator path in the repo. */
+function sessionJsonlFromEnv(): string {
+  const id = process.env.TABFRAME_SESSION_ID;
+  if (!id)
+    throw new Error(
+      "TABFRAME_SESSION_ID is not set (.env.local): the session transcript to export",
+    );
+  const project =
+    process.env.TABFRAME_CLAUDE_PROJECT_DIR ??
+    `${homedir()}/.claude/projects/-home-mircea-homework`;
+  return `${project}/${id}.jsonl`;
+}
