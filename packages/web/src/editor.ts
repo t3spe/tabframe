@@ -57,6 +57,9 @@ const $ = <T extends Element>(root: ParentNode, sel: string): T => {
 };
 
 /** Mount the editor into its section. Idempotent per section: a second call returns the first handle. */
+/** A compile the worker never answers is failed after this long (WP8.1). */
+export const COMPILE_TIMEOUT_MS = 120_000;
+
 export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   const existing = (root as HTMLElement & { __editor?: EditorHandle }).__editor;
   if (existing) return existing;
@@ -147,12 +150,19 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
           settle?.(result);
         }
       };
-      w.onerror = (e) => {
-        status(`compiler failed to load: ${e.message}`, "off");
+      const died = (message: string) => {
+        // The worker died or misbehaved (WP8.1): every compile it owed is rejected — the compile
+        // button used to stay disabled for the life of the tab — and the next compile gets a fresh worker.
+        status(`compiler failed: ${message}`, "off");
         ready = null;
         worker = null;
-        reject(new Error(e.message));
+        for (const [, settle] of pending)
+          settle({ ok: false, wasm: null, diagnostics: [], stderr: message, ms: 0 });
+        pending.clear();
+        reject(new Error(message));
       };
+      w.onerror = (e) => died(e.message || "worker error");
+      w.onmessageerror = () => died("the compiler sent an unreadable message");
     });
     return ready;
   }
@@ -163,6 +173,16 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       if (!w) return reject(new Error("no compiler worker"));
       const id = nextId++;
       pending.set(id, resolve);
+      // A compile that never answers (WP8.1) is failed after two minutes rather than for ever.
+      const timer = setTimeout(() => {
+        if (!pending.has(id)) return;
+        pending.delete(id);
+        reject(new Error("the compiler did not answer within two minutes"));
+      }, COMPILE_TIMEOUT_MS);
+      pending.set(id, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
       const req: WorkerRequest = {
         type: "compile",
         id,
@@ -206,7 +226,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       module = null;
       moduleFrom = null;
       els.launch.disabled = true;
-      els.moduleInfo.innerHTML = "";
+      els.moduleInfo.replaceChildren();
       const p = document.createElement("span");
       p.className = "bad";
       p.textContent = `${from} module refused: ${m.reason}`;
@@ -411,11 +431,25 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     e.preventDefault();
     els.drop.classList.remove("over");
     const file = e.dataTransfer?.files?.[0];
-    if (file) void takeFile(file);
+    if (file)
+      void takeFile(file).catch((err) =>
+        info(
+          els.moduleInfo,
+          `could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
+          true,
+        ),
+      );
   };
   els.file.onchange = () => {
     const file = els.file.files?.[0];
-    if (file) void takeFile(file);
+    if (file)
+      void takeFile(file).catch((err) =>
+        info(
+          els.moduleInfo,
+          `could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
+          true,
+        ),
+      );
     els.file.value = "";
   };
 

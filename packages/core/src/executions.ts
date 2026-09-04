@@ -1,5 +1,6 @@
 import {
   AbiError,
+  byteLength,
   canonicalStringify,
   decodeStageSpec,
   encodePlanInput,
@@ -85,6 +86,12 @@ export function enqueue(
   const program = ledger.programs.get(req.bundle);
   if (!program) return { effects: [], executionId: null, error: "unknown program" };
   if (program.retired) return { effects: [], executionId: null, error: "program retired" };
+  // Params travel in every executionStarted, snapshot page, and plan assignment (WP8.1): a bound
+  // keeps the 64 KB frame from being blown by one launch; the queue is bounded for the same reason.
+  if (byteLength(canonicalStringify(req.params)) > PARAMS_MAX_BYTES)
+    return { effects: [], executionId: null, error: `params over ${PARAMS_MAX_BYTES} bytes` };
+  if (ledger.queue.length >= QUEUE_CAP)
+    return { effects: [], executionId: null, error: `queue full (${QUEUE_CAP})` };
   // A `persist` program inherits the latest finished run of itself unless told otherwise (D5).
   const inherit = req.inherit ?? (program.manifest.persist ? "latest" : null);
   const inherited = resolveInherit(ledger, { ...req, inherit });
@@ -121,6 +128,7 @@ export function enqueue(
     inheritedFrom: inherited?.executionId ?? null,
     failure: null,
     counters: emptyCounters(),
+    waitingSince: null,
   };
   ledger.executions.set(executionId, exec);
   if (req.human) {
@@ -183,11 +191,17 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   if (inheritedRoot) {
     // Blobs expire (a year, §5.4). Check the inherited root is still there before planning;
     // the plan task waits for the answer.
+    exec.waitingSince = now;
     effects.push({
       kind: "fetchBlob",
       hash: inheritedRoot,
       purpose: { type: "inheritRoot", executionId: exec.executionId },
     });
+    return effects;
+  }
+  if (exec.inheritedFrom && exec.root === null) {
+    // The origin was pruned between enqueue and start (WP8.1): say so and start from the bundle.
+    effects.push(...onInheritRoot(ledger, exec.executionId, null, now));
     return effects;
   }
   effects.push(...createPlanTask(ledger, exec, 0, now));
@@ -208,6 +222,7 @@ export function onInheritRoot(
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
   if (exec?.status !== "running" || exec.root !== null) return [];
+  exec.waitingSince = null;
   const program = ledger.programs.get(exec.bundle);
   const inherited = bytes === null ? null : parseManifest(bytes);
   if (inherited === null) {
@@ -225,6 +240,7 @@ export function onInheritRoot(
   }
   exec.files = { ...inherited, ...(program?.files ?? {}) };
   const manifest: FsManifest = { version: 1, files: exec.files };
+  exec.waitingSince = now;
   return [
     {
       kind: "putBlob",
@@ -302,6 +318,7 @@ export function afterTaskSettled(ledger: Ledger, task: TaskRecord, now: number):
   if (exec.computeMsUsed > exec.computeMsCap)
     return failExecution(ledger, exec, "over compute budget", now);
   if (task.kind === "plan" && task.accepted) {
+    exec.waitingSince = now;
     return [
       {
         kind: "fetchBlob",
@@ -331,6 +348,7 @@ export function onStageSpec(
   const planTask = ledger.tasks.get(taskId);
   if (exec?.status !== "running" || !planTask || exec.planTaskId !== taskId) return [];
   if (!bytes) return failExecution(ledger, exec, "stage spec blob missing", now);
+  exec.waitingSince = null;
   let spec: ReturnType<typeof decodeStageSpec>;
   try {
     spec = decodeStageSpec(bytes);
@@ -434,6 +452,7 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
   }
   const manifest: FsManifest = { version: 1, files };
   exec.sealedStage = exec.stage;
+  exec.waitingSince = now;
   return [
     {
       kind: "putBlob",
@@ -453,6 +472,7 @@ export function onManifestStored(
 ): Effect[] {
   const exec = ledger.executions.get(executionId);
   if (exec?.status !== "running") return [];
+  exec.waitingSince = null;
   if (stage === -1) {
     // The initial filesystem of an execution that inherited one: plan can start now.
     if (exec.root !== null) return [];
@@ -476,6 +496,58 @@ export function onManifestStored(
   effects.push(...createPlanTask(ledger, exec, stage + 1, now));
   effects.push(...fill(ledger, now));
   return effects;
+}
+
+/** A launch's params are bounded, canonical bytes (WP8.1); the queue is bounded too. */
+export const PARAMS_MAX_BYTES = 4096;
+export const QUEUE_CAP = 32;
+/** How long a running execution waits for the store before its pending effect is issued again. */
+export const STORE_RETRY_MS = 10_000;
+
+/**
+ * Re-derive the one asynchronous effect the running execution is waiting on (WP8.1): the inherited
+ * root's manifest, the plan task's spec, or the folded manifest. The effects are fire-and-forget,
+ * so a control plane that adopted the ledger mid-flight, or a store that failed once, would
+ * otherwise leave the execution running for ever with nothing to move it. Every effect here is
+ * idempotent: blobs are content-addressed and the handlers ignore an answer that arrived already.
+ * Called on adopt (`force`) and on every tick once `STORE_RETRY_MS` have passed.
+ */
+export function resumePending(ledger: Ledger, now: number, force = false): Effect[] {
+  const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  if (exec?.status !== "running") return [];
+  if (!force && (exec.waitingSince === null || now - exec.waitingSince < STORE_RETRY_MS)) return [];
+  if (exec.root === null && !exec.planTaskId && exec.stageTaskIds.length === 0) {
+    const inheritedRoot = exec.inheritedFrom
+      ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
+      : null;
+    if (!inheritedRoot) return onInheritRoot(ledger, exec.executionId, null, now);
+    exec.waitingSince = now;
+    return [
+      {
+        kind: "fetchBlob",
+        hash: inheritedRoot,
+        purpose: { type: "inheritRoot", executionId: exec.executionId },
+      },
+    ];
+  }
+  if (exec.planTaskId) {
+    const plan = ledger.tasks.get(exec.planTaskId);
+    if (plan?.status !== "done" || !plan.accepted) return [];
+    exec.waitingSince = now;
+    return [
+      {
+        kind: "fetchBlob",
+        hash: plan.accepted.output,
+        purpose: { type: "stageSpec", executionId: exec.executionId, taskId: plan.taskId },
+      },
+    ];
+  }
+  if (
+    exec.stageTaskIds.length > 0 &&
+    exec.stageTaskIds.every((id) => ledger.tasks.get(id)?.status === "done")
+  )
+    return foldStage(ledger, exec, now);
+  return [];
 }
 
 /** How long the default loop waits after a failed execution: doubling from five seconds to five minutes. */

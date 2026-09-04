@@ -15,7 +15,7 @@ import {
   type Ledger,
   systemClock,
 } from "@tabframe/core";
-import { encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
+import { CLOSE, encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
 import {
   HASH_RE,
   LocalStore,
@@ -39,7 +39,10 @@ import { readBody, send, sendJson, serveStatic } from "./static.ts";
 /** An unshipped program nobody has run in the ledger's memory is retired at seeding after this long. */
 const STALE_DROP_MS = 60 * 60 * 1000;
 
-const MAX_BLOB_BYTES = 8 * 1024 * 1024;
+/** The local blob route accepts what the protocol allows an output to be (WP8.1: it was 8 MB against a 16 MB cap). */
+const MAX_BLOB_BYTES = LIMITS.maxOutputBytes;
+/** What the control plane will read from the store on an untrusted party's say-so (WP8.1). */
+const FETCH_CAPS = { stageSpec: 1024 * 1024, inheritRoot: 4 * 1024 * 1024 } as const;
 /** A serialized ledger: tasks carry base64 inputs, so it is bigger than the blob cap. */
 const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
 /** Private routes that require the fleet secret from the run payload (design §8). */
@@ -286,7 +289,15 @@ export async function createControlPlane(
       switch (e.kind) {
         case "send": {
           const ws = conns.get(e.connId);
-          if (ws && ws.readyState === ws.OPEN) ws.send(encode(e.msg));
+          if (!ws || ws.readyState !== ws.OPEN) break;
+          try {
+            ws.send(encode(e.msg));
+          } catch (err) {
+            // A frame the protocol refuses to encode (over 64 KB) closes that connection instead
+            // of throwing through the dispatch (WP8.1): the ledger is already advanced.
+            log("send-failed", { connId: e.connId, t: e.msg.t, error: String(err) });
+            ws.close(CLOSE.invalidMessage, "frame too large");
+          }
           break;
         }
         case "close": {
@@ -307,7 +318,10 @@ export async function createControlPlane(
           break;
         case "fetchBlob":
           void store
-            .get(e.hash)
+            .get(
+              e.hash,
+              e.purpose.type === "stageSpec" ? FETCH_CAPS.stageSpec : FETCH_CAPS.inheritRoot,
+            )
             .then((bytes) =>
               dispatch({ kind: "blobFetched", hash: e.hash, bytes, purpose: e.purpose }),
             )
@@ -541,7 +555,9 @@ export async function createControlPlane(
    * browser in either case, and locally it is bound to the loopback address.
    */
   function fleetAuthorized(req: IncomingMessage): boolean {
-    if (!fleetSecret) return true;
+    // Without a secret the fleet routes are open only on a laptop (WP8.1): an image that has not
+    // received its run payload yet refuses /adopt and the rest instead of failing open.
+    if (!fleetSecret) return config.mode !== "image" || config.allowOpenFleetRoutes === true;
     const header = req.headers["x-tabframe-fleet-secret"];
     const given = Array.isArray(header) ? header[0] : header;
     if (typeof given !== "string" || given.length !== fleetSecret.length) return false;
@@ -585,6 +601,17 @@ export async function createControlPlane(
         return sendJson(res, 409, { error: "that ledger is newer than this control plane" });
       }
       const gen = generation;
+      if (
+        role === "control-plane" &&
+        ledger &&
+        (conns.size > 0 || ledger.meta.seq > adopted.meta.seq)
+      ) {
+        // A retried adopt after we already serve this ledger or a newer one (WP8.1): swapping
+        // it under live sockets would orphan them and roll the machine back; the first adopt
+        // stands. A successor that booted from a snapshot is older than the handover and takes it.
+        log("adopt-repeat", { generation: gen, ours: ledger.meta.seq, theirs: adopted.meta.seq });
+        return sendJson(res, 200, { adopted: true, generation: gen, repeated: true });
+      }
       becomeControlPlane(gen, adopted.meta.storeBase || storeBase, adopted);
       await seeding;
       dispatch({ kind: "tick" });
@@ -615,6 +642,8 @@ export async function createControlPlane(
         mode: config.mode,
         generation,
         protocol: PROTOCOL_VERSION,
+        build: process.env.TABFRAME_BUILD ?? null,
+        imageVersion: config.imageVersion ?? null,
         awake: ledger?.meta.awake ?? null,
         sleepReason: ledger?.meta.sleepReason ?? null,
         nodes: nodes.length,

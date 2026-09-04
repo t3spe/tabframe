@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { PresignedUpload, PresignItem, StoreDriver } from "./driver.ts";
+import { BlobTooLarge } from "./driver.ts";
 import { hexToBase64, sha256Hex } from "./hash.ts";
 
 export const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -54,7 +55,11 @@ export class S3Store implements StoreDriver {
   async presign(items: PresignItem[]): Promise<PresignedUpload[]> {
     return Promise.all(
       items.map(async (it) => {
-        if (await this.exists(it.hash)) return { hash: it.hash, url: null, headers: {} };
+        // A HeadObject that errors for any reason but "not found" (a throttle, a hiccup) must not
+        // fail the whole presign (WP8.1): the node would hang on it for ever. Sign instead; the
+        // upload is idempotent by hash.
+        if (await this.exists(it.hash).catch(() => false))
+          return { hash: it.hash, url: null, headers: {} };
         const input = {
           Bucket: this.bucket,
           Key: S3Store.key(it.hash),
@@ -83,8 +88,17 @@ export class S3Store implements StoreDriver {
     );
   }
 
-  async get(hash: string): Promise<Uint8Array | null> {
+  async get(hash: string, maxBytes?: number): Promise<Uint8Array | null> {
     try {
+      if (maxBytes !== undefined) {
+        // Ask the size first (WP8.1): a hash an untrusted party named must not pull a gigabyte
+        // into a one-gigabyte MicroVM.
+        const head = await this.s3.send(
+          new HeadObjectCommand({ Bucket: this.bucket, Key: S3Store.key(hash) }),
+        );
+        const size = head.ContentLength ?? 0;
+        if (size > maxBytes) throw new BlobTooLarge(hash, size, maxBytes);
+      }
       const r = await this.s3.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: S3Store.key(hash) }),
       );

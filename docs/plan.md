@@ -5,7 +5,7 @@ plan is the order of work. When the two disagree, fix the design record first, t
 
 **Where we are (2026-09-04, M7 closed):** M0–M7 done. M6 landed Mircea's six asks of 2026-09-02 and WP6.8 his first review of the deployed page; M7 answered his third review of 2026-09-03 in seven work packages — the header's one slot with a loop pill, a crisp throughput line, a launch form that keeps the caret, files and ledger rows previewed in the page, an editor that fills the viewport with the guide on its own page, every program in the editor with its source kept in the store, and the walkthrough: `docs/walkthrough.md` as the page's contract (every screen × state × control, eight rules), the sentence of state in the status line, reasons in tooltips instead of hidden controls, and `e2e/walkthrough.e2e.ts` asserting each state. Two deploys (generations 99 and 105) each passed three unattended demo passes; the walkthrough found and fixed a core bug (a trapped task's snapshot could not be decoded by a fresh dashboard). Left for Mircea: the README and rationale read-through, developer hours, the narrated video, the Cost Explorer check, the flip. Post-flip candidates: an EC2 host for the control plane (WP4.6), SIMD for the transformer, sampling with a seed.
 
-**Shape of the plan:** six milestones, M0–M5, each ending in a deployable checkpoint. Each milestone
+**Shape of the plan:** eight milestones, M0–M7, each ending in a deployable checkpoint, then M8's review loops; M5 is the packaging gate and stays open until the flip. Each milestone
 is a set of work packages (WP). A WP is done when its code, its tests, its WP document under `docs/implementation/`, and its doc touch
 are merged together and its acceptance line holds. Checkboxes are updated in the same commit that
 completes the WP.
@@ -189,7 +189,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 | Risk | Where it bites | Mitigation | Owner WP |
 |---|---|---|---|
 | Endpoint 429 thresholds are strict | heartbeats and fan-out | coalesce events per observer; heartbeat 2 s | WP0.11 → WP1.7 |
-| **Endpoint holds 16 concurrent connections per MicroVM** (non-adjustable quota, measured WP4.5) | the whole client-facing surface: one control plane serves ~15 tabs, and open sockets block the fleet's private-port calls | an edge tier that is not a MicroVM endpoint (API Gateway WebSocket, IoT Core, or relays); the protocol's `Transport` seam already isolates it | WP4.5 → WP4.6 (decision pending) |
+| **Endpoint holds 16 concurrent connections per MicroVM** (non-adjustable quota, measured WP4.5) | the whole client-facing surface: one control plane serves ~15 tabs, and open sockets block the fleet's private-port calls | an edge tier that is not a MicroVM endpoint (API Gateway WebSocket, IoT Core, or relays); the protocol's `Transport` seam already isolates it | WP4.5 → WP4.6 (decided: documented now, an EC2 host after the flip) |
 | Frames don't count as idle traffic | control plane suspends mid-demo | observer ping becomes HTTP | WP0.11 → WP0.6 |
 | Sync XHR in workers changes | browser read path | declared-prefetch fallback in the sandbox glue | WP1.4 |
 | Token-mint throttling | wake with many visitors | one shared token per control plane, cached | WP0.9 |
@@ -205,7 +205,7 @@ Infra, image, and fleet skeletons run in parallel with the core in M0. Everythin
 
 ## 9. Tracking
 
-Progress lives in this file's checkboxes and in `docs/timelog.md`. Milestone checkpoints are tagged in git (`m0`, `m1`, …). The design record is updated before the plan whenever building teaches us something.
+Progress lives in this file's checkboxes and in `docs/timelog.md`. Milestone checkpoints up to M6 are tagged in git (`m0`–`m6`); later milestones are the merge commits on `main`. The design record is updated before the plan whenever building teaches us something.
 
 ## M6 — after the demo: Mircea's asks of 2026-09-02
 
@@ -232,5 +232,13 @@ The plan and the walkthrough are the M7 plan artifact (decisions D1–D5 taken a
 - [x] **WP7.5 The editor's layout and the guide page.** _Done 2026-09-04 (`docs/implementation/wp-7.5-editor-layout-guide.md`)._ The editor is a column that fills the viewport: source left, launch column right, one action bar; two lines of introduction; the guide is `/guide.html` (D4) behind "What is a program? ↗" at the top, with the limits sentence shared.
 - [x] **WP7.6 Every program in the editor, with its source.** _Done 2026-09-04 (`docs/implementation/wp-7.6-programs-with-source.md`)._ D5: `programManifest.source` (a hash in the store); the seeder stores every shipped program's source and the image ships it; the editor lists every program on the machine, opens one from the store with its source, fields, and inputs kept by hash, and a launch uploads the compiled text with the module; a dropped module opens as a module, compile off.
 - [x] **WP7.7 The walkthrough.** _Done 2026-09-04 (`docs/implementation/wp-7.7-walkthrough.md`)._ `docs/walkthrough.md` is the page's contract (every screen × state × control, rules R1–R8); the status line carries one sentence of state; disabled controls carry their reason; panel tabs get "← dashboard" and lose the machine's controls; the editor greys a stale or demo launch and names a dropped module's missing source; `e2e/walkthrough.e2e.ts` asserts the sentence, the slot, and the exact set of enabled controls in each state. **Deploy 2: generation 105, 2026-09-04; three unattended demo passes green, the editor opening tiny GPT from the machine in each.** The walkthrough test runs against the local control plane in CI (its idle → stopped → paused → your launch → killed path needs a machine nobody else drives); the live states are the demo's beats.
+
+## M8 — review loops: five personas, three rounds
+
+Mircea's ask of 2026-09-04: review the code and critique it from five perspectives — an expert full-stack developer, an expert distributed-systems developer, an expert security engineer, an expert technical writer, an expert DevOps engineer — get the individual feedback, aggregate it, critique it, incorporate it; three loops. Each loop: five independent read-only reviewers (fresh agents, no AWS access) report at most twelve findings each with severity, location, cause, and fix; the findings are aggregated and de-duplicated, each is accepted, deferred, or rejected with a reason (the critique), and the accepted ones land on one branch with tests, CI green, merged. The next loop reviews the tree with the previous loop's changes in. A deploy with three demo passes follows the last loop.
+
+- [x] **WP8.1 Review loop 1.** _Done 2026-09-04 (`docs/implementation/wp-8.1-review-loop-1.md`)._ Five reviews, 52 findings aggregated and critiqued: 40 accepted (re-derived store effects after a handover, bounded params/queue/presigns/results, size-capped fetches, one memory per module, node presign timeout and host failures as releases, the suspended control plane left alone on schedule, a sequential guarded deploy with a build stamp, failed rotations that throw plus alarms, retained data buckets, response headers, the editor's re-pause, silent reconnects, the reload loop, the cache and render costs, the documentation's stale facts and vocabulary), 11 deferred to loops 2–3 with reasons, 1 rejected (authenticating the public machine's controls; a cooldown instead).
+- [ ] **WP8.2 Review loop 2.** The same, on the tree after loop 1.
+- [ ] **WP8.3 Review loop 3.** The same, on the tree after loop 2; then deploy and `mise run demo -- --repeat 3`.
 
 **Batch A, executed 2026-09-02:** the stays-up branch merged; fourteen stale local worktrees pruned, the remote `wp/*` branches kept as the work-package history; the one-cent test budget kept until AWS produces cost data (re-checked daily; the console check is Mircea's); the README and rationale read-through is Mircea's; EC2 for the control plane stays after the flip.

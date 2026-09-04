@@ -2,6 +2,7 @@
 //   packages/infra/image-dist/ = Dockerfile + package.json (ESM) + main.js + programs/
 // `cdk deploy` reads it through TABFRAME_IMAGE_DIR (the committed packages/infra/image/ holds a
 // placeholder so the image builds before the control plane exists).
+import { execSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -29,6 +30,19 @@ if (!existsSync(worker)) {
 }
 copyFileSync(worker, path.join(out, "node-worker.js"));
 writeFileSync(path.join(out, "programs", ".gitkeep"), "");
+// The build stamp (WP8.1): the commit the image was staged from, shown by /health, so a running
+// generation can always be traced to a commit.
+let sha = "unknown";
+try {
+  sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
+  if (execSync("git status --porcelain", { encoding: "utf8" }).trim()) sha += "-dirty";
+} catch {
+  // not a git checkout: the stamp stays unknown
+}
+writeFileSync(
+  path.join(out, "build.json"),
+  `${JSON.stringify({ sha, at: new Date().toISOString() })}\n`,
+);
 // Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
 // inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as
 // /in/<file> of the bundle.

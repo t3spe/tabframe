@@ -135,14 +135,15 @@ export class TaskRunner {
         },
       };
     } catch (err) {
-      this.deps.log?.("task-failed", { taskId: a.taskId, error: String(err) });
+      const text = String(err);
+      this.deps.log?.("task-failed", { taskId: a.taskId, error: text });
       return {
         kind: "result",
         msg: {
           t: "result",
           taskId: a.taskId,
           attempt: a.attempt,
-          error: `node: ${String(err).slice(0, 200)}`,
+          error: hostFailure(text) ? RELEASED : `node: ${text.slice(0, 200)}`,
           writes: [],
           log: null,
           computeMs: 0,
@@ -188,7 +189,10 @@ export class TaskRunner {
 
 /** An error from the host, not from the program: the module never ran (memory, instantiation). */
 export function hostFailure(error: string): boolean {
-  return /out of memory|cannot allocate|WebAssembly\.(Instance|Memory)\(\)|RangeError: WebAssembly/i.test(
+  // The host, not the program: memory the host could not give, and the store or the network the
+  // host could not reach (WP8.1) — a fetch that 5xx'd, an upload that failed, a presign that timed
+  // out. Another node will run the task; the program did nothing wrong.
+  return /out of memory|cannot allocate|WebAssembly\.(Instance|Memory)\(\)|RangeError: WebAssembly|fetch of \S+ failed|upload of \S+ failed|no presign for|presign timed out|socket closed|failed to fetch|NetworkError|network error|ECONNRESET|ETIMEDOUT|HTTP 5\d\d|HTTP 429/i.test(
     error,
   );
 }
@@ -198,8 +202,12 @@ function inlineLog(text: string): { text: string } | null {
 }
 
 /** Presign over the node socket (D18): one outstanding request at a time, matched by hash set. */
+/** How long a node waits for a presign answer before releasing the task (WP8.1). */
+export const PRESIGN_TIMEOUT_MS = 30_000;
+
 export class SocketPresigner implements PresignRequester {
   private readonly send: (text: string) => void;
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private waiting: {
     hashes: Set<string>;
     resolve: (
@@ -209,8 +217,11 @@ export class SocketPresigner implements PresignRequester {
   } | null = null;
   private gen = 0;
 
-  constructor(send: (text: string) => void) {
+  private readonly timeoutMs: number;
+
+  constructor(send: (text: string) => void, timeoutMs = PRESIGN_TIMEOUT_MS) {
     this.send = send;
+    this.timeoutMs = timeoutMs;
   }
 
   setGeneration(gen: number): void {
@@ -225,7 +236,25 @@ export class SocketPresigner implements PresignRequester {
         reject(new Error("a presign is already outstanding"));
         return;
       }
-      this.waiting = { hashes: new Set(items.map((i) => i.hash)), resolve, reject };
+      const w = { hashes: new Set(items.map((i) => i.hash)), resolve, reject };
+      this.waiting = w;
+      // A presign the control plane never answers (a store hiccup it only logged) must not hold
+      // the node for ever (WP8.1): the task is released and the node moves on.
+      const timer = setTimeout(() => {
+        if (this.waiting !== w) return;
+        this.waiting = null;
+        reject(new Error("presign timed out"));
+      }, this.timeoutMs);
+      this.timers.add(timer);
+      const done = () => this.timers.delete(timer) && clearTimeout(timer);
+      w.resolve = (v) => {
+        done();
+        resolve(v);
+      };
+      w.reject = (e) => {
+        done();
+        reject(e);
+      };
       this.send(JSON.stringify({ t: "presign", v: PROTOCOL_VERSION, gen: this.gen, items }));
     });
   }

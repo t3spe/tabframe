@@ -1,6 +1,6 @@
 # Tabframe — Design Record
 
-**Status:** design complete, build not started. Written 2026-09-01 during a full pre-build walkthrough.
+**Status:** written 2026-09-01 before the build; the sections that name a work package were amended in place (§6.7, §8.3 among them) and everything else is read together with the drift log, §17 (last entry 2026-09-04), whose entries are in merge order.
 This document is the source of truth for the build. It supersedes the earlier handoff and seed
 documents wherever they differ.
 
@@ -115,7 +115,7 @@ and which stays correct while cores — and the control plane itself — come an
 
  +------------------------------+   +------------------------------+   +-----------------+
  | Lambda: session (public URL) |   | Lambda: rotate (hourly,      |   | SSM parameter:  |
- |  vend {endpoint, token,      |   |  reserved concurrency 1)     |   | active control  |
+ |  vend {endpoint, token,      |   |  no reserved concurrency)     |   | active control  |
  |   storeBase, generation};    |   |  launch → handover → flip →  |   | plane + gen     |
  |  heal when none running      |   |  drain → terminate           |   +-----------------+
  +------------------------------+   +------------------------------+
@@ -239,7 +239,7 @@ Each execution owns a filesystem: a map from path to blob hash, itself a blob, s
 
 ### 5.6 SDK and demo programs
 
-The AssemblyScript SDK wraps the ABI: `fs.read/readRange/write/list/stat`, `log`, an input decoder, a stage builder `stage(name).task(bytes, place).done(next?)`, and canonical codecs so identical logic yields identical bytes.
+The AssemblyScript SDK wraps the ABI: `fs.read/readRange/write/list/stat`, `log`, an input decoder, a stage builder `stage(name).canvas(w, h).taskAt(bytes, x, y, w, h)` (or `.task(bytes)` without a placement) with `done(next?)` for the planner's answer, and canonical codecs so identical logic yields identical bytes.
 
 **Mandelbrot** is one stage: 640 tasks, each input carrying the full frame parameters and its 64×64 tile; `run` returns RGBA with smooth coloring computed in WASM; `done` returns the next preset, so frames advance while anyone is watching. **Word count** is three stages over `/in/corpus.txt`: map tasks take byte ranges (extended to whitespace on both ends so no word is split or double counted) and emit counts bucketed into eight partitions by a fixed string hash; reduce tasks read every map output under `/out/0/`, slice their partition, and merge; a single merge task reads the eight reduce outputs and emits the global top-K, which is exact because partitions are disjoint. Both compile at build time with the same pinned compiler the in-page editor uses, ship inside the MicroVM image, and are seeded into the store by the control plane on first adopt.
 
@@ -469,6 +469,21 @@ Exactly one control plane is **active**, stamped with a generation. Others are b
 
 **Off:** `mise run down` disables the hourly schedule, terminates every MicroVM, and writes *off* to the pointer. The session function returns `{off: true}` and heals nothing; the page shows an off screen. `mise run up` clears the state and launches a control plane.
 
+### 9.5 Costs
+
+| Scenario | Cost |
+|---|---|
+| Idle, suspended, 1 GB baseline | ≈ $0.08/month of snapshot storage |
+| One reviewer hour, cores mostly idle | ≈ $0.13 |
+| One reviewer hour, cores computing flat out (bursting to a full vCPU each) | ≈ $0.26 |
+| Left running all day | ≈ $3 |
+| Each suspend/resume cycle | < $0.01 |
+
+### 9.6 Verified in M0
+
+Measured on 2026-09-02 against the deployed image (`docs/m0-verification.md`): WebSocket frames count as idle-policy traffic; an open socket survives its token's expiry; the endpoint throttles at about 50 requests per second, so reconnect jitter is 30 ms per client (§8.4); 250 concurrent sockets are sustained when opened at a paced rate; 15 messages per second per connection passes; DNS and S3 resolve inside the image; boot to RUNNING takes about 2 s and resume under 1 s at 1 GB; token minting is not throttled at 20 in a burst; the memory quota is 8 GB and RunMicrovm is limited to 1 per second. No fallback was needed.
+
+---
 ### 9.7 Capacity: what one MicroVM endpoint can hold
 
 Measured on 2026-09-02 (`docs/m3-verification.md`, `packages/infra/scripts/socket-ceiling.ts`) and
@@ -495,21 +510,6 @@ connection quota, thousands of sockets on one host, the same process and protoco
 the MicroVM story (snapshot boot, hooks, suspend/resume) and a different rotation mechanism. The
 plan's WP4.6 keeps the alternatives.
 
-### 9.5 Costs
-
-| Scenario | Cost |
-|---|---|
-| Idle, suspended, 1 GB baseline | ≈ $0.08/month of snapshot storage |
-| One reviewer hour, cores mostly idle | ≈ $0.13 |
-| One reviewer hour, cores computing flat out (bursting to a full vCPU each) | ≈ $0.26 |
-| Left running all day | ≈ $3 |
-| Each suspend/resume cycle | < $0.01 |
-
-### 9.6 Verified in M0
-
-Measured on 2026-09-02 against the deployed image (`docs/m0-verification.md`): WebSocket frames count as idle-policy traffic; an open socket survives its token's expiry; the endpoint throttles at about 50 requests per second, so reconnect jitter is 30 ms per client (§8.4); 250 concurrent sockets are sustained when opened at a paced rate; 15 messages per second per connection passes; DNS and S3 resolve inside the image; boot to RUNNING takes about 2 s and resume under 1 s at 1 GB; token minting is not throttled at 20 in a burst; the memory quota is 8 GB and RunMicrovm is limited to 1 per second. No fallback was needed.
-
----
 
 ## 10. Security and credentials
 
@@ -699,7 +699,7 @@ Fault-tolerant order; each leaves something deployable.
 
 ## 17. Drift log
 
-Dated deviations discovered while building, recorded before the code landed (plan §0).
+Dated deviations discovered while building, recorded before the code landed (plan §0). Entries are in merge order, not date order.
 
 - **2026-09-02 (WP0.10).** The account's Lambda concurrency default of 10 must stay fully
   unreserved, so the fleet functions run without reserved concurrency; rotate stays single-writer by
@@ -789,61 +789,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   the message cap (§8.3). A result closes the attempt it names; a report for another attempt of
   the same task is evidence only, so a stale report never closes a newer attempt (§6.5). D7's
   "recompute from scratch" goes to nodes that have not reported on the task whenever one has a
-  free slot; a tie after two contested rounds is not a majority and starts another round, up to
-  four, after which report order breaks it.
-- **2026-09-02 (WP3.3).** A cloud core names itself `core-<microvmId>`, which is how the ledger
-  links a node to the core it launched; no registration message (§6.8). Core records travel in the
-  ledger and are inherited at adopt with their node links cleared. Cores launch with **no ingress
-  connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
-  the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
-  but has no fleet (§6.8, §12).
-- **2026-09-02 (WP3.4).** Local mode can boot neutral (`TABFRAME_LOCAL_NEUTRAL`) so `dev:rotate`
-  drives the real run hook and the real rotate handler with control-plane processes standing in for
-  MicroVMs (§12). A run payload with an empty `storeBase` leaves a control plane serving blobs from
-  its own port; locally each generation has its own in-memory store, so a rotation loses earlier
-  blobs and the local test rotates within one stage. On AWS the store is shared and this does not
-  arise (§7.1).
-- **2026-09-02 (WP3.5).** A bundled image cannot spawn itself as a worker thread: the sandbox
-  worker is bundled as a second entry point, staged beside `main.js`, and named to the process by
-  `TABFRAME_SANDBOX_WORKER` (§4.2, §11.3). The fleet's private-port calls retry on 429 and 5xx
-  (§9.4). **Measured:** one client holds about 16 concurrent sockets through a MicroVM endpoint
-  before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint —
-  so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1;
-  `docs/m3-verification.md`). A rotation with a render in flight costs about 8.4 s of churn.
-- **2026-09-02 (WP2.5).** The `taskDone` observer event and the task view carry an optional
-  `log` (inline text or a blob hash), the shape the node already reports to the control plane; the
-  dashboard renders it when present and says plainly when the wire did not carry one (§8.3). The
-  `bars` view draws the single output of the last stage; a last stage with several outputs is
-  listed in the files panel instead (§5.1). The files panel browses any root the execution has had,
-  not only the current one; roots are the stage strip's links (§5.4). The browser suites run on one
-  Playwright worker: they share a local control plane and, since WP2.3, an upload really launches
-  (§12).
-
-  four, after which report order breaks it. Freeze is terminal on the node **record** too: a later
-  `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a
-  worker that computes nothing until the silence window declares it gone (§4, §6.7).
-- **2026-09-02 (WP2.7).** Seeding is idempotent by bundle hash rather than "only when the ledger
-  has no programs": a control plane that adopts a predecessor's ledger still adds programs the
-  image ships that the ledger does not have, which is what lets a deploy-as-rotation deliver a new
-  program (§5.6, §9.4).
-- **2026-09-02 (WP4.5).** The endpoint ceiling is explained: **16 concurrent connections per
-  MicroVM**, the account's non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota, the same
-  at 512 MiB and 6 GB, per MicroVM rather than per token, process, or source (§9.7). The M0 record's
-  "250 sustained sockets" was a counting error — that script attached its close handlers after the
-  loop and never heartbeated during it, so the sockets it counted as open had already been declared
-  gone; about sixteen were alive. `docs/m0-verification.md` carries the correction. The account's
-  Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
-  historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the
-  options are in §9.7 and the plan's WP4.6.
-- **2026-09-02 (WP4.4).** The demo script runs unattended against the deployed machine
-  (`mise run demo`), and its first runs fixed the fleet policy: a killed or frozen cloud core has
-  its MicroVM terminated with the command, and a core with no node for two minutes — never said
-  hello, or its node left — is retired and replaced (§6.8). Before, a `kill half` that picked a
-  core left a live, unlinked MicroVM that the policy (which counts records) never replaced.
-  Seeding also retires unshipped drops nobody has run in the ledger's memory after an hour, so
-  runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
-  own, not only with the tasks.
-
+  free slot; a tie after two contested rounds is not a majority and starts another round, up to Freeze is terminal on the node **record** too: a later `throttleHalf` does not downgrade a frozen node to throttled, since `fill` must keep skipping a worker that computes nothing until the silence window declares it gone (§4, §6.7). - **2026-09-02 (WP3.3).** A cloud core names itself `core-<microvmId>`, which is how the ledger links a node to the core it launched; no registration message (§6.8). Core records travel in the ledger and are inherited at adopt with their node links cleared. Cores launch with **no ingress connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps but has no fleet (§6.8, §12). - **2026-09-02 (WP3.4).** Local mode can boot neutral (`TABFRAME_LOCAL_NEUTRAL`) so `dev:rotate` drives the real run hook and the real rotate handler with control-plane processes standing in for MicroVMs (§12). A run payload with an empty `storeBase` leaves a control plane serving blobs from its own port; locally each generation has its own in-memory store, so a rotation loses earlier blobs and the local test rotates within one stage. On AWS the store is shared and this does not arise (§7.1). - **2026-09-02 (WP3.5).** A bundled image cannot spawn itself as a worker thread: the sandbox worker is bundled as a second entry point, staged beside `main.js`, and named to the process by `TABFRAME_SANDBOX_WORKER` (§4.2, §11.3). The fleet's private-port calls retry on 429 and 5xx (§9.4). **Measured:** one client holds about 16 concurrent sockets through a MicroVM endpoint before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint — so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1; `docs/m3-verification.md`). A rotation with a render in flight costs about 8.4 s of churn. - **2026-09-02 (WP2.5).** The `taskDone` observer event and the task view carry an optional `log` (inline text or a blob hash), the shape the node already reports to the control plane; the dashboard renders it when present and says plainly when the wire did not carry one (§8.3). The `bars` view draws the single output of the last stage; a last stage with several outputs is listed in the files panel instead (§5.1). The files panel browses any root the execution has had, not only the current one; roots are the stage strip's links (§5.4). The browser suites run on one Playwright worker: they share a local control plane and, since WP2.3, an upload really launches (§12). - **2026-09-02 (WP2.7).** Seeding is idempotent by bundle hash rather than "only when the ledger has no programs": a control plane that adopts a predecessor's ledger still adds programs the image ships that the ledger does not have, which is what lets a deploy-as-rotation deliver a new program (§5.6, §9.4). - **2026-09-02 (WP4.5).** The endpoint ceiling is explained: **16 concurrent connections per MicroVM**, the account's non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota, the same at 512 MiB and 6 GB, per MicroVM rather than per token, process, or source (§9.7). The M0 record's "250 sustained sockets" was a counting error — that script attached its close handlers after the loop and never heartbeated during it, so the sockets it counted as open had already been declared gone; about sixteen were alive. `docs/m0-verification.md` carries the correction. The account's Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is historical. Scaling to thousands of clients is an architecture decision, not a tuning one; the options are in §9.7 and the plan's WP4.6. - **2026-09-02 (WP4.4).** The demo script runs unattended against the deployed machine (`mise run demo`), and its first runs fixed the fleet policy: a killed or frozen cloud core has its MicroVM terminated with the command, and a core with no node for two minutes — never said hello, or its node left — is retired and replaced (§6.8). Before, a `kill half` that picked a core left a live, unlinked MicroVM that the policy (which counts records) never replaced. Seeding also retires unshipped drops nobody has run in the ledger's memory after an hour, so runbook uploads do not clutter the program list; the snapshot diet clears file maps on their own, not only with the tasks.
 - **2026-09-03 (WP6.5).** A third shipped program, `tinygpt` (§5.6): a 822 k-parameter
   character-level GPT trained offline on the corpus, int8 weights as a bundle input, the forward
   pass in AssemblyScript, one continuation per task and a collect stage for the text view; 4 ms per
@@ -1000,3 +946,22 @@ Dated deviations discovered while building, recorded before the code landed (pla
   demo compiles without offering to launch. The walkthrough also found a core bug (§8.3): a
   trapped task's view carried `output: ""`, the schema rejected the snapshot, and no fresh dashboard
   could subscribe after a trap until the execution was pruned; a failed task now has no output.
+
+- **2026-09-04 (WP8.1).** The first review loop (five personas; `docs/implementation/wp-8.1-review-loop-1.md`
+  has every finding and its verdict). Core: a running execution's pending store effect is
+  re-derived after an adopt and after ten silent seconds (§6.6, §9.4); params (4 KB) and the queue
+  (32) are bounded (§6.7); a control plane that handed over acts on nothing until drained, and
+  comes back after a ninety-second lease when no drain follows (§9.4); launches in flight count
+  towards the fleet's size and surplus cores are trimmed (§6.8); a report for an attempt a node
+  never held cannot fail a task, compute time is bounded, sixteen records per task (§6.5);
+  destructive controls have a two-second machine-wide cooldown (§6.7); results and presigns have
+  their own rate bucket and a presigned-byte budget (§8.4). Wire: presign sizes and counts are
+  bounded. Sandbox: one memory per module. Store and node: size-capped fetches on the control plane,
+  retries and a presign timeout on the node, host and store failures reported as releases (§4.2).
+  Fleet and hosting: the scheduled rule leaves a suspended control plane alone (§6.8 — the README's
+  stays-up paragraph was wrong); a successor that never boots is terminated and the client token
+  carries the hour; a failed rotation is an error with alarms behind it; the blob and snapshot
+  buckets are retained; response headers (a CSP, nosniff, downloads for blobs) on the distribution
+  (§10); `deploy` is sequential and guarded, and `/health` names the build (§11, §12). Page: the
+  editor no longer re-pauses after its launch; silent reconnects and dropped clicks are said; one
+  reload for an outdated page; bounded caches; the demo answers Stop, Start, pause, and resume.

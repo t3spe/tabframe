@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
 import { StoreClient } from "./client.ts";
+import { BlobTooLarge } from "./driver.ts";
 import { HASH_RE, hex, hexToBase64, hexToBytes, sha256Hex } from "./hash.ts";
 import { LocalStore, parseRange } from "./local.ts";
 import { IMMUTABLE, S3Store, signedHeaders } from "./s3.ts";
@@ -200,5 +201,15 @@ describe("StoreClient", () => {
       async () => new Response(null, { status: 403 }),
     );
     await expect(client.put(bytes("x"))).rejects.toThrow(/failed: 403/);
+  });
+});
+
+describe("a size-capped get (WP8.1)", () => {
+  test("a blob over the caller's cap is refused before it is handed over", async () => {
+    const store = new LocalStore("http://s/blob");
+    const hash = await store.put(new Uint8Array(2048));
+    expect((await store.get(hash, 4096))?.length).toBe(2048);
+    await expect(store.get(hash, 1024)).rejects.toBeInstanceOf(BlobTooLarge);
+    expect(await store.get(hash)).not.toBeNull();
   });
 });

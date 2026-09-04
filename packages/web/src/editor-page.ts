@@ -16,12 +16,17 @@ const listeners = new Set<(state: ClusterState) => void>();
 let storeBase: string | null = null;
 let client: ObserverClient | null = null;
 let paused = false;
+/** Whether this tab still wants the machine held (WP8.1): not after its launch, not after close. */
+let holdWanted = true;
 
 function setMachine(state: MachineState, detail?: string): void {
   machineEl.textContent = detail ? `${state} · ${detail}` : state;
   machineEl.className = `pill ${state === "live" ? "live" : state === "off" || state === "outdated" ? "off" : "wait"}`;
   if (state === "live") {
-    // Every live socket asks again: a reconnect (a rotation, a gap) is a new holder.
+    // Every live socket asks again — a reconnect (a rotation, a gap) is a new holder — but only
+    // while this tab still wants the hold (WP8.1): after its launch a resubscribe used to pause
+    // the machine again under the person's own running program.
+    if (!holdWanted) return;
     client?.send({ t: "pause" });
     paused = true;
     pauseEl.textContent =
@@ -33,6 +38,7 @@ function setMachine(state: MachineState, detail?: string): void {
 }
 
 function resume(why: "launch" | "close" = "close"): void {
+  holdWanted = false;
   if (!paused) return;
   paused = false;
   client?.send({ t: "resume" });

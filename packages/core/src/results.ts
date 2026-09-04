@@ -43,6 +43,15 @@ export function onResult(
   const attempt = task?.attempts.find(
     (a) => a.attempt === msg.attempt && a.nodeId === node.nodeId && a.outcome === "running",
   );
+  // A report for an attempt this node never held is still evidence (D7: a late duplicate settles,
+  // verifies, or contests; the tests and the design lean on it), but it cannot *fail* a task
+  // (WP8.1): without this, any connected node could end any execution with one error message.
+  const known = task?.attempts.find((a) => a.attempt === msg.attempt && a.nodeId === node.nodeId);
+  if (task && !known && msg.error !== undefined) return { effects, settlement: { kind: "none" } };
+  // Compute time is what the node says, within a bound (WP8.1): the attempt's own deadline window
+  // or ten minutes, whichever is longer, so a report cannot spend the execution's budget at will.
+  const bound = Math.max(COMPUTE_MS_REPORT_CAP, known ? known.deadlineAt - known.assignedAt : 0);
+  if (msg.computeMs > bound) msg = { ...msg, computeMs: bound };
   if (task) msg = checkTileSize(ledger, task, msg);
   if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   if (msg.error === RELEASED) {
@@ -97,6 +106,8 @@ export function onResult(
   );
   if (earlier && earlier.identity === record.identity)
     return { effects, settlement: { kind: "none" } };
+  // Bounded evidence (WP8.1): every record travels in snapshots and handovers.
+  if (task.results.length >= RESULTS_PER_TASK_CAP) return { effects, settlement: { kind: "none" } };
 
   // A result for a settled task is a duplicate: verify or contest it.
   if (task.status === "done" && task.accepted) {
@@ -146,6 +157,31 @@ export function onResult(
   }
   // Waiting for the twin (redundancy on). Nothing to announce yet.
   return { effects, settlement: { kind: "none" } };
+}
+
+/** Records kept per task (WP8.1). */
+export const RESULTS_PER_TASK_CAP = 16;
+/** The most compute time one report may claim (WP8.1). */
+export const COMPUTE_MS_REPORT_CAP = 10 * 60_000;
+
+/**
+ * Settle a task on the result it already holds (WP8.1): when redundancy is turned off, a task that
+ * waited for a twin settles on the one report it has.
+ */
+export function settleExisting(
+  ledger: Ledger,
+  task: TaskRecord,
+  now: number,
+): { effects: Effect[]; settlement: Settlement } {
+  const exec = ledger.executions.get(task.executionId);
+  if (exec?.status !== "running" || task.status === "done" || task.status === "failed")
+    return { effects: [], settlement: { kind: "none" } };
+  const round = task.results.filter((r) => r.round === task.contestedRounds);
+  const chosen = round[0];
+  if (!chosen || round.length < task.requiredAgreement)
+    return { effects: [], settlement: { kind: "none" } };
+  const effects = accept(ledger, exec, task, chosen, chosen.nodeId, now);
+  return { effects, settlement: settlementFor(task, chosen) };
 }
 
 /** A tile is RGBA of its placed size (design §5.2); anything else is a program fault. */

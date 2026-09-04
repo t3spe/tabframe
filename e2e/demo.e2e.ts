@@ -161,7 +161,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await beatAndMeasure("spawn four");
   const hint = page.locator("#spawnHint");
   await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
-  await expect(hint).toContainText(/This browser reports \d+ cores?/);
+  await expect(hint).toContainText(/This browser reports \d+ CPU threads?/);
   const nodesBefore = (await counts(page)).nodes;
   for (let i = 0; i < 4; i++) await page.click("#spawn1");
   await expect

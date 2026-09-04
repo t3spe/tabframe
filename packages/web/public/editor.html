@@ -30,7 +30,7 @@
 <div class="editor-page-head">
   <h1>Tabframe editor</h1>
   <span id="machine" class="pill">connecting</span>
-  <span id="pauseState" class="muted grow">one of the endpoint's sixteen connections; the dashboard tab keeps its own</span>
+  <span id="pauseState" class="muted grow">connecting to the machine…</span>
   <a class="guide-link" href="/" title="The dashboard this tab was opened from">← dashboard</a>
   <a class="guide-link" id="guideLink" href="/guide.html" target="_blank" rel="noreferrer" title="What a program is, what it may do, and the limits on this machine — in its own tab">What is a program? ↗</a>
 </div>
@@ -39,7 +39,7 @@
     <div class="editor-head">
       <h2>Editor</h2>
       <span id="editorStatus" class="pill">compiler: idle</span>
-      <label class="muted">example <select id="example" title="Load one of the shipped programs into the editor"></select></label>
+      <label class="muted">program <select id="example" title="Open a program on the machine with its source, or load an example"></select></label>
       <span class="muted" id="exampleNote"></span>
       <button type="button" id="closeEditor" style="margin-left:auto" title="Resume the machine and close this tab">close</button>
     </div>
@@ -59,7 +59,7 @@
         <label>view <select id="programView"><option value="tiles">tiles</option><option value="bars">bars</option><option value="text">text</option></select></label>
         <label>description <input id="programDescription" maxlength="512"></label>
         <label>params (JSON object) <textarea id="programParams" rows="3" spellcheck="false"></textarea></label>
-        <div id="editorDrop" class="drop">drop a <code>.wasm</code> here, or <label class="link">choose one<input type="file" id="wasmFile" accept=".wasm,application/wasm" hidden></label></div>
+        <div id="editorDrop" class="drop">drop a <code>.wasm</code> here, or <label class="link">choose one<input type="file" id="wasmFile" accept=".wasm,application/wasm" class="visually-hidden"></label></div>
         <div id="moduleInfo" class="muted">no module yet</div>
         <div id="launchInfo" class="muted"></div>
       </div>

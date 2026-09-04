@@ -3,6 +3,8 @@ export type Role = "neutral" | "control-plane" | "core";
 export type Mode = "local" | "image";
 
 export interface Config {
+  /** Tests only (WP8.1): an image-mode process answers the fleet routes before any secret arrives. */
+  allowOpenFleetRoutes?: boolean;
   /** `local`: a laptop process that is a control plane at boot, with an in-memory store and an emulated session endpoint. `image`: boots neutral and waits for the /run hook. */
   mode: Mode;
   publicPort: number;

@@ -302,7 +302,10 @@ export function limitsSentence(): string {
 }
 
 export function guideMarkdown(): string {
-  return GUIDE_MARKDOWN;
+  // The README's "Compiling" and "Tooling" sections are about the repository, not the page (WP8.1):
+  // the guide stops where they start.
+  const cut = GUIDE_MARKDOWN.indexOf("\n## Compiling");
+  return cut === -1 ? GUIDE_MARKDOWN : GUIDE_MARKDOWN.slice(0, cut).trimEnd();
 }
 
 /**

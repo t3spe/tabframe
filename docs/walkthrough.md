@@ -25,7 +25,8 @@ per state in the test's output. Written for WP7.7 (2026-09-04), from Mircea's th
   greyed, with the reason after a dash in its tooltip ("— not connected yet", "— nothing is
   running", "— an observer lends no cores; open the plain address to lend some"). The only slot that
   swaps its label is Stop / Start / Resume, and it always means "what you can do to the machine
-  right now".
+  right now"; the one other label that changes is a program's "launch…", which reads "cancel" while
+  its form is open.
 - **R4 · Same kind, same look.** Controls that end things (Stop, kill half, kill execution, close
   all mine) share the red outline and sit together; controls that make things share the plain look.
   Links that leave the page carry ↗, and nothing else opens a tab.

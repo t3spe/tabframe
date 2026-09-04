@@ -8,7 +8,13 @@ import {
 } from "@tabframe/protocol";
 import type { HostRequest, TaskResult } from "@tabframe/sandbox";
 import { type PresignRequester, StoreClient, sha256Hex } from "@tabframe/store";
-import { fromBase64, type SandboxRunner, SocketPresigner, TaskRunner } from "./tasks.ts";
+import {
+  fromBase64,
+  hostFailure,
+  type SandboxRunner,
+  SocketPresigner,
+  TaskRunner,
+} from "./tasks.ts";
 
 const BASE = "http://store.test/blob";
 const PROGRAM = "a".repeat(64);
@@ -300,5 +306,28 @@ describe("fromBase64", () => {
       expect(fromBase64(text)).toEqual(bytes);
       expect(fromBase64(text.replace(/=+$/, ""))).toEqual(bytes);
     }
+  });
+});
+
+describe("host and store failures are releases, not program faults (WP8.1)", () => {
+  test("a fetch that failed, an upload that failed, a presign that timed out: released; a trap: a fault", () => {
+    expect(hostFailure("Error: fetch of abc failed: 503")).toBe(true);
+    expect(hostFailure("Error: upload of abc failed: 500")).toBe(true);
+    expect(hostFailure("Error: presign timed out")).toBe(true);
+    expect(hostFailure("TypeError: Failed to fetch")).toBe(true);
+    expect(hostFailure("abort: this planner refuses to plan")).toBe(false);
+    expect(hostFailure("RuntimeError: unreachable")).toBe(false);
+  });
+
+  test("a presign nobody answers rejects after the timeout instead of holding the node for ever", async () => {
+    const sent: string[] = [];
+    const presigner = new SocketPresigner((text) => sent.push(text), 20);
+    await expect(presigner.presign([{ hash: "a".repeat(64), size: 1 }])).rejects.toThrow(
+      "presign timed out",
+    );
+    expect(sent.length).toBe(1);
+    const p = presigner.presign([{ hash: "b".repeat(64), size: 1 }]);
+    expect(presigner.deliver([{ hash: "b".repeat(64), url: null, headers: {} }])).toBe(true);
+    expect((await p)[0]?.hash).toBe("b".repeat(64));
   });
 });

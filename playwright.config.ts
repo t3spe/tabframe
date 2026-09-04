@@ -13,7 +13,8 @@ export default defineConfig({
   // The suites share one local control plane, and since WP2.3 an upload really launches: files
   // run one at a time, in name order, so a launch in one suite is not a surprise in another.
   workers: 1,
-  retries: 0,
+  // One retry on CI's shared runner (WP8.1); none locally, where a flake should be seen.
+  retries: process.env.CI ? 1 : 0,
   reporter: [["list"]],
   timeout: 30_000,
   use: {

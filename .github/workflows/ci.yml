@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CI: "1"
@@ -45,6 +45,12 @@ jobs:
           install: true
           cache: true
 
+      - name: Cache the Bun install cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-install-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-install-cache-${{ runner.os }}-
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 
@@ -106,6 +112,12 @@ jobs:
           install: true
           cache: true
 
+      - name: Cache the Bun install cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-install-cache-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-install-cache-${{ runner.os }}-
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 

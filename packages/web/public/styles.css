@@ -1347,3 +1347,17 @@ header a.panel-only {
 #notice.sentence {
   color: var(--dim);
 }
+
+/* WP8.1: reachable by keyboard and screen readers, invisible on screen. */
+.visually-hidden,
+.editor-side input.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

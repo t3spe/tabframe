@@ -22,7 +22,7 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 |---|---|---|
 | Is the machine up? | `mise run health` (`-- --cores` asks each cloud core too) | `/health` and `/diag` of the active control plane through the proxy on the private port, masked. Counts, phase, fleet, snapshotter status, a store round trip, memory. |
 | Bring it up | `mise run up` | Sets the pointer to *on*, enables the hourly rule, invokes rotate once. Idempotent: a running control plane is rotated, not duplicated. |
-| Take it down | `mise run down` | Disables the rule, terminates every MicroVM from our image, writes *off*. The page shows an off screen; the session function heals nothing. **Destructive; ask first.** |
+| Take it down | `mise run down` | Disables the rule, terminates every MicroVM from our image, writes *off*. The page shows an off screen; the session function heals nothing. **Destructive: every MicroVM is terminated and the page goes dark until `up`.** |
 | Deploy | `mise run deploy` | Builds programs, page, and image; runs lint and every test; `cdk deploy --all`; then `up`, which rotates the running control plane onto the new image. A deploy is a rotation. |
 | Rotate by hand | `mise run rotate` | One rotation now (same code the hourly rule runs). |
 | Watch logs | `mise run logs`, `mise run logs:fleet` | The MicroVM log group (one stream per VM) and the two functions' groups. See *Observability* for what actually lands. |
@@ -81,8 +81,8 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
   process writes** — measured on 2026-09-02 with the same line written to stdout and stderr: both
   copies arrive, nothing after. The platform forwards a process's output during boot and stops.
   So for a running control plane the truth is `/health`, `/diag`, the snapshots in S3, and the
-  dashboard; the rotate function's log says what every rotation did. Raised as a limitation in
-  design §9.7's neighbourhood; not worked around.
+  dashboard; the rotate function's log says what every rotation did. Accepted; see design §9.3 (the platform forwards
+  the first line of a MicroVM's stdout only).
 
 ## Cost and budget
 
@@ -111,6 +111,7 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 | After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed in WP4.9: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
 | Right after a rotation every core is a few seconds old | before WP4.4's fix the successor terminated every adopted core on its first tick; fixed — an adopted core keeps its grace from the adoption | `mise run health -- --cores`; if it recurs, check `unlinkedAt` handling in `adoptLedger` |
 | The dashboard shows "The machine is asleep" for a few seconds at the start of a rotation | a pending successor left by an interrupted or racing rotation was promoted without a handover, old snapshot and all (fixed in WP6.7: it is terminated while the current control plane serves; the hourly rule skips a rotation younger than five minutes) | `node packages/infra/scripts/rotation-probe-busy.ts` watches a rotation on a busy machine the way a browser does; `rotation-probe.ts` for a quiet one |
-| A person's launch finished and the loop's frame replaced it at once | fixed in WP4.4: a person's result holds the stage for twenty seconds (`HUMAN_RESULT_HOLD_MS`), continuations included | — |
+| A person's launch finished and the loop's frame replaced it at once | since WP6.8 the loop yields to a person's launch until Start or ten quiet minutes (`YIELD_IDLE_MS`, `meta.loopYielded`); if it takes the stage back sooner, check `meta.loopYielded` in a snapshot | — |
 | `/health` shows a core with `linked: false` for minutes | its node closed (a kill half picked it) or never connected | since WP4.4 the control plane terminates a killed or frozen core at once and replaces any core unlinked for two minutes; `mise run health -- --cores` asks each core's own `/health` |
 | RSS climbs in the first half hour after a launch | heap growth to the working set, not a leak: 312 → 370 → 372 MiB over 7 → 33 min on a 1 GB control plane, flat after | `mise run health` shows `memoryMiB`; worry above ~700 MiB |
+| An alarm email arrived (`tabframe-alarms`) | the rotate or session function failed, or rotate was throttled (WP8.1: a failed rotation is an error now) | `mise run health`; the rotate function's log names the reason; a heal runs on the next visitor or `mise run rotate` |

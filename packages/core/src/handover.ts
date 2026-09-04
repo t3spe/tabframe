@@ -18,7 +18,11 @@ export function jitterWindowMs(clients: number): number {
  * Step 2 of a handover: stop assigning and pause intake, then serialize. Idempotent — a second
  * call returns the same ledger, which is what makes a retried rotation safe.
  */
-export function beginHandover(ledger: Ledger): { json: string; generation: number } {
+export function beginHandover(
+  ledger: Ledger,
+  now = Date.now(),
+): { json: string; generation: number } {
+  if (ledger.meta.phase !== "handing-over") ledger.meta.handoverAt = now;
   ledger.meta.phase = "handing-over";
   return { json: serializeLedger(ledger), generation: ledger.meta.generation };
 }

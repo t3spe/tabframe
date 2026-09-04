@@ -31,6 +31,7 @@ import {
   onStageSpec,
   pruneExecutions,
   resumeAll,
+  resumePending,
   retireProgram,
 } from "./executions.ts";
 import { coreGone, coreLaunched, fleetTick, microvmIdOfHost } from "./fleet.ts";
@@ -47,7 +48,7 @@ import {
   taskView,
 } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
-import { onResult } from "./results.ts";
+import { onResult, settleExisting } from "./results.ts";
 import { fill, relabelHealth, releaseNode } from "./scheduler.ts";
 
 /** Connections that never say hello or subscribe are dropped after this long. */
@@ -142,14 +143,28 @@ export function apply(
   }
 }
 
+/** A handover with no drain after this long is a rotation that died: the control plane carries on. */
+export const HANDOVER_LEASE_MS = 90_000;
+
 function tick(ledger: Ledger, now: number): Effect[] {
   const effects = sweep(ledger, now);
   pruneExecutions(ledger);
+  // A control plane that handed its ledger over acts on nothing until it is drained (WP8.1): no
+  // fleet, no loop, no assignment — the successor owns all of that now. Unless the rotation died
+  // between the handover and the promote, in which case the lease brings this one back.
+  if (ledger.meta.phase === "handing-over") {
+    if (ledger.meta.handoverAt !== null && now - ledger.meta.handoverAt > HANDOVER_LEASE_MS) {
+      ledger.meta.phase = "active";
+      ledger.meta.handoverAt = null;
+    } else return effects;
+  }
+  if (ledger.meta.phase === "drained") return effects;
   effects.push(...fleetTick(ledger, now));
   effects.push(...relabelHealth(ledger));
   effects.push(...ensureDefaultLoop(ledger, now));
   effects.push(...maybeStart(ledger, now)); // a queued continuation whose hold just expired
   effects.push(...fill(ledger, now));
+  effects.push(...resumePending(ledger, now));
   return effects;
 }
 
@@ -161,6 +176,8 @@ function onConnected(ledger: Ledger, connId: string, role: ConnRole, now: number
     role,
     openedAt: now,
     bucket: { tokens: rate, refilledAt: now },
+    solicited: { tokens: SOLICITED_RATE, refilledAt: now },
+    presignedBytes: 0,
   });
   return [];
 }
@@ -183,8 +200,12 @@ function onMessage(
     // small tiles legitimately sends dozens a second); the bucket covers what a node sends on
     // its own initiative.
     const solicited = d.msg.t === "result" || d.msg.t === "presign";
-    if (!solicited && !takeToken(conn, LIMITS.nodeMessagesPerSecond, now))
+    if (!solicited && !takeToken(conn.bucket, LIMITS.nodeMessagesPerSecond, now))
       return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
+    // Results and presigns get a bucket of their own (WP8.1): generous, since maxInFlight paces an
+    // honest node, but a bound — a node that says hello and floods presigns costs S3 calls.
+    if (solicited && !takeToken(conn.solicited, SOLICITED_RATE, now))
+      return refuse(ledger, connId, CLOSE.rateLimited, "result rate exceeded", now);
     switch (d.msg.t) {
       case "hello":
         return onHello(ledger, connId, d.msg, now);
@@ -204,13 +225,15 @@ function onMessage(
         const node = nodeOf(ledger, connId);
         if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello", now);
         node.lastSeen = now;
+        if (!chargePresign(conn, d.msg.items))
+          return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
         return [{ kind: "presign", connId, items: d.msg.items }];
       }
     }
   }
   const d = decode(observerToControlPlane, raw, opts);
   if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason, now);
-  if (!takeToken(conn, LIMITS.observerMessagesPerSecond, now))
+  if (!takeToken(conn.bucket, LIMITS.observerMessagesPerSecond, now))
     return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
   switch (d.msg.t) {
     case "subscribe":
@@ -220,6 +243,8 @@ function onMessage(
     case "presign":
       if (!ledger.observers.has(connId))
         return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe", now);
+      if (!chargePresign(conn, d.msg.items))
+        return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
       return [{ kind: "presign", connId, items: d.msg.items }];
     default:
       if (!ledger.observers.has(connId))
@@ -230,8 +255,24 @@ function onMessage(
 }
 
 /** The per-connection token bucket: refill at the rate, spend one; false when it is empty. */
-function takeToken(conn: ConnState, rate: number, now: number): boolean {
-  const b = conn.bucket;
+/** Results and presigns per second per node (WP8.1); maxInFlight keeps an honest node far below. */
+export const SOLICITED_RATE = 256;
+/** Bytes of presigned uploads one connection may be given (WP8.1): a bound on what a visitor can write. */
+export const PRESIGN_BYTES_PER_CONN = 1024 * 1024 * 1024;
+/** Destructive controls are applied at most this often, machine-wide (WP8.1). */
+export const CONTROL_COOLDOWN_MS = 2_000;
+const DESTRUCTIVE = new Set(["killHalf", "freezeHalf", "throttleHalf", "restart", "stop"]);
+
+/** Count the bytes a presign asks for against the connection's budget; false once it is spent. */
+function chargePresign(conn: ConnState, items: Array<{ size: number }>): boolean {
+  let total = 0;
+  for (const it of items) total += it.size;
+  if (conn.presignedBytes + total > PRESIGN_BYTES_PER_CONN) return false;
+  conn.presignedBytes += total;
+  return true;
+}
+
+function takeToken(b: { tokens: number; refilledAt: number }, rate: number, now: number): boolean {
   b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
   b.refilledAt = now;
   if (b.tokens < 1) return false;
@@ -247,6 +288,24 @@ function onControl(
   rng: () => number,
 ): Effect[] {
   const running = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  // Destructive controls at most once every few seconds machine-wide (WP8.1): a kill-half every
+  // 200 ms would otherwise terminate and relaunch cloud cores in a loop that costs money.
+  if (DESTRUCTIVE.has(msg.t)) {
+    const last = ledger.meta.lastControlAt[msg.t] ?? 0;
+    if (now - last < CONTROL_COOLDOWN_MS)
+      return [
+        {
+          kind: "send",
+          connId,
+          msg: errorMsg(
+            ledger,
+            "cooldown",
+            `${msg.t} was applied ${now - last} ms ago; wait ${CONTROL_COOLDOWN_MS} ms`,
+          ),
+        },
+      ];
+    ledger.meta.lastControlAt[msg.t] = now;
+  }
   switch (msg.t) {
     case "killHalf":
     case "freezeHalf":
@@ -356,7 +415,21 @@ function onControl(
     }
     case "setRedundancy": {
       ledger.meta.redundancy = msg.on;
-      return broadcast(ledger, { t: "controlApplied", op: "setRedundancy", nodeIds: [] });
+      const effects = broadcast(ledger, { t: "controlApplied", op: "setRedundancy", nodeIds: [] });
+      if (!msg.on) {
+        // The toggle going off reaches open tasks too (WP8.1): one result is enough now, and a
+        // task that already holds one settles on it, so a lone node is not left waiting for a twin.
+        for (const task of ledger.tasks.values()) {
+          if (task.status === "done" || task.status === "failed") continue;
+          task.requiredAgreement = 1;
+          const { effects: settled, settlement } = settleExisting(ledger, task, now);
+          effects.push(...settled);
+          if (settlement.kind === "done" || settlement.kind === "failed")
+            effects.push(...afterTaskSettled(ledger, settlement.task, now));
+        }
+        effects.push(...fill(ledger, now));
+      }
+      return effects;
     }
     case "stop": {
       // A person wants the machine idle (WP6.1): the running execution ends, the loop's queued

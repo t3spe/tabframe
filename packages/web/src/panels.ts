@@ -91,10 +91,14 @@ const ago = (from: number, now: number): string => {
 type Cached = Uint8Array | null | "pending" | "error";
 
 /** Fetches by hash, once each; a render reads what has landed and a landing asks for a render. */
+/** What the page keeps of fetched blobs (WP8.1): a dashboard open all day must not grow without bound. */
+export const BLOB_CACHE_BYTES = 64 * 1024 * 1024;
+
 class BlobCache {
   private readonly got = new Map<string, Cached>();
   private readonly source: () => BlobSource;
   private readonly onChange: () => void;
+  private bytes = 0;
   /** Bumped whenever a fetch settles, so a panel's signature changes with it. */
   version = 0;
   constructor(source: () => BlobSource, onChange: () => void) {
@@ -103,14 +107,23 @@ class BlobCache {
   }
   get(hash: string): Cached {
     const known = this.got.get(hash);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // Touched: it moves to the young end, so the eviction below drops the least recently used.
+      this.got.delete(hash);
+      this.got.set(hash, known);
+      return known;
+    }
     this.got.set(hash, "pending");
     void this.source()
       .get(hash)
       .then((bytes) => {
         // A blob that is not there yet may land later; ask again on the next render.
         if (bytes === null) this.got.delete(hash);
-        else this.got.set(hash, bytes);
+        else {
+          this.got.set(hash, bytes);
+          this.bytes += bytes.length;
+          this.evict();
+        }
         this.version += 1;
         this.onChange();
       })
@@ -120,6 +133,15 @@ class BlobCache {
         this.onChange();
       });
     return "pending";
+  }
+  /** Drop the least recently used blobs until the cache fits its budget. */
+  private evict(): void {
+    for (const [hash, value] of this.got) {
+      if (this.bytes <= BLOB_CACHE_BYTES) return;
+      if (value === "pending" || value === "error" || value === null) continue;
+      this.got.delete(hash);
+      this.bytes -= value.length;
+    }
   }
 }
 
@@ -323,24 +345,36 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   function renderQueue(state: ClusterState): void {
     const now = deps.now();
     const rows = state.queue.map((q, i) => ({
-      text: `${i + 1}. ${q.programName} ${q.executionId} · ${q.human ? "person" : "loop"} · waiting ${ago(q.queuedAt, now)}`,
+      head: `${i + 1}. ${q.programName} ${q.executionId} · ${q.human ? "person" : "loop"} · waiting `,
+      queuedAt: q.queuedAt,
       executionId: q.executionId,
     }));
-    if (!changed("queue", JSON.stringify(rows))) return;
-    els.queue.replaceChildren(
-      ...rows.map((r) => {
-        const li = el("li", "queue-row");
-        li.append(el("span", "mono", r.text));
-        const drop = el("button", "small", "drop");
-        drop.type = "button";
-        drop.title = "Remove this execution from the queue";
-        drop.dataset.drop = r.executionId;
-        drop.onclick = () => deps.send({ t: "killExecution", executionId: r.executionId });
-        li.append(drop);
-        return li;
-      }),
-    );
-    if (rows.length === 0) els.queue.append(el("li", "muted", "empty"));
+    // The rows are rebuilt when the queue changes; the ages tick in place (WP8.1): a rebuild every
+    // second took the focus from the drop button a person was about to press.
+    if (changed("queue", JSON.stringify(rows.map((r) => [r.head, r.executionId])))) {
+      els.queue.replaceChildren(
+        ...rows.map((r) => {
+          const li = el("li", "queue-row");
+          const text = el("span", "mono", r.head);
+          const age = el("span", "mono age", ago(r.queuedAt, now));
+          age.dataset.queuedAt = String(r.queuedAt);
+          text.append(age);
+          li.append(text);
+          const drop = el("button", "small", "drop");
+          drop.type = "button";
+          drop.title = "Remove this execution from the queue";
+          drop.dataset.drop = r.executionId;
+          drop.onclick = () => deps.send({ t: "killExecution", executionId: r.executionId });
+          li.append(drop);
+          return li;
+        }),
+      );
+      if (rows.length === 0) els.queue.append(el("li", "muted", "empty"));
+    }
+    for (const age of els.queue.querySelectorAll<HTMLSpanElement>("span.age")) {
+      const text = ago(Number(age.dataset.queuedAt), now);
+      if (age.textContent !== text) age.textContent = text;
+    }
   }
 
   // ---- stage strip -----------------------------------------------------------------------------
@@ -936,7 +970,19 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     // The dashboard keeps the newest eight; the ledger's own tab shows every settled task.
     const rows = ledgerRows(state, deps.panelMode === "ledger" ? Number.POSITIVE_INFINITY : 8);
     const store = deps.storeBase();
-    const sig = JSON.stringify([exec?.executionId, exec?.stage, rows, store, cache.version]);
+    // The signature is what changes when rows change — not every row (WP8.1): on the ledger tab
+    // that was thousands of rows serialised per frame.
+    const newest = rows[0];
+    const sig = JSON.stringify([
+      exec?.executionId,
+      exec?.stage,
+      rows.length,
+      newest?.taskId,
+      newest?.output,
+      newest?.verified,
+      store,
+      cache.version,
+    ]);
     if (!changed("ledger", sig)) return;
     const sizes = manifestSizes(exec);
     let settled = 0;

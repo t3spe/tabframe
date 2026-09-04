@@ -57,6 +57,7 @@ export type RotateResult =
       drained: number;
     }
   | { action: "repaired"; microvmId: string; generation: number; endpoint: string | null }
+  | { action: "skipped-suspended" }
   | { action: "failed"; reason: string };
 
 /** The run-hook payload a control plane receives (design §9.3). Nothing fleet-related is in the image. */
@@ -125,15 +126,22 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       egressConnectors: [egressConnectorArn(config.region)],
       idlePolicy: CONTROL_PLANE_IDLE_POLICY,
       maximumDurationInSeconds: CONTROL_PLANE_MAX_DURATION_SECONDS,
-      // One control plane per generation, however many rotations run at once.
-      clientToken: `tabframe-cp-g${generation}`,
+      // One control plane per generation and hour, however many rotations run at once (WP8.1: a
+      // token fixed per generation kept resolving to a successor that never reached RUNNING).
+      clientToken: `tabframe-cp-g${generation}-${Math.floor(clock.now() / 3_600_000)}`,
     });
     log.info("rotate: launched control plane", {
       microvmId: launched.microvmId,
       generation,
       snapshotKey: payload.snapshotKey,
     });
-    return await waitUntilRunning(launched.microvmId);
+    const ready = await waitUntilRunning(launched.microvmId);
+    if (!ready) {
+      // A successor that never reached RUNNING is not left behind (WP8.1): it would block every
+      // later run of the same generation and bill for hours.
+      await terminateQuietly(launched.microvmId, "never reached RUNNING");
+    }
+    return ready;
   }
 
   async function promote(
@@ -267,6 +275,18 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
 
     const running = current.microvmId ? await microvms.get(current.microvmId) : null;
     const serving = running && (SERVING_STATES.has(running.state) || running.state === "PENDING");
+    // A suspended control plane has nobody to serve (WP8.1): the scheduled rule leaves it be
+    // instead of booting a fresh generation every hour of an idle night; the first visitor wakes
+    // it and the next hour rotates it. An operator's rotate still rotates.
+    if (scheduled && running?.state === "SUSPENDED") {
+      log.info(
+        "rotate: the control plane is suspended; the scheduled rotation waits for a visitor",
+        {
+          microvmId: running.microvmId,
+        },
+      );
+      return { action: "skipped-suspended" };
+    }
 
     // ---- nothing is serving: heal by launching one --------------------------------------------
     if (!serving) {

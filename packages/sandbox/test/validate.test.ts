@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@tabframe/protocol";
-import { readMemoryLimits, validateCompiled, validateModuleBytes } from "../src/validate.ts";
+import {
+  countMemories,
+  readMemoryLimits,
+  validateCompiled,
+  validateModuleBytes,
+} from "../src/validate.ts";
 import { compileFixture } from "./compile.ts";
 import { limits } from "./helpers.ts";
 
@@ -85,5 +90,35 @@ describe("validateCompiled", () => {
     expect(validateCompiled(ok).ok).toBe(true);
     const bad = new WebAssembly.Module(await compileFixture("noplan", { maximumMemory: 256 }));
     expect(validateCompiled(bad).ok).toBe(false);
+  });
+});
+
+describe("one memory only (WP8.1)", () => {
+  // A module whose memory section declares two memories: the first small and capped, the second
+  // without a maximum. Multi-memory is on by default in current engines, so the second one could
+  // grow past the cap the design promises.
+  const twoMemories = new Uint8Array([
+    0x00,
+    0x61,
+    0x73,
+    0x6d,
+    0x01,
+    0x00,
+    0x00,
+    0x00, // magic, version
+    0x05,
+    0x06,
+    0x02, // memory section, 6 bytes, 2 memories
+    0x01,
+    0x01,
+    0x01, // memory 0: min 1, max 1
+    0x00,
+    0x01, // memory 1: min 1, no maximum
+  ]);
+  test("the memory section's count is read, and a second memory is refused", () => {
+    expect(countMemories(twoMemories)).toBe(2);
+    const v = validateModuleBytes(twoMemories, { memoryPagesMax: 1024 });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toMatch(/memories; one is allowed|not a valid WebAssembly module/);
   });
 });

@@ -1,4 +1,5 @@
 import type { PresignedUpload, PresignItem, StoreDriver } from "./driver.ts";
+import { BlobTooLarge } from "./driver.ts";
 import { HASH_RE, sha256Hex } from "./hash.ts";
 
 /**
@@ -31,8 +32,11 @@ export class LocalStore implements StoreDriver {
     return this.blobs.has(hash);
   }
 
-  async get(hash: string): Promise<Uint8Array | null> {
-    return this.blobs.get(hash) ?? null;
+  async get(hash: string, maxBytes?: number): Promise<Uint8Array | null> {
+    const bytes = this.blobs.get(hash) ?? null;
+    if (bytes && maxBytes !== undefined && bytes.length > maxBytes)
+      throw new BlobTooLarge(hash, bytes.length, maxBytes);
+    return bytes;
   }
 
   async put(bytes: Uint8Array): Promise<string> {

@@ -32,6 +32,7 @@ const image = new ImageStack(app, "TabframeImage", {
 });
 
 const fleet = new FleetStack(app, "TabframeFleet", {
+  ...(budgetEmail ? { alarmEmail: budgetEmail } : {}),
   env,
   core,
   image,
