@@ -139,7 +139,7 @@ describe("Mandelbrot end to end", () => {
       expect(snapshot.programs.map((p) => `${p.name}:${p.view}`)).toEqual(["mandelbrot:tiles"]);
     } else {
       await obs.waitFor(
-        (e) => e.t === "programAdded" && (e as { program?: string }).program === "mandelbrot",
+        (e) => e.t === "programAdded" && (e as { name?: string }).name === "mandelbrot",
         20_000,
       );
     }
