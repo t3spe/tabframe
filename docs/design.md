@@ -960,3 +960,9 @@ Dated deviations discovered while building, recorded before the code landed (pla
   state and the execution pill stops carrying it. Stop's tooltip names what it would end; the
   activity lines for stop, start, pause, and resume say what happened in words, and a page's own
   controls echo in its notice (rule R2 of the M7 walkthrough).
+
+- **2026-09-03 (WP7.2).** The throughput chart (§8.3) was a strip of unscaled one-second bars
+  rescaled to the minute's peak on every frame — the review's "wonky horizontal blue lines". It is
+  one area line drawn at the device pixel ratio, on a round scale that rises at once and falls only
+  after a minute below half, with a caption that names the window, the peak, and the scale. The
+  counters take two rows, the redundancy toggle its own line, the flashes one line of text.
