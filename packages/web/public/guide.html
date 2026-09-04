@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabframe · what a program is</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  body { padding: 1rem 1.25rem 3rem; }
+  .guide-page-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .guide-page-head h1 { margin: 0; font-size: 1.2rem; }
+  .guide-page-head nav a { margin-right: .8rem; }
+  .guide { max-width: 68rem; }
+</style>
+</head>
+<body>
+<div class="guide-page-head">
+  <h1>What a program is, and what it may do</h1>
+  <nav class="muted small"><a href="/editor.html" title="The editor: edit, compile, launch">← editor</a><a href="/" title="The dashboard">dashboard</a></nav>
+</div>
+<section id="guide" class="guide">
+  <p class="muted small">Opened from the editor. A program is one WebAssembly module with two entry points, <code>plan</code> and <code>run</code>, and a manifest; it sees the world only through a per-execution filesystem. Below: the SDK's README as the editor ships it, and the limits this machine holds a program to.</p>
+  <p class="muted small" id="guideLimits"></p>
+  <div id="guideBody"></div>
+</section>
+<script type="module" src="/guide-page.js"></script>
+</body>
+</html>

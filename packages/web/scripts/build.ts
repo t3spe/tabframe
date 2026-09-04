@@ -24,7 +24,7 @@ const root = path.resolve(import.meta.dir, "..");
 const src = path.join(root, "src");
 const pub = path.join(root, "public");
 const dist = path.join(root, "dist");
-const pageEntries = ["host.ts", "node.ts", "sandbox.ts", "editor-page.ts"]
+const pageEntries = ["host.ts", "node.ts", "sandbox.ts", "editor-page.ts", "guide-page.ts"]
   .map((f) => path.join(src, f))
   .filter(existsSync);
 const compilerEntry = path.join(src, "compiler-worker.ts");

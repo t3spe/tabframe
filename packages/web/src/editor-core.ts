@@ -280,6 +280,11 @@ export function examples(): Example[] {
 }
 
 /** The guide's Markdown (the SDK's README), so a test can check it is the file on disk. */
+/** The numbers this machine holds a program to, as one sentence (shown on the guide page). */
+export function limitsSentence(): string {
+  return `Limits on this machine: a module declares a memory maximum of at most ${MEMORY_PAGES_MAX} pages (${(MEMORY_PAGES_MAX * 64) / 1024} MB) and is at most ${MAX_MODULE_BYTES / (1024 * 1024)} MB; a task's inline input is at most 16 KB; an output at most 16 MB, a task's writes at most 256 files and 16 MB, its log 64 KB; a task that runs past its deadline is killed and given to another core. The views: tiles (RGBA bytes placed on a canvas), bars (the bars() payload), text (UTF-8).`;
+}
+
 export function guideMarkdown(): string {
   return GUIDE_MARKDOWN;
 }

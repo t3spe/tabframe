@@ -975,3 +975,9 @@ Dated deviations discovered while building, recorded before the code landed (pla
   has a preview box that is always there, a click on a file name or a ledger row renders the bytes
   by kind and changes only the row's class, and the store address is text with a small "raw ↗"
   link. WP6.8's new-tab viewer stays behind a small arrow; nothing else opens a tab or downloads.
+
+- **2026-09-04 (WP7.5).** The editor page (§5.6) fills the viewport: the source takes the height,
+  the launch column sits beside it, one action bar; the guide of WP6.6 is a page of its own,
+  `/guide.html`, linked from the top of the editor as "What is a program? ↗", with the limits
+  sentence shared between the two. Deploy 1 of M7 (WP7.1–7.4) went out as generation 99 and passed
+  three unattended demo passes.

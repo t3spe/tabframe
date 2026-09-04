@@ -176,11 +176,18 @@ test("the editor explains itself: a guide from the SDK's README, the machine's l
 }) => {
   test.setTimeout(240_000);
   await openEditor(page);
-  await expect(page.locator("#guide")).toBeVisible();
-  await expect(page.locator("#guideBody h3")).toContainText(["Writing a program"]);
-  await expect(page.locator("#guideBody")).toContainText("plan");
-  await expect(page.locator("#guideBody pre")).not.toHaveCount(0);
-  await expect(page.locator("#guideLimits")).toContainText("256 pages");
+  // The guide is a page of its own behind a link at the top (WP7.5); the editor keeps two lines.
+  await expect(page.locator("#editorIntro")).toContainText("two entry points");
+  await expect(page.locator("#guideLink")).toHaveAttribute("href", "/guide.html");
+  await expect(page.locator("#guide")).toHaveCount(0);
+  const guide = await page.context().newPage();
+  await guide.goto("/guide.html");
+  await expect(guide.locator("#guideBody h3")).toContainText(["Writing a program"]);
+  await expect(guide.locator("#guideBody")).toContainText("plan");
+  await expect(guide.locator("#guideBody pre")).not.toHaveCount(0);
+  await expect(guide.locator("#guideLimits")).toContainText("256 pages");
+  await expect(guide.locator("nav a[href='/editor.html']")).toBeVisible();
+  await guide.close();
   // The examples: hello loads, compiles in the page, and its manifest fills the form.
   await expect(page.locator("#example")).toHaveValue("mandelbrot");
   await page.locator("#example").selectOption("hello");
@@ -203,4 +210,32 @@ test("the editor explains itself: a guide from the SDK's README, the machine's l
   await page.locator("#source").fill("garbage");
   await page.click("#resetSource");
   await expect(page.locator("#source")).toHaveValue(/three stages/);
+});
+
+test("the editor fills the viewport: the source takes the height, nothing scrolls sideways (WP7.5)", async ({
+  page,
+}) => {
+  for (const [w, h] of [
+    [1280, 800],
+    [1440, 900],
+  ] as const) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto("/editor.html");
+    await expect(page.locator("#source")).toBeVisible();
+    const m = await page.evaluate(() => {
+      const src = (document.querySelector("#source") as HTMLElement).getBoundingClientRect();
+      const doc = document.documentElement;
+      return {
+        sourceBottom: src.bottom,
+        sourceHeight: src.height,
+        scrollW: doc.scrollWidth,
+        clientW: doc.clientWidth,
+        pageScroll: doc.scrollHeight - doc.clientHeight,
+      };
+    });
+    expect(m.sourceHeight).toBeGreaterThan(h * 0.45);
+    expect(m.sourceBottom).toBeLessThanOrEqual(h);
+    expect(m.scrollW).toBeLessThanOrEqual(m.clientW);
+    expect(m.pageScroll).toBeLessThanOrEqual(1);
+  }
 });

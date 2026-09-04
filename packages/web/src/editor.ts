@@ -15,15 +15,12 @@ import {
   examples,
   fmtBytes,
   formatDiagnostic,
-  guideMarkdown,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
   MAX_MODULE_BYTES,
-  MEMORY_PAGES_MAX,
   type ModuleInfo,
   parseParams,
-  renderGuide,
   shippedManifest,
 } from "./editor-core.ts";
 import type { ClusterState } from "./state.ts";
@@ -423,13 +420,6 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     loadExample(current.key, false);
     info(els.note, `source reset to ${current.manifest.name}`);
   };
-  // The guide: the SDK's README, and the numbers this machine holds a program to.
-  const guideBody = root.ownerDocument.querySelector<HTMLDivElement>("#guideBody");
-  const guideLimits = root.ownerDocument.querySelector<HTMLParagraphElement>("#guideLimits");
-  if (guideBody && guideBody.childElementCount === 0)
-    guideBody.append(renderGuide(guideMarkdown()));
-  if (guideLimits)
-    guideLimits.textContent = `Limits on this machine: a module declares a memory maximum of at most ${MEMORY_PAGES_MAX} pages (${(MEMORY_PAGES_MAX * 64) / 1024} MB) and is at most ${MAX_MODULE_BYTES / (1024 * 1024)} MB; a task's inline input is at most 16 KB; an output at most 16 MB, a task's writes at most 256 files and 16 MB, its log 64 KB; a task that runs past its deadline is killed and given to another core. The views: tiles (RGBA bytes placed on a canvas), bars (the bars() payload), text (UTF-8).`;
   els.source.onkeydown = (e) => {
     // Tab inserts two spaces instead of leaving the field.
     if (e.key === "Tab") {

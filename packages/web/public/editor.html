@@ -6,31 +6,46 @@
 <title>Tabframe · editor</title>
 <link rel="stylesheet" href="/styles.css">
 <style>
-  body { padding: 1rem 1.25rem; }
-  .editor { display: block; }
-  .editor-page-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .8rem; }
+  /* WP7.5: the editor uses the whole viewport — the source fills the height, the launch column sits
+     beside it, one action bar under the source; the guide is a page of its own. */
+  html, body { height: 100%; }
+  body { box-sizing: border-box; margin: 0; padding: .75rem 1.25rem; display: flex; flex-direction: column; gap: .5rem; overflow: hidden; }
+  .editor-page-head { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
   .editor-page-head h1 { margin: 0; font-size: 1.2rem; }
+  .editor-page-head .grow { flex: 1; min-width: 12rem; }
+  .editor-page-head .guide-link { white-space: nowrap; }
+  #editorIntro { margin: 0; max-width: 80rem; }
+  .editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .editor-head { margin-bottom: .4rem; }
+  .editor-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 1rem; }
+  .editor-main { display: flex; flex-direction: column; min-height: 0; }
+  #source { flex: 1; min-height: 8rem; height: auto; resize: none; }
+  .editor-actions { margin: .5rem 0 0; flex-wrap: wrap; height: auto; }
+  #diagnostics { max-height: 7rem; overflow: auto; margin: .3rem 0 0; }
+  .editor-side { min-height: 0; overflow: auto; padding-right: .2rem; }
+  @media (max-width: 1100px) { .editor-grid { grid-template-columns: 1fr; } body { overflow: auto; } }
 </style>
 </head>
 <body>
 <div class="editor-page-head">
   <h1>Tabframe editor</h1>
   <span id="machine" class="pill">connecting</span>
-  <span id="pauseState" class="muted">one of the endpoint's sixteen connections; the dashboard tab keeps its own</span>
+  <span id="pauseState" class="muted grow">one of the endpoint's sixteen connections; the dashboard tab keeps its own</span>
+  <a class="guide-link" id="guideLink" href="/guide.html" target="_blank" rel="noreferrer" title="What a program is, what it may do, and the limits on this machine — in its own tab">What is a program? ↗</a>
 </div>
+<p id="editorIntro" class="muted small">A program is one WebAssembly module with two entry points, <code>plan</code> and <code>run</code>, and a manifest. Edit the source, compile it in this tab, and launch it on the machine — or drop a <code>.wasm</code> built any other way. While this tab is open the machine is paused; launching or closing resumes it. <span class="muted">Opened from the dashboard.</span></p>
   <section id="editor" class="editor">
     <div class="editor-head">
       <h2>Editor</h2>
       <span id="editorStatus" class="pill">compiler: idle</span>
       <label class="muted">example <select id="example" title="Load one of the shipped programs into the editor"></select></label>
       <span class="muted" id="exampleNote"></span>
-      <span class="muted">Compile in this tab and launch on the machine — or drop a <code>.wasm</code> built any other way. While this tab is open the machine is paused: in-flight tasks finish, nothing new starts. Launching or closing resumes it.</span>
       <button type="button" id="closeEditor" style="margin-left:auto" title="Resume the machine and close this tab">close</button>
     </div>
     <div class="editor-grid">
-      <div>
+      <div class="editor-main">
         <textarea id="source" spellcheck="false" wrap="off" aria-label="program source"></textarea>
-        <div class="controls" style="margin-top:.5rem">
+        <div class="controls editor-actions">
           <button type="button" id="compile">compile</button>
           <button type="button" id="launch" disabled title="Upload the module and its manifest as a bundle, then launch it">launch</button>
           <button type="button" id="resetSource">reset source</button>
@@ -48,11 +63,6 @@
         <div id="launchInfo" class="muted"></div>
       </div>
     </div>
-  </section>
-  <section id="guide" class="guide">
-    <h2>What a program is, and what it may do</h2>
-    <p class="muted small" id="guideLimits"></p>
-    <div id="guideBody"></div>
   </section>
 <script type="module" src="/editor-page.js"></script>
 </body>
