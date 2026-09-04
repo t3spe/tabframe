@@ -23,6 +23,8 @@ import type { Client, Socket, Timer, WorldApi } from "./types.ts";
 
 export interface NodeProfile {
   hostId: string;
+  /** The launch token a cloud core shows in its hello (WP8.3). */
+  coreToken?: string;
   kind: "tab" | "core";
   /** Compute-time multiplier: 1 is the reference machine, 3 is a slow one. */
   speed: number;
@@ -143,6 +145,7 @@ export class VirtualNode implements Client {
     this.world.send(this.sock, {
       t: "hello",
       hostId: this.profile.hostId,
+      ...(this.profile.coreToken ? { coreToken: this.profile.coreToken } : {}),
       kind: this.profile.kind,
       cores: 4,
       sandboxVersion: "sim",

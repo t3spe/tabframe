@@ -29,6 +29,10 @@ export default defineConfig({
           "node packages/sdk-as/scripts/build-programs.ts && bun packages/web/scripts/build.ts && node packages/control-plane/src/main.ts",
         url: `http://127.0.0.1:${port}/config.json`,
         reuseExistingServer: false,
+        // The control plane's log lines land in the reporter output (WP8.3): a failure in the suite
+        // is otherwise a page state with no server-side story.
+        stdout: "pipe",
+        stderr: "pipe",
         timeout: 60_000,
         env: {
           TABFRAME_MODE: "local",

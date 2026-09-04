@@ -77,6 +77,8 @@ export type ExecutionView = z.infer<typeof executionView>;
 export const queueEntry = z.object({
   executionId: z.string().min(1).max(64),
   programName: z.string().min(1).max(64),
+  /** The bundle hash (WP8.3): the editor matches its own launch on it, not on a name anyone may use. */
+  bundle: hash.optional(),
   human: z.boolean(),
   queuedAt: millis,
 });

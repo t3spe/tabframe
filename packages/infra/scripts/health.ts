@@ -30,7 +30,12 @@ const pointer = JSON.parse(pointerRaw ?? "{}") as {
   microvmId?: string;
   endpoint?: string;
   generation?: number;
+  imageVersion?: string | null;
+  pinnedImageVersion?: string | null;
 };
+console.log(
+  `pointer: generation ${pointer.generation ?? "?"}, image version ${pointer.imageVersion ?? "unknown"}${pointer.pinnedImageVersion ? ` (pinned to ${pointer.pinnedImageVersion})` : ""}`,
+);
 if (pointer.state !== "on" || !pointer.microvmId || !pointer.endpoint) {
   console.log(`pointer: ${pointer.state ?? "unset"} — nothing to ask`);
   process.exit(0);

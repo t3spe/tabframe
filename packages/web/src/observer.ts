@@ -14,7 +14,7 @@ import {
 import type { PresignedUpload, PresignItem } from "@tabframe/store";
 import { applyMessage, type ClusterState, emptyState, withRedundancy } from "./state.ts";
 
-export type MachineState = "connecting" | "starting" | "off" | "live" | "outdated";
+export type MachineState = "connecting" | "starting" | "off" | "live" | "outdated" | "full";
 
 /** A control as the page issues it; the client stamps the version and generation. */
 export type ControlRequest = Control extends infer C
@@ -47,6 +47,8 @@ export const CONTROL_SPACING_MS = Math.ceil(1000 / (LIMITS.observerMessagesPerSe
  * machine that has been gone for longer is not (WP4.4: a demo run lost "kill half" this way).
  */
 export const CONTROL_HOLD_MS = 10_000;
+/** How long a page waits before asking a full machine again (WP8.3). */
+export const MACHINE_FULL_RETRY_MS = 10_000;
 /** How often a page facing an off machine asks the session again (WP8.1). */
 export const OFF_POLL_MS = 15_000;
 /** A quiet refresh spreads the reconnects of many observers over this many milliseconds. */
@@ -160,7 +162,9 @@ export class ObserverClient {
       }
       this.outbox.push(h.control);
     }
-    if (fresh.length > 0) this.drain();
+    // Drained whatever is queued (WP8.3): a control that waited behind the spacing timer when the
+    // socket was swapped sits in the outbox, not in `held`.
+    this.drain();
   }
 
   /**
@@ -311,16 +315,27 @@ export class ObserverClient {
     }
     if (msg.t === "snapshot" && this.state.pagesPending === 0) {
       this.resubscribing = false;
+      // A healthy session resets the reconnect backoff (WP8.3): a dashboard open all day used to
+      // wait half a minute after any drop because every hourly rotation had counted against it.
+      this.backoff.reset();
       this.handlers.onState("live");
       this.releaseHeld();
     }
     this.handlers.onCluster(this.state);
   }
 
+  /** Controls still in the outbox wait for the next live socket instead of vanishing (WP8.3). */
+  private holdOutbox(): void {
+    const now = Date.now();
+    for (const o of this.outbox) if (o.t !== "presign") this.held.push({ control: o, at: now });
+    this.outbox = [];
+  }
+
   private resubscribe(ws: WebSocket, delayMs: number): void {
     if (this.resubscribing) return;
     this.resubscribing = true;
     this.clearTimers();
+    this.holdOutbox();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       ws.onclose = null;
@@ -334,14 +349,19 @@ export class ObserverClient {
     if (this.socket !== ws) return;
     this.clearTimers();
     this.socket = null;
-    this.outbox = [];
+    this.holdOutbox();
     this.settlePresign(null, "the socket closed");
     if (this.stopped) return;
     if (code === CLOSE.versionMismatch) {
       this.handlers.onState("outdated", reason);
       return;
     }
-    let delay = this.backoff.next();
+    let delay: number | null = null;
+    if (code === CLOSE.machineFull) {
+      // Every client seat is taken (WP8.3): say so, and try again when the server suggested.
+      this.handlers.onState("full", reason);
+      delay = MACHINE_FULL_RETRY_MS;
+    }
     if (code === CLOSE.rotatingReconnect) {
       try {
         const r = JSON.parse(reason) as { reconnectAfterMs?: number };
@@ -353,10 +373,14 @@ export class ObserverClient {
     } else {
       this.resubscribing = false;
     }
-    this.later(delay);
+    this.later(delay ?? this.backoff.next());
   }
 
+  /** For tests (WP8.3): the delay the last reconnect chose. */
+  lastDelayMs = 0;
+
   private later(ms: number): void {
+    this.lastDelayMs = ms;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => void this.connect(), ms);
   }

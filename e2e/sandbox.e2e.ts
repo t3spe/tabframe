@@ -128,9 +128,24 @@ test("a planner that traps fails its execution with the trap message", async ({ 
 
   // The trap comes back as a task failure carrying the program's own message, and the execution
   // fails with it rather than hanging.
-  await expect
-    .poll(async () => page.evaluate(seenBy), { timeout: 120_000, intervals: [1_000] })
-    .toEqual(expect.arrayContaining([expect.stringMatching(/executionFailed:.*refuses to plan/)]));
+  try {
+    await expect
+      .poll(async () => page.evaluate(seenBy), { timeout: 120_000, intervals: [1_000] })
+      .toEqual(
+        expect.arrayContaining([expect.stringMatching(/executionFailed:.*refuses to plan/)]),
+      );
+  } catch (err) {
+    // The whole event list, untruncated, beside the failure (WP8.3): the reporter cuts arrays.
+    await test.info().attach("seen", {
+      body: JSON.stringify(await page.evaluate(seenBy), null, 1),
+      contentType: "application/json",
+    });
+    await test.info().attach("mine", {
+      body: await page.locator("#mine").innerText(),
+      contentType: "text/plain",
+    });
+    throw err;
+  }
   await expect(page.locator("#failure")).toContainText(/refuses to plan/, { timeout: 30_000 });
   // The machine moves on rather than hanging: the nodes are still there.
   await expect(page.locator("#counts")).toHaveText(/[1-9] nodes/);

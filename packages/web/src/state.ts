@@ -538,10 +538,12 @@ export function applyMessage(
     case "taskMismatch": {
       const next = advance(state, msg.seq);
       const task = ensureTask(next, msg.taskId, now);
+      // The core ignores results for a failed task, so no mismatch follows one; a page that got
+      // one anyway used to count the task as pending and failed at once (WP8.3).
+      if (task.status === "failed") return next;
       bump(next, { mismatched: 1 });
       if (task.status === "done") bump(next, { done: -1, pending: 1 });
       else if (task.status === "assigned") bump(next, { assigned: -1, pending: 1 });
-      else if (task.status === "failed") bump(next, { pending: 1 });
       if (task.status === "done" && task.kind === "run") bumpStage(next, task.stage, { done: -1 });
       // The accepted result is withdrawn along with the disagreeing one: both are suspect now.
       const history = settleOrRecord(task.history, msg.nodeId, "mismatch", now).map((a) =>

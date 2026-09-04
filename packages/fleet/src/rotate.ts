@@ -43,16 +43,28 @@ export interface RotateDeps {
   latestSnapshotKey?: () => Promise<string | null>;
 }
 
+/** A pending record younger than this is a rotation still running (WP8.3): the rotate function's timeout. */
+export const PENDING_IN_PROGRESS_MS = 10 * 60_000;
+
 export type RotateResult =
   | { action: "skipped-off" }
   | { action: "skipped-recent" }
-  | { action: "launched"; microvmId: string; generation: number; endpoint: string | null }
+  | { action: "in-progress"; microvmId: string; generation: number }
+  | { action: "skipped-terminated" }
+  | {
+      action: "launched";
+      microvmId: string;
+      generation: number;
+      endpoint: string | null;
+      imageVersion: string | null;
+    }
   | {
       action: "rotated";
       from: string;
       to: string;
       generation: number;
       endpoint: string | null;
+      imageVersion: string | null;
       handedOver: boolean;
       drained: number;
     }
@@ -99,7 +111,20 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
   async function waitUntilRunning(microvmId: string): Promise<MicrovmInfo | null> {
     const deadline = clock.now() + config.readyTimeoutMs;
     for (;;) {
-      const info = await microvms.get(microvmId);
+      let info: MicrovmInfo | null;
+      try {
+        info = await microvms.get(microvmId);
+      } catch (error) {
+        // A throttled or failed poll is a poll to repeat (WP8.3), not a reason to abandon a
+        // MicroVM that is booting: abandoned, it ran to its ceiling with no record of it.
+        log.warn("rotate: polling the new control plane failed; polling again", {
+          reason: String(error),
+        });
+        info = undefined as unknown as null;
+        if (clock.now() >= deadline) return null;
+        await sleep.sleep(config.pollIntervalMs);
+        continue;
+      }
       if (info?.state === "RUNNING") return info;
       if (!info || info.state === "TERMINATED" || info.state === "TERMINATING") return null;
       if (clock.now() >= deadline) return null;
@@ -108,7 +133,12 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
   }
 
   /** Launch a control plane for `generation`, told where the latest snapshot is. */
-  async function launch(generation: number, secret: string): Promise<MicrovmInfo | null> {
+  async function launch(
+    generation: number,
+    secret: string,
+    pin: string | null,
+    onLaunched?: (vm: MicrovmInfo) => Promise<void>,
+  ): Promise<MicrovmInfo | null> {
     const payload: ControlPlanePayload = {
       role: "control-plane",
       generation,
@@ -125,7 +155,8 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     for (let retry = 0; retry < 3 && !launched; retry++) {
       const candidate = await runWithBackoff({
         imageArn: config.imageArn,
-        imageVersion: config.imageVersion,
+        // The operator's pin, kept in the pointer (WP8.3), over the function's environment.
+        imageVersion: pin ?? config.imageVersion,
         executionRoleArn: config.controlPlaneRoleArn,
         runHookPayload: JSON.stringify(payload),
         ingressConnectors: [ingressConnectorArn(config.region)],
@@ -149,8 +180,17 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       microvmId: launched.microvmId,
       generation,
       snapshotKey: payload.snapshotKey,
+      imageVersion: launched.imageVersion,
     });
-    const ready = await waitUntilRunning(launched.microvmId);
+    // The pointer learns about the launch before the wait (WP8.3): a run that dies while waiting
+    // used to leave a MicroVM no later run knew about.
+    await onLaunched?.(launched);
+    let ready: MicrovmInfo | null = null;
+    try {
+      ready = await waitUntilRunning(launched.microvmId);
+    } catch (error) {
+      log.warn("rotate: waiting for the new control plane failed", { reason: String(error) });
+    }
     if (!ready) {
       // A successor that never reached RUNNING is not left behind (WP8.1): it would block every
       // later run of the same generation and bill for hours.
@@ -165,7 +205,17 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     generation: number,
     now: number,
     retiring: ControlPlaneTarget | null = null,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    // The pointer is read again first (WP8.3): a `down` that landed during the launch must win,
+    // not be flipped back to on by a rotation that started before it.
+    const fresh = await pointer.read();
+    if (fresh.state === "off") {
+      log.warn("rotate: the machine was turned off during the rotation; not promoting", {
+        microvmId: vm.microvmId,
+      });
+      await terminateQuietly(vm.microvmId, "turned off during the rotation");
+      return false;
+    }
     await pointer.write({
       ...p,
       state: "on",
@@ -179,6 +229,7 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       // finished by the next one rather than leaving two active generations.
       retiring: retiring ? { microvmId: retiring.microvmId, endpoint: retiring.endpoint } : null,
     });
+    return true;
   }
 
   async function terminateQuietly(microvmId: string, why: string): Promise<void> {
@@ -197,6 +248,15 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
   async function repair(p: Pointer, secret: string): Promise<RotateResult | null> {
     const stale = p.pending;
     if (!stale) return null;
+    // A pending record younger than a run's own timeout is a rotation still going (WP8.3): an
+    // operator's rotate overlapping the hourly one must not terminate the successor it is adopting.
+    if (stale.at !== undefined && clock.now() - stale.at < PENDING_IN_PROGRESS_MS) {
+      log.info("rotate: another rotation is in progress; leaving its successor alone", {
+        microvmId: stale.microvmId,
+        ageMs: clock.now() - stale.at,
+      });
+      return { action: "in-progress", microvmId: stale.microvmId, generation: stale.generation };
+    }
     const vm = await microvms.get(stale.microvmId);
     if (!vm || !SERVING_STATES.has(vm.state)) {
       log.warn("rotate: forgetting a pending control plane that is gone", {
@@ -234,7 +294,7 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     });
     const now = clock.now();
     const previous = p.microvmId;
-    await promote(p, vm, stale.generation, now);
+    if (!(await promote(p, vm, stale.generation, now))) return { action: "skipped-off" };
     if (previous && previous !== vm.microvmId) {
       await retire({ microvmId: previous, endpoint: p.endpoint ?? "" }, stale.generation, secret);
     }
@@ -319,6 +379,21 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       return { action: "skipped-suspended" };
     }
 
+    // A control plane the platform's ceiling ended overnight has nobody to serve either (WP8.3):
+    // the scheduled rule leaves the heal to the first visitor's session call, so an idle machine
+    // does not boot a fresh generation every hour of the night.
+    if (
+      scheduled &&
+      !current.pending &&
+      running &&
+      (running.state === "TERMINATED" || running.state === "TERMINATING")
+    ) {
+      log.info("rotate: the control plane was ended by its ceiling; the heal waits for a visitor", {
+        microvmId: running.microvmId,
+      });
+      return { action: "skipped-terminated" };
+    }
+
     // ---- nothing is serving: heal by launching one --------------------------------------------
     if (!serving) {
       if (current.microvmId) {
@@ -330,19 +405,33 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       const generation = current.generation + 1;
       let vm: MicrovmInfo | null;
       try {
-        vm = await launch(generation, secret);
+        vm = await launch(generation, secret, current.pinnedImageVersion ?? null, (launched) =>
+          pointer.write({
+            ...current,
+            pending: {
+              microvmId: launched.microvmId,
+              endpoint: launched.endpoint,
+              generation,
+              at: clock.now(),
+            },
+          }),
+        );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         log.error("rotate: RunMicrovm failed", { reason });
         return { action: "failed", reason };
       }
-      if (!vm) return { action: "failed", reason: "the control plane did not reach RUNNING" };
-      await promote(current, vm, generation, clock.now());
+      if (!vm) {
+        await pointer.write({ ...(await pointer.read()), pending: null });
+        return { action: "failed", reason: "the control plane did not reach RUNNING" };
+      }
+      if (!(await promote(current, vm, generation, clock.now()))) return { action: "skipped-off" };
       return {
         action: "launched",
         microvmId: vm.microvmId,
         generation,
         endpoint: vm.endpoint,
+        imageVersion: vm.imageVersion,
       };
     }
 
@@ -354,18 +443,28 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     };
     let next: MicrovmInfo | null;
     try {
-      next = await launch(generation, secret);
+      // From the launch on a crash is recoverable: the pending record names the successor (WP8.3:
+      // it is written before the wait for RUNNING, not after).
+      next = await launch(generation, secret, current.pinnedImageVersion ?? null, (launched) =>
+        pointer.write({
+          ...current,
+          pending: {
+            microvmId: launched.microvmId,
+            endpoint: launched.endpoint,
+            generation,
+            at: clock.now(),
+          },
+        }),
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log.error("rotate: RunMicrovm failed", { reason });
       return { action: "failed", reason };
     }
-    if (!next) return { action: "failed", reason: "the successor did not reach RUNNING" };
-    // From here a crash is recoverable: the pending record names the successor.
-    await pointer.write({
-      ...current,
-      pending: { microvmId: next.microvmId, endpoint: next.endpoint, generation },
-    });
+    if (!next) {
+      await pointer.write({ ...(await pointer.read()), pending: null });
+      return { action: "failed", reason: "the successor did not reach RUNNING" };
+    }
 
     const client = deps.controlPlane?.(secret);
     let handedOver = false;
@@ -383,7 +482,8 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       }
     }
 
-    await promote(current, next, generation, clock.now(), old);
+    if (!(await promote(current, next, generation, clock.now(), old)))
+      return { action: "skipped-off" };
     const drained = await retire(old, generation, secret);
     await pointer.write({ ...(await pointer.read()), retiring: null });
     log.info("rotate: rotated", { from: old.microvmId, to: next.microvmId, generation });
@@ -393,6 +493,7 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       to: next.microvmId,
       generation,
       endpoint: next.endpoint,
+      imageVersion: next.imageVersion,
       handedOver,
       drained,
     };

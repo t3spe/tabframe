@@ -274,3 +274,30 @@ describe("lease expiry (WP8.2)", () => {
     expect(terminated).toEqual([]);
   });
 });
+
+describe("standby (WP8.3)", () => {
+  test("a control plane the pointer does not name is not authoritative until it is", async () => {
+    let named = "vm-9";
+    const cp = await createControlPlane({ ...imageConfig, generation: 6 }, undefined, {
+      store,
+      snapshots: new MemorySnapshots(),
+      programs: [],
+      cores: {
+        launch: async () => ({ microvmId: "core-x", token: "t" }),
+        terminate: async () => {},
+        gone: async () => [],
+      },
+      pointer: async () => ({ microvmId: named, generation: 6 }),
+    });
+    planes.push(cp);
+    await run(cp, 6);
+    const health = async () =>
+      (await (await fetch(priv(cp, "/health"))).json()) as { authoritative: boolean };
+    expect((await health()).authoritative).toBe(false);
+    // The pointer flips to this process: the next poll notices.
+    named = "vm-6";
+    const deadline = Date.now() + 8_000;
+    while (!(await health()).authoritative && Date.now() < deadline) await Bun.sleep(100);
+    expect((await health()).authoritative).toBe(true);
+  }, 15_000);
+});

@@ -102,14 +102,14 @@ Every milestone was verified against the deployed machine; the records are in `d
 
 | Claim | Evidence |
 |---|---|
-| Kill half the cluster mid-frame and the frame still completes, bit for bit | 6 tab nodes, 3 killed at tile 128: **640 of 640 tiles match the goldens** produced by a single Node process on another machine ([`m1-verification.md`](docs/m1-verification.md)). The browser suite repeats it with ten nodes in one tab. |
+| Kill half the cluster mid-frame and the frame still completes, bit for bit | 6 nodes from tabs, 3 killed at tile 128: **640 of 640 tiles match the goldens** produced by a single Node process on another machine ([`m1-verification.md`](docs/m1-verification.md)). The browser suite repeats it with ten nodes in one tab. |
 | A program edited and compiled in the page runs on the cluster | compiled in the browser in ~3 s, byte-identical to the build's module; the edited frame's tiles differ from the unedited goldens ([`m2-verification.md`](docs/m2-verification.md)) |
 | Word count is exact | the top-25 over *Moby-Dick* equals the JavaScript reference **hash for hash** |
 | A program fault is visible, not fatal | a planner that traps fails its execution with its own abort message and the machine returns to its loop |
 | The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`m3-verification.md`](docs/m3-verification.md)) |
 | Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
 
-543 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
+559 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
 tests in Playwright, and CI on every push with no AWS credentials.
 
 ## Limits, stated plainly
@@ -117,13 +117,13 @@ tests in Playwright, and CI on every push with no AWS credentials.
 - **One MicroVM endpoint accepts 16 concurrent connections.** That is an AWS quota, not
   adjustable, the same at every VM size we can launch — measured, then found in the account's
   Service Quotas ([design §9.7](docs/design.md), [`m3-verification.md`](docs/m3-verification.md)).
-  One control plane therefore serves about seven browser tabs that each lend a node (fifteen that only watch), and the ledger's 256-node cap is
+  One control plane therefore serves about seven browser tabs that each lend a node (fourteen that only watch), and the ledger's 256-node cap is
   a property of the scheduler, not of the deployment. Scaling the client edge is an architecture
   decision recorded in the plan (WP4.6): document it for now, evaluate an EC2 host for the control
   plane after packaging.
 - **One active control plane at a time.** Authority is a generation stamp and a pointer, not
   consensus. A control plane that dies without handing over is replaced from its last snapshot,
-  at most five seconds stale, and idempotent tasks make that safe; a consensus control plane is the
+  at most five seconds stale, and idempotent tasks make that safe; a consensus control plane is
   an extension, not a feature (the second in the rationale's list; the client edge comes first).
 - **Programs are trusted to the extent the sandbox allows.** Five host imports, no clock, no
   randomness, no network, a memory maximum, a deadline, and byte caps on writes and logs. No
@@ -162,7 +162,7 @@ notification-only budget alerts).
 
 ```sh
 mise run whoami                 # asserts the identity is the Tabframe account; every AWS task depends on it
-cdk bootstrap                   # once
+AWS_PROFILE=tabframe cdk bootstrap   # once; the profile no longer rides on every task (WP8.2)
 mise run deploy                 # build → test → cdk deploy (four stacks) → up: a rotation onto the new image
 mise run verify:m1              # browser tabs render a frame on the deployed machine; kill half; golden hashes
 mise run verify:m2              # edit and compile in the page; word count; a program fault

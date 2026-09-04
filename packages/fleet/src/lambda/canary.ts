@@ -24,8 +24,11 @@ async function check(url: string, ms = 5_000): Promise<{ ok: boolean; body: stri
 export function classifySession(body: string): "live" | "starting" | "off" | "bad" {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    if (parsed.state === "off" || parsed.kind === "off") return "off";
-    if (parsed.state === "starting" || parsed.kind === "starting") return "starting";
+    // The shapes the session function actually emits (`SessionBody` in session.ts; WP8.3 fixed the
+    // canary, which looked for a `state` field that never existed): {off:true},
+    // {starting:true, retryAfterMs}, or {endpoint, token, ...}.
+    if (parsed.off === true) return "off";
+    if (parsed.starting === true) return "starting";
     if (typeof parsed.endpoint === "string" && typeof parsed.token === "string") return "live";
     return "bad";
   } catch {
@@ -35,12 +38,14 @@ export function classifySession(body: string): "live" | "starting" | "off" | "ba
 
 export const handler = async (): Promise<Record<string, number>> => {
   const page = await check(`${webOrigin.replace(/\/$/, "")}/config.json`);
-  const session = await check(sessionUrl);
+  // The probe form never heals (WP8.3): a monitor must not keep an idle machine booting.
+  const session = await check(`${sessionUrl}${sessionUrl.includes("?") ? "&" : "?"}probe=1`);
   const kind = session.ok ? classifySession(session.body) : "bad";
   const metrics = {
     PageOk: page.ok ? 1 : 0,
     SessionOk: kind === "bad" ? 0 : 1,
     Starting: kind === "starting" ? 1 : 0,
+    Off: kind === "off" ? 1 : 0,
   };
   await cloudwatch.send(
     new PutMetricDataCommand({

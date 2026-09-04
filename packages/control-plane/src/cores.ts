@@ -24,6 +24,8 @@ export interface CoreFleetConfig {
 export interface CoreFleet {
   launch(): Promise<{ microvmId: string; token: string }>;
   terminate(microvmId: string): Promise<void>;
+  /** What the platform says about one MicroVM — the control plane asks about itself (WP8.3). */
+  describe?(microvmId: string): Promise<MicrovmInfo | null>;
   /** Which of these MicroVMs are no longer serving, so the ledger can forget them. */
   gone(microvmIds: string[]): Promise<string[]>;
 }
@@ -69,6 +71,9 @@ export function createCoreFleet(config: CoreFleetConfig, client?: MicrovmClient)
     },
     async terminate(microvmId: string): Promise<void> {
       await microvms.terminate(microvmId);
+    },
+    async describe(microvmId: string): Promise<MicrovmInfo | null> {
+      return microvms.get(microvmId);
     },
     async gone(microvmIds: string[]): Promise<string[]> {
       const dead: string[] = [];

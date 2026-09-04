@@ -455,10 +455,12 @@ describe("cluster state: executions and tasks", () => {
     });
     expect(taskColor(sc.state.tasks.get("t2") as never)).toBe("failed");
     expect(sc.state.execution?.counters).toMatchObject({ pending: 1, assigned: 0, failed: 1 });
+    // A mismatch on a failed task changes nothing (WP8.3): the core never sends one, and counting
+    // it made the task pending and failed at once.
     sc.send({ t: "taskMismatch", taskId: "t2", nodeId: "n2" });
-    expect(sc.state.execution?.counters).toMatchObject({ pending: 2, failed: 1, mismatched: 2 });
+    expect(sc.state.execution?.counters).toMatchObject({ pending: 1, failed: 1, mismatched: 1 });
     sc.send({ t: "taskFailed", taskId: "t9", reason: "never assigned" });
-    expect(sc.state.execution?.counters).toMatchObject({ pending: 1, failed: 2 });
+    expect(sc.state.execution?.counters).toMatchObject({ pending: 0, failed: 2 });
   });
   test("rows the stage event could not carry are placed from their ids; odd ids stay unplaced", () => {
     const sc = new Script();

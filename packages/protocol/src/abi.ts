@@ -194,6 +194,9 @@ class Reader {
   }
 }
 
+export const MAX_CANVAS_SIDE = 4096;
+export const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+
 export class AbiError extends Error {}
 
 export function encodeRunInput(r: RunInput): Uint8Array {
@@ -284,7 +287,16 @@ export function decodeStageSpec(b: Uint8Array, limits = SPEC_LIMITS): StageSpec 
   if (r.u8()) {
     const w = r.u32();
     const h = r.u32();
-    if (w === 0 || h === 0 || w > 16384 || h > 16384) throw new AbiError("bad canvas");
+    // At most 4096 a side and four megapixels (WP8.3): a 16384² canvas is a gigabyte of RGBA that
+    // every dashboard would allocate on a stranger's say-so.
+    if (
+      w === 0 ||
+      h === 0 ||
+      w > MAX_CANVAS_SIDE ||
+      h > MAX_CANVAS_SIDE ||
+      w * h > MAX_CANVAS_PIXELS
+    )
+      throw new AbiError("bad canvas");
     spec.canvas = { w, h };
   }
   const n = r.u32();

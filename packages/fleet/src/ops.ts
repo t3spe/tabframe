@@ -17,7 +17,16 @@ export interface OpsDeps {
 /** Clear the off state (keeping the generation) and ask rotate to launch a control plane. */
 export async function up(deps: OpsDeps): Promise<unknown> {
   const p = await deps.pointer.read();
-  await deps.pointer.write({ ...p, state: "on", updatedAt: new Date().toISOString() });
+  // `up` ends every deploy, so it is where a rollback pin is cleared (WP8.3): the next launch is
+  // the image's latest version again.
+  if (p.pinnedImageVersion)
+    deps.log.info("up: clearing the image pin", { pinned: p.pinnedImageVersion });
+  await deps.pointer.write({
+    ...p,
+    state: "on",
+    pinnedImageVersion: null,
+    updatedAt: new Date().toISOString(),
+  });
   await deps.rules.enable(deps.config.ruleName);
   deps.log.info("up: pointer set to on, rotation schedule enabled, invoking rotate");
   return deps.invoker.invokeSync(deps.config.rotateFunctionName, { reason: "up" });
@@ -34,14 +43,19 @@ export async function down(deps: OpsDeps): Promise<{ terminated: string[] }> {
     endpoint: null,
     updatedAt: new Date().toISOString(),
   });
-  const all = await deps.microvms.list(deps.config.imageArn);
   const terminated: string[] = [];
-  for (const vm of all) {
-    if (vm.state === "TERMINATED" || vm.state === "TERMINATING") continue;
-    await deps.microvms.terminate(vm.microvmId);
-    terminated.push(vm.microvmId);
-    // The TerminateMicrovm rate quota is 10/s; a short pause keeps a large fleet under it.
-    await deps.sleep.sleep(150);
+  // Two passes (WP8.3): a rotation racing `down` may launch a successor after the first list.
+  for (let pass = 0; pass < 2; pass++) {
+    if (pass > 0) await deps.sleep.sleep(2_000);
+    const all = await deps.microvms.list(deps.config.imageArn);
+    for (const vm of all) {
+      if (vm.state === "TERMINATED" || vm.state === "TERMINATING") continue;
+      if (terminated.includes(vm.microvmId)) continue;
+      await deps.microvms.terminate(vm.microvmId);
+      terminated.push(vm.microvmId);
+      // The TerminateMicrovm rate quota is 10/s; a short pause keeps a large fleet under it.
+      await deps.sleep.sleep(150);
+    }
   }
   deps.log.info("down: machine is off", { terminated: terminated.length });
   return { terminated };

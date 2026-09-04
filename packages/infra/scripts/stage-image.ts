@@ -45,9 +45,17 @@ try {
 } catch {
   // not a git checkout
 }
+// `at` is the commit's time, not the build's (WP8.3): a wall-clock stamp made every deploy a new
+// image version and a platform build even for a docs-only commit.
+let at: string | null = null;
+try {
+  at = execSync("git show -s --format=%cI HEAD", { encoding: "utf8" }).trim() || null;
+} catch {
+  // not a git checkout
+}
 writeFileSync(
   path.join(out, "build.json"),
-  `${JSON.stringify({ sha, branch, ungated: process.env.TABFRAME_DEPLOY_UNGATED === "1", at: new Date().toISOString() })}\n`,
+  `${JSON.stringify({ sha, branch, ungated: process.env.TABFRAME_DEPLOY_UNGATED === "1", at })}\n`,
 );
 // Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
 // inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as

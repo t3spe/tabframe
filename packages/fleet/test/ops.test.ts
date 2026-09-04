@@ -71,6 +71,7 @@ describe("down", () => {
     expect(d.rules.events).toEqual([{ rule: "tabframe-rotate-hourly", enabled: false }]);
     const written = pointer.writes.at(-1);
     expect(written).toMatchObject({ state: "off", microvmId: null, endpoint: null, generation: 2 });
-    expect(d.sleep.slept).toEqual([150, 150]);
+    // Two passes (WP8.3): a rotation racing `down` may launch after the first list.
+    expect(d.sleep.slept).toEqual([150, 150, 2_000]);
   });
 });

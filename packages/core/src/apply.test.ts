@@ -179,6 +179,9 @@ describe("health from visibility", () => {
     expect(types(h.heartbeat("c1", false))).toEqual(["nodeHealth"]);
     expect(h.ledger.nodes.get("n1")?.health).toBe("throttled");
     expect(h.heartbeat("c1", false)).toEqual([]);
+    // Health is announced at most every two seconds per node, and heartbeats faster than half the
+    // period are dropped (WP8.3): the flip back is announced once the window has passed.
+    h.advance(2_000);
     expect(types(h.heartbeat("c1", true))).toEqual(["nodeHealth"]);
     expect(h.ledger.nodes.get("n1")?.health).toBe("fast");
   });

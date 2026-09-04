@@ -32,6 +32,11 @@ export interface NodeRecord {
   inFlight: string[];
   /** The last demo command applied, so resumeAll knows whom to resume. */
   commanded: "throttle" | "freeze" | null;
+  /** When the last heartbeat was taken (WP8.3); earlier ones are dropped. */
+  heartbeatAt?: number;
+  /** The health observers were last told, and when (WP8.3). */
+  announcedHealth?: Health;
+  healthAnnouncedAt?: number;
 }
 
 /** One dashboard connection. */
@@ -58,7 +63,8 @@ export interface ConnState {
   presignBytes: { tokens: number; refilledAt: number };
 }
 
-export type AttemptOutcome = "running" | "result" | "released" | "cancelled" | "error";
+/** "released": the node gave the task back at its deadline; "lost": the node went away (WP8.3 split). */
+export type AttemptOutcome = "running" | "result" | "released" | "lost" | "cancelled" | "error";
 
 export interface AttemptRecord {
   attempt: number;
@@ -242,6 +248,11 @@ export interface Meta {
   coreLaunches: number[];
   /** The last time each destructive control was applied, machine-wide (WP8.1): a short cooldown. */
   lastControlAt: Record<string, number>;
+  /** Machine-wide presign budgets (WP8.3): items and bytes per minute, refilling. */
+  presignItems: { tokens: number; refilledAt: number };
+  presignBytesMachine: { tokens: number; refilledAt: number };
+  /** Launch times in the last minute, machine-wide (WP8.3). */
+  launchesAt: number[];
   /**
    * The observer connection holding the machine paused (WP6.4): nothing is assigned or started
    * while it is set; in-flight tasks finish. Cleared by resume, by the holder's socket going away,
@@ -333,6 +344,9 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       handoverAt: null,
       coreLaunches: [],
       lastControlAt: {},
+      presignItems: { tokens: 12_000, refilledAt: 0 },
+      presignBytesMachine: { tokens: 512 * 1024 * 1024, refilledAt: 0 },
+      launchesAt: [],
       pausedBy: null,
     },
     config: {
@@ -429,6 +443,7 @@ export function executionView(e: ExecutionRecord): ExecutionView {
 export function queueEntry(e: ExecutionRecord): QueueEntry {
   return {
     executionId: e.executionId,
+    bundle: e.bundle,
     programName: e.manifest.name,
     human: e.human,
     queuedAt: e.queuedAt,

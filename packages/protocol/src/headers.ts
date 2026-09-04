@@ -1,20 +1,33 @@
 /**
- * The page's content security policy (WP8.2), one string for CloudFront and the local server, so
- * the browser suites run under the policy the deployed page gets. Scripts come from the page's
- * origin and blob: workers; WebAssembly needs 'wasm-unsafe-eval'; styles are the page's plus inline
- * attributes; nothing frames the page.
+ * The page's content security policy (WP8.2, tightened in WP8.3), one function for CloudFront and
+ * the local server, so the browser suites run under the policy the deployed page gets. Scripts
+ * come from the page's origin and blob: workers; WebAssembly needs 'wasm-unsafe-eval'; styles are
+ * the page's plus inline attributes; connections go to the page's own origin (the store behind
+ * CloudFront), the session function URL, the MicroVM endpoints, and the blob bucket for uploads;
+ * nothing frames the page and no form posts anywhere.
  */
-export const PAGE_CSP = [
-  "default-src 'self' https: wss: data: blob:",
-  "script-src 'self' 'wasm-unsafe-eval' blob:",
-  "style-src 'self' 'unsafe-inline'",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "frame-ancestors 'none'",
-].join("; ");
+export function pageCsp(region: string): string {
+  return [
+    "default-src 'self'",
+    `connect-src 'self' https://*.lambda-url.${region}.on.aws wss://*.lambda-microvm.${region}.on.aws https://*.s3.${region}.amazonaws.com`,
+    "script-src 'self' 'wasm-unsafe-eval' blob:",
+    "worker-src 'self' blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' blob: data:",
+    "font-src 'self'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "form-action 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+/** The deployed policy for the machine's region. */
+export const PAGE_CSP = pageCsp("us-west-2");
 
 /** Locally the sockets and the store are plain http and ws on the loopback. */
 export const LOCAL_PAGE_CSP = PAGE_CSP.replace(
-  "default-src 'self' https: wss:",
-  "default-src 'self' https: wss: http: ws:",
+  "connect-src 'self'",
+  "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*",
 );

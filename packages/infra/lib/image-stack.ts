@@ -71,7 +71,10 @@ export class ImageStack extends cdk.Stack {
     this.controlPlaneRole.addToPolicy(logsPolicy);
     core.blobBucket.grantPut(this.controlPlaneRole);
     core.blobBucket.grantRead(this.controlPlaneRole);
-    core.snapshotBucket.grantReadWrite(this.controlPlaneRole);
+    // Put and read, never delete (WP8.3): a compromised control plane must not be able to erase the
+    // lineage a heal boots from.
+    core.snapshotBucket.grantPut(this.controlPlaneRole);
+    core.snapshotBucket.grantRead(this.controlPlaneRole);
     this.controlPlaneRole.addToPolicy(
       new iam.PolicyStatement({
         actions: ["ssm:GetParameter"],

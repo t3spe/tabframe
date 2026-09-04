@@ -1,5 +1,5 @@
 // Core stack (design §11.4): buckets, CloudFront, the pointer parameter, the fleet secret, the budget.
-import { PAGE_CSP } from "@tabframe/protocol";
+import { pageCsp } from "@tabframe/protocol";
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { NAMES } from "./names.ts";
@@ -85,7 +85,7 @@ export class CoreStack extends cdk.Stack {
           override: true,
         },
         contentSecurityPolicy: {
-          contentSecurityPolicy: PAGE_CSP, // shared with the local server (WP8.2)
+          contentSecurityPolicy: pageCsp(this.region), // shared with the local server (WP8.2, WP8.3)
           override: true,
         },
       },

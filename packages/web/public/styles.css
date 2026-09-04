@@ -342,6 +342,11 @@ footer a {
   color: var(--fg);
   animation: pulse 1.5s ease-out;
 }
+@media (prefers-reduced-motion: reduce) {
+  .pulses li.pulse-live {
+    animation: none;
+  }
+}
 @keyframes pulse {
   from {
     background: #ffffff;

@@ -44,7 +44,17 @@ export const PATTERNS: readonly ScrubPattern[] = [
     re: /\bmicrovm-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g,
     replacement: "<microvm-id>",
   },
+  // Credentials in any shape a tool's output might show (WP8.3): access-key ids, the credential
+  // and session-token fragments of a signed URL cut before its signature.
+  { name: "aws-key-id", re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, replacement: "<aws-key-id>" },
+  {
+    name: "amz-credential",
+    re: /X-Amz-(?:Credential|Security-Token)=[^&\s"'<>)\]]+/g,
+    replacement: "X-Amz-Credential=<redacted>",
+  },
   { name: "account-id", re: /\b\d{12}\b/g, replacement: "************" },
+  // The operator scripts' own mask keeps the last four digits; an export keeps none.
+  { name: "masked-account-tail", re: /\*{8}\d{4}\b/g, replacement: "************" },
   {
     name: "email",
     re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g,

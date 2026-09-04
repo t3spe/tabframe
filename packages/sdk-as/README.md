@@ -62,6 +62,13 @@ Anything else — `Date.now`, `Math.random` (which needs `env.seed`), `console`,
 at upload. AssemblyScript's `Math` compiles to WebAssembly and is deterministic across browsers and
 machines; never write NaN into an output, because NaN payload bits are not.
 
+**How long a task may run.** The control plane gives each task a deadline: the floor (two seconds)
+or three times the median of the stage's completed tasks, whichever is longer. A task that is not
+finished by then is released by its node and given to another with a doubled deadline, three
+doublings at most (so up to sixteen seconds at the floor); a task released six times fails the
+execution as a program fault. Keep tasks short and many — a few hundred milliseconds each is the
+sweet spot — rather than few and long.
+
 ## Compiling
 
 Programs depend on `@tabframe/sdk-as` (workspace) and import it by the subpath above; asc resolves

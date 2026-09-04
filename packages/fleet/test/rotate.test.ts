@@ -155,7 +155,8 @@ describe("rotate handler", () => {
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer, { readyTimeoutMs: 5000 })();
     expect(result.action).toBe("failed");
-    expect(pointer.writes).toHaveLength(0);
+    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
     // The successor that never came up is not left running for hours, blocking every later try.
     expect(microvms.terminated).toEqual([microvms.runs[0]?.microvmId ?? "?"]);
     // And the client token carries the hour, so the next try is not resolved to the same VM.
@@ -186,7 +187,8 @@ describe("rotate handler", () => {
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer)();
     expect(result.action).toBe("failed");
-    expect(pointer.writes).toHaveLength(0);
+    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
   });
 });
 
@@ -317,7 +319,9 @@ describe("rotation", () => {
     const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
     const result = await rotate(pointer)();
     expect(result.action).toBe("failed");
-    expect(pointer.writes).toHaveLength(0);
+    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
+    expect(pointer.writes.at(-1)?.microvmId).toBe("mvm-old");
     // The successor that never booted is cleaned up; the old control plane is not touched (WP8.1).
     expect(microvms.terminated).toEqual(["mvm-1"]);
     expect(cp.calls).toEqual([]);

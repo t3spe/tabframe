@@ -36,7 +36,15 @@ describe("parsePointer", () => {
       generation: 12,
       imageVersion: "3",
       updatedAt: "2026-09-01T00:00:00.000Z",
-      pending: { microvmId: "mvm-2", endpoint: "mvm-2.on.aws", generation: 13 },
+      pending: {
+        microvmId: "mvm-2",
+        endpoint: "mvm-2.on.aws",
+        generation: 13,
+        at: 1_700_000_000_000,
+      },
+      // Both must survive SSM (WP8.3): `retiring` was written and never read back before.
+      retiring: { microvmId: "mvm-0", endpoint: "mvm-0.on.aws" },
+      pinnedImageVersion: "2",
     };
     expect(parsePointer(serializePointer(p))).toEqual(p);
   });

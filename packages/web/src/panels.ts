@@ -22,6 +22,7 @@ import {
   type AttemptRecord,
   type ClusterState,
   type ExecutionState,
+  isRunningPhase,
   ledgerRows,
   type ProgramInfo,
   programList,
@@ -111,7 +112,10 @@ class BlobCache {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   get(hash: string): Cached {
     const known = this.got.get(hash);
-    if (known !== undefined) {
+    const erroredAt = known === "error" ? this.missingAt.get(hash) : undefined;
+    if (erroredAt !== undefined && Date.now() - erroredAt >= MISSING_RETRY_MS) {
+      this.got.delete(hash); // the window closed: ask again below
+    } else if (known !== undefined) {
       // Touched: it moves to the young end, so the eviction below drops the least recently used.
       this.got.delete(hash);
       this.got.set(hash, known);
@@ -131,28 +135,35 @@ class BlobCache {
           this.missingAt.set(hash, Date.now());
           // The retry needs a render to ask again, and a held page renders nothing on its own:
           // one is scheduled for when the window closes (a file pinned before the demo wrote it).
-          if (this.retryTimer === null) {
-            this.retryTimer = setTimeout(() => {
-              this.retryTimer = null;
-              this.version += 1;
-              this.onChange();
-            }, MISSING_RETRY_MS + 50);
-          }
+          this.scheduleRetry();
         } else {
           this.missingAt.delete(hash);
           this.got.set(hash, bytes);
           this.bytes += bytes.length;
           this.evict();
+          // Only a landing bumps the version (WP8.3): a miss changes nothing a panel shows.
+          this.version += 1;
+          this.onChange();
         }
-        this.version += 1;
-        this.onChange();
       })
       .catch(() => {
+        // A fetch that threw is shown as an error and asked again after the window (WP8.3): one
+        // CDN hiccup used to read "could not be fetched" until the page was reloaded.
         this.got.set(hash, "error");
+        this.missingAt.set(hash, Date.now());
+        this.scheduleRetry();
         this.version += 1;
         this.onChange();
       });
     return "pending";
+  }
+  private scheduleRetry(): void {
+    if (this.retryTimer !== null) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.version += 1;
+      this.onChange();
+    }, MISSING_RETRY_MS + 50);
   }
   /** Drop the least recently used blobs until the cache fits its budget. */
   private evict(): void {
@@ -232,7 +243,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   function renderPrograms(state: ClusterState): void {
     const programs = programList(state);
     const running =
-      state.execution && state.execution.phase !== "done" ? state.execution.program : null;
+      state.execution && isRunningPhase(state.execution.phase) ? state.execution.program : null;
     if (programs.length === 0) {
       if (programRows.size > 0 || els.programs.childElementCount === 0) {
         programRows.clear();
@@ -474,8 +485,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     els.followUp.hidden = !offered;
     els.followUp.replaceChildren();
     // Kill execution stays where it is and says why when nothing runs (WP7.7, rule R3).
-    const runningNow =
-      !!exec && exec.phase !== "done" && exec.phase !== "failed" && exec.phase !== "stopped";
+    const runningNow = !!exec && isRunningPhase(exec.phase);
     els.killExecution.hidden = false;
     els.killExecution.disabled = !runningNow;
     if (!els.killExecution.dataset.baseTitle)
@@ -526,6 +536,12 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     if (exec.phase === "failed") {
       els.result.replaceChildren(
         el("p", "muted", `no result · the execution failed; the box above says why`),
+      );
+      return;
+    }
+    if (exec.phase === "stopped") {
+      els.result.replaceChildren(
+        el("p", "muted", "no result · a person stopped the execution before its last stage folded"),
       );
       return;
     }
@@ -633,6 +649,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
       : exec
         ? "no filesystem yet: the first stage has not folded"
         : "no execution";
+    const focusedPath = focusedDatum(els.files, "path");
     els.files.replaceChildren();
     if (!root) {
       els.files.append(
@@ -732,6 +749,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
       els.files.append(section);
     }
     renderPreview(state);
+    refocus(els.files, "path", focusedPath);
   }
 
   /** A click on a file: the row's class and the preview change; the list stays as it is. */
@@ -1029,6 +1047,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     els.ledgerNote.textContent = exec
       ? `The control plane holds hashes, not bytes: for each of the ${settled} settled ${settled === 1 ? "task" : "tasks"} of stage ${exec.stage} it keeps a 64-hex output hash; the bytes live in ${store ? "the store behind the CDN" : "this page's demo store"} and are fetched by hash. The newest ${Math.min(rows.length, 8) || ""} settled:`
       : "The control plane holds hashes, not bytes. No execution is running, so there is nothing settled to list.";
+    const focusedTask = focusedDatum(els.ledger, "task");
     els.ledger.replaceChildren(
       ...rows.map((r) => {
         const tr = el("tr");
@@ -1087,6 +1106,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
       tr.append(td);
       els.ledger.append(tr);
     }
+    refocus(els.ledger, "task", focusedTask);
   }
 
   // ---- glue -----------------------------------------------------------------------------------
@@ -1159,3 +1179,16 @@ export function gridIndexAt(n: number, width: number, x: number, y: number): num
 }
 
 export type { TaskState };
+
+/** The `data-<key>` of the focused element inside `root`, so a rebuild can hand focus back (WP8.3). */
+function focusedDatum(root: HTMLElement, key: string): string | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
+  return active.closest<HTMLElement>(`[data-${key}]`)?.dataset[key] ?? null;
+}
+
+/** Give focus back to the row a keyboard user was on before the list was rebuilt (WP8.3). */
+function refocus(root: HTMLElement, key: string, value: string | null): void {
+  if (value === null) return;
+  root.querySelector<HTMLElement>(`[data-${key}="${value}"]`)?.focus();
+}
