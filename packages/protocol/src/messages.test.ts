@@ -306,3 +306,18 @@ describe("manifests", () => {
     ).toBe(false);
   });
 });
+
+describe("presign bounds (WP8.1)", () => {
+  test("an item over the output cap, or more than 64 items, does not parse", () => {
+    const hash = "a".repeat(64);
+    const one = (size: number, n = 1) => ({
+      t: "presign",
+      v: PROTOCOL_VERSION,
+      gen: 1,
+      items: Array.from({ length: n }, () => ({ hash, size })),
+    });
+    expect(nodeToControlPlane.safeParse(one(LIMITS.maxOutputBytes)).success).toBe(true);
+    expect(nodeToControlPlane.safeParse(one(LIMITS.maxOutputBytes + 1)).success).toBe(false);
+    expect(nodeToControlPlane.safeParse(one(1, 65)).success).toBe(false);
+  });
+});

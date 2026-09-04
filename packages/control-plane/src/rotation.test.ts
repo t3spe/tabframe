@@ -11,6 +11,7 @@ import { type ControlPlane, createControlPlane } from "./server.ts";
 const SECRET = "fleet-secret-for-the-test";
 const imageConfig: Config = {
   mode: "image",
+  allowOpenFleetRoutes: true,
   publicPort: 0,
   privatePort: 0,
   host: "127.0.0.1",

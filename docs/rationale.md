@@ -71,8 +71,8 @@ of the design record is the honest history.
 - **One active control plane, not consensus.** Authority is a generation stamp plus a pointer;
   handover is a five-step rotation; recovery is a snapshot at most five seconds stale. The cost is
   a window in which the machine has no control plane — measured at 8.4 s of churn per rotation —
-  and a single point of failure I state rather than hide. Raft over the ledger is the first
-  extension, and I did not build it.
+  and a single point of failure I state rather than hide. Raft over the ledger is the second
+  extension in the list below, and I did not build it.
 - **Hashes only in the control plane.** Forced by the platform: a MicroVM endpoint's bandwidth is
   capped by its size, so result bytes could not pass through it even if the design had wanted
   them to. The consequence is a control plane that can be snapshotted in a kilobyte-per-task and

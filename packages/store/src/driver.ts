@@ -17,7 +17,19 @@ export interface StoreDriver {
   urlFor(hash: string): string;
   presign(items: PresignItem[]): Promise<PresignedUpload[]>;
   exists(hash: string): Promise<boolean>;
-  get(hash: string): Promise<Uint8Array | null>;
+  /**
+   * Fetch a blob by hash; `maxBytes` refuses a larger one before it is read (WP8.1), so a hash an
+   * untrusted party named cannot make the control plane load a gigabyte.
+   */
+  get(hash: string, maxBytes?: number): Promise<Uint8Array | null>;
   /** The control plane's own writes: manifests, seeded bundles. Returns the hash. */
   put(bytes: Uint8Array): Promise<string>;
+}
+
+/** Thrown by `get` when the blob is larger than the caller allows. */
+export class BlobTooLarge extends Error {
+  constructor(hash: string, size: number, maxBytes: number) {
+    super(`blob ${hash.slice(0, 12)}… is ${size} bytes, cap ${maxBytes}`);
+    this.name = "BlobTooLarge";
+  }
 }

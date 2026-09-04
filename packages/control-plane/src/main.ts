@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { configFromEnv } from "./config.ts";
 import { log } from "./log.ts";
 import { createControlPlane } from "./server.ts";
@@ -20,6 +21,17 @@ async function shutdown(signal: string): Promise<void> {
   log("shutdown", { signal });
   await cp.close();
   process.exit(0);
+}
+// The build stamp the image was staged with (WP8.1), for /health.
+try {
+  if (!process.env.TABFRAME_BUILD) {
+    const stamp = JSON.parse(readFileSync(new URL("./build.json", import.meta.url), "utf8")) as {
+      sha?: string;
+    };
+    if (stamp.sha) process.env.TABFRAME_BUILD = stamp.sha;
+  }
+} catch {
+  // no stamp beside the entry: a local run
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));

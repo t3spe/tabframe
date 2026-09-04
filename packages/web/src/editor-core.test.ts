@@ -259,5 +259,8 @@ describe("examples and the guide (WP6.6)", () => {
     expect(md).toContain("# @tabframe/sdk-as");
     expect(md).toContain("## Writing a program");
     expect(md).toContain("fs.read");
+    // The repository-only sections stay out of the page (WP8.1).
+    expect(md).not.toContain("## Compiling");
+    expect(md).not.toContain("## Tooling");
   });
 });

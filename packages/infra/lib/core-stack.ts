@@ -35,7 +35,11 @@ export class CoreStack extends cdk.Stack {
 
     this.artifactsBucket = privateBucket("Artifacts");
 
+    // The blob and snapshot buckets outlive the stack (WP8.1): a logical-id change or a property
+    // that forces replacement must not empty a year of content-addressed blobs the ledger names.
     this.blobBucket = privateBucket("Blobs", {
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
       lifecycleRules: [{ id: "expire-one-year", expiration: cdk.Duration.days(365) }],
       cors: [
         {
@@ -51,13 +55,59 @@ export class CoreStack extends cdk.Stack {
     });
 
     this.snapshotBucket = privateBucket("Snapshots", {
-      lifecycleRules: [{ id: "expire-one-day", expiration: cdk.Duration.days(1) }],
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
+      // Generation snapshots expire after a day; `latest.json.gz` is the heal's fallback and stays
+      // (WP8.1: the rule without a prefix deleted it too, so a heal after a quiet day would have
+      // started from an empty ledger).
+      lifecycleRules: [{ id: "expire-one-day", prefix: "g", expiration: cdk.Duration.days(1) }],
     });
 
     this.webBucket = privateBucket("Web");
 
     const cf = cdk.aws_cloudfront;
     const origins = cdk.aws_cloudfront_origins;
+    // Response headers (WP8.1): the page gets a content-security policy and the usual hardening;
+    // a blob is anyone's bytes on the page's own origin, so it is never sniffed into a document and
+    // never rendered — a navigation to it downloads.
+    const pageHeaders = new cf.ResponseHeadersPolicy(this, "PageHeaders", {
+      securityHeadersBehavior: {
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: cf.HeadersFrameOption.DENY, override: true },
+        referrerPolicy: {
+          referrerPolicy: cf.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+          override: true,
+        },
+        strictTransportSecurity: {
+          accessControlMaxAge: cdk.Duration.days(365),
+          includeSubdomains: true,
+          override: true,
+        },
+        contentSecurityPolicy: {
+          contentSecurityPolicy: [
+            "default-src 'self' https: wss: data: blob:",
+            "script-src 'self' 'wasm-unsafe-eval' blob:",
+            "style-src 'self' 'unsafe-inline'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "frame-ancestors 'none'",
+          ].join("; "),
+          override: true,
+        },
+      },
+    });
+    const blobHeaders = new cf.ResponseHeadersPolicy(this, "BlobHeaders", {
+      securityHeadersBehavior: {
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: cf.HeadersFrameOption.DENY, override: true },
+      },
+      customHeadersBehavior: {
+        customHeaders: [
+          { header: "Content-Disposition", value: "attachment", override: true },
+          { header: "Content-Security-Policy", value: "sandbox", override: true },
+        ],
+      },
+    });
     this.distribution = new cf.Distribution(this, "Distribution", {
       comment: "Tabframe: page and content-addressed blob store",
       defaultRootObject: "index.html",
@@ -67,6 +117,7 @@ export class CoreStack extends cdk.Stack {
         origin: origins.S3BucketOrigin.withOriginAccessControl(this.webBucket),
         viewerProtocolPolicy: cf.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cf.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy: pageHeaders,
         compress: true,
       },
       additionalBehaviors: {
@@ -75,6 +126,7 @@ export class CoreStack extends cdk.Stack {
           viewerProtocolPolicy: cf.ViewerProtocolPolicy.HTTPS_ONLY,
           allowedMethods: cf.AllowedMethods.ALLOW_GET_HEAD,
           cachePolicy: cf.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: blobHeaders,
           compress: false,
         },
       },

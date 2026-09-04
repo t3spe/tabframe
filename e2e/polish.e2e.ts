@@ -33,8 +33,9 @@ test("demo: legend, flash log, throughput, spawn hint, and the ledger explain th
   const hint = page.locator("#spawnHint");
   await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
   await expect(hint).toHaveAttribute("data-default", /^\d+$/);
-  await expect(hint).toContainText(/This browser reports \d+ cores?/);
-  await expect(hint).toContainText("share those cores");
+  // In the demo the nodes are scripted, and the hint says so (WP8.1); the live page counts cores.
+  await expect(hint).toContainText(/Demo: the nodes are scripted inside this page/);
+  await expect(hint).toContainText("open the live address to lend real cores");
   await waitPaused(page);
 
   // The legend names every colour and both overlays.

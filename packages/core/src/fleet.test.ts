@@ -92,8 +92,14 @@ describe("the cloud-core fleet", () => {
     ]);
     expect(h.ledger.cores.has("microvm-a")).toBe(false);
     expect(h.ledger.cores.has("microvm-b")).toBe(true);
+    // The replacement is asked for in the same tick and counted until it is acknowledged (WP8.1):
+    // a slow RunMicrovm used to be asked twice, a tick apart.
+    expect(kinds(effects)).toContain("launchCore");
     h.advance(CORE_LAUNCH_GAP_MS);
-    expect(kinds(h.tick())).toContain("launchCore");
+    expect(kinds(h.tick())).not.toContain("launchCore");
+    h.event({ kind: "coreLaunched", microvmId: "microvm-c" });
+    expect(h.ledger.cores.size).toBe(2);
+    expect(h.ledger.meta.coreLaunches).toEqual([]);
   });
 
   test("an adopted ledger's cores get the grace from the adoption, not from their launch", () => {

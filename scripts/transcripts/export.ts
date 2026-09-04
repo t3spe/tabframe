@@ -9,6 +9,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { exportTranscript, type Summary } from "../../packages/dev/src/transcripts.ts";
 
+// The export never runs without the operator's own scrub words (WP8.1): the built-in patterns
+// mask account ids, endpoints, and tokens, but a surname or a domain is only known to the
+// operator. `--allow-no-scrub-words` is the explicit way past this.
+if (!process.env.TABFRAME_SCRUB_WORDS && !process.argv.includes("--allow-no-scrub-words")) {
+  console.error(
+    "[transcripts] TABFRAME_SCRUB_WORDS is not set (a comma-separated list in .env.local); refusing to export. Pass --allow-no-scrub-words to override.",
+  );
+  process.exit(2);
+}
+
 const root = path.resolve(import.meta.dirname, "../..");
 const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf(name);

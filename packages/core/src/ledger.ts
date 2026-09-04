@@ -52,6 +52,10 @@ export interface ConnState {
   openedAt: number;
   /** Token bucket for the per-connection message rate. */
   bucket: { tokens: number; refilledAt: number };
+  /** A second bucket for results and presigns, which answer assignments (WP8.1). */
+  solicited: { tokens: number; refilledAt: number };
+  /** Bytes this connection has been given presigned uploads for; a budget, not a meter (WP8.1). */
+  presignedBytes: number;
 }
 
 export type AttemptOutcome = "running" | "result" | "released" | "cancelled" | "error";
@@ -151,6 +155,8 @@ export interface ExecutionRecord {
   inheritedFrom: string | null;
   failure: string | null;
   counters: Counters;
+  /** When the pending store effect was issued, null while none is outstanding (WP8.1). */
+  waitingSince: number | null;
 }
 
 /**
@@ -222,6 +228,16 @@ export interface Meta {
    * touching the page. Survives a rotation.
    */
   loopYielded: boolean;
+  /**
+   * When the handover began (WP8.1): a control plane left `handing-over` without a drain for
+   * longer than the lease goes back to `active`, so a rotation that died between handover and
+   * promote does not leave the machine dark for an hour.
+   */
+  handoverAt: number | null;
+  /** Core launches asked for and not yet acknowledged, by time (WP8.1): counted against the desired size. */
+  coreLaunches: number[];
+  /** The last time each destructive control was applied, machine-wide (WP8.1): a short cooldown. */
+  lastControlAt: Record<string, number>;
   /**
    * The observer connection holding the machine paused (WP6.4): nothing is assigned or started
    * while it is set; in-flight tasks finish. Cleared by resume, by the holder's socket going away,
@@ -310,6 +326,9 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       loopPausedUntil: 0,
       loopStopped: false,
       loopYielded: false,
+      handoverAt: null,
+      coreLaunches: [],
+      lastControlAt: {},
       pausedBy: null,
     },
     config: {

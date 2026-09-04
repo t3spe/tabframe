@@ -9,6 +9,8 @@ import { broadcast } from "./observers.ts";
 export const DESIRED_CORES = 2;
 /** The account allows one RunMicrovm a second, so cores come up one at a time. */
 export const CORE_LAUNCH_GAP_MS = 1_000;
+/** A launch asked for and not acknowledged within this long is forgotten (WP8.1). */
+export const CORE_LAUNCH_ACK_MS = 60_000;
 /** A core is replaced before it reaches its four-hour ceiling. */
 export const CORE_MAX_AGE_MS = 3.5 * 60 * 60 * 1_000;
 /**
@@ -81,18 +83,36 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
       effects.push({ kind: "terminateCore", microvmId: core.microvmId });
     }
   }
+  // Launches asked for and not yet acknowledged count towards the desired size (WP8.1): with a
+  // half-second tick and a one-second gap, an API that takes longer than that used to be asked
+  // twice. An acknowledgement that never comes expires after a minute.
+  ledger.meta.coreLaunches = ledger.meta.coreLaunches.filter((t) => now - t < CORE_LAUNCH_ACK_MS);
   if (
-    ledger.cores.size < DESIRED_CORES &&
+    ledger.cores.size + ledger.meta.coreLaunches.length < DESIRED_CORES &&
     now - ledger.meta.lastCoreLaunchAt >= CORE_LAUNCH_GAP_MS
   ) {
     ledger.meta.lastCoreLaunchAt = now;
+    ledger.meta.coreLaunches.push(now);
     effects.push({ kind: "launchCore" });
+  }
+  // More cores than wanted (an acknowledgement after its expiry, an adopted ledger's extras): the
+  // youngest unlinked ones go.
+  if (ledger.cores.size > DESIRED_CORES) {
+    const surplus = [...ledger.cores.values()]
+      .filter((c) => c.nodeId === null)
+      .sort((a, b) => b.launchedAt - a.launchedAt)
+      .slice(0, ledger.cores.size - DESIRED_CORES);
+    for (const core of surplus) {
+      ledger.cores.delete(core.microvmId);
+      effects.push({ kind: "terminateCore", microvmId: core.microvmId });
+    }
   }
   return effects;
 }
 
 /** The process launched a core: remember it so a handover carries it (design §6.8). */
 export function coreLaunched(ledger: Ledger, microvmId: string, now: number): Effect[] {
+  ledger.meta.coreLaunches.shift(); // the oldest launch asked for is the one answered
   if (!ledger.cores.has(microvmId)) {
     ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId: null, unlinkedAt: now });
   }

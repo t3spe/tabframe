@@ -11,6 +11,7 @@ import { LATEST_KEY, snapshotKey } from "./snapshotter.ts";
 const H = (c: string) => c.repeat(64);
 const imageConfig: Config = {
   mode: "image",
+  allowOpenFleetRoutes: true,
   publicPort: 0,
   privatePort: 0,
   host: "127.0.0.1",

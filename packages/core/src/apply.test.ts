@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
 import fc from "fast-check";
-import { apply } from "./apply.ts";
+import { apply, SOLICITED_RATE } from "./apply.ts";
 import type { Effect } from "./events.ts";
 import { createLedger, type Ledger } from "./ledger.ts";
 
@@ -226,12 +226,13 @@ describe("refusals", () => {
     }
   });
 
-  test("results and presigns are paced by assignment, not by the bucket", () => {
-    // A fast node on small tiles reports dozens of results a second, each after a presign.
+  test("results and presigns have a bucket of their own: a burst passes, a flood does not (WP8.1)", () => {
+    // A fast node on small tiles reports dozens of results a second, each after a presign; the
+    // solicited bucket is wide enough for that and bounded for a node that floods presigns.
     const h = harness();
     const hash = "a".repeat(64);
     h.hello("c1");
-    for (let i = 0; i < 4 * LIMITS.nodeMessagesPerSecond; i++) {
+    for (let i = 0; i < SOLICITED_RATE / 2; i++) {
       expect(closes(h.send("c1", { t: "presign", items: [{ hash, size: 1 }] }))).toEqual([]);
       const result = {
         t: "result",
@@ -246,10 +247,15 @@ describe("refusals", () => {
       expect(closes(h.send("c1", result))).toEqual([]);
     }
     expect(h.ledger.nodes.size).toBe(1);
+    let flooded: Effect | undefined;
+    for (let i = 0; i < SOLICITED_RATE + 5 && !flooded; i++)
+      flooded = closes(h.send("c1", { t: "presign", items: [{ hash, size: 1 }] }))[0];
+    expect(flooded).toMatchObject({ code: CLOSE.rateLimited });
+    h.hello("c1b");
     // Unsolicited traffic is still limited after that burst.
     let closed: Effect | undefined;
     for (let i = 0; i < LIMITS.nodeMessagesPerSecond + 5 && !closed; i++) {
-      closed = closes(h.heartbeat("c1"))[0];
+      closed = closes(h.heartbeat("c1b"))[0];
     }
     expect(closed).toMatchObject({ code: CLOSE.rateLimited });
     // Observers keep their own budget.

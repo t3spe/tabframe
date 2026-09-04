@@ -7,6 +7,8 @@ import type { ImageStack } from "./image-stack.ts";
 import { anyImageArn, functionArn, NAMES, parameterArn, ruleArn } from "./names.ts";
 
 export interface FleetStackProps extends cdk.StackProps {
+  /** Where the alarms mail (WP8.1); the budget address, when configured. */
+  alarmEmail?: string;
   core: CoreStack;
   image: ImageStack;
   /** Directory holding packages/fleet (for the Lambda entry files). */
@@ -37,8 +39,17 @@ export class FleetStack extends cdk.Stack {
     };
 
     const pointerArn = parameterArn(this, NAMES.pointerParam);
+    // Launches are allowed from the Tabframe image only (WP8.1); the other MicroVM actions keep
+    // the image-wide resource until the API's resource model for a MicroVM is pinned down.
     const microvmActionsOnImages = (actions: string[]) =>
-      new iam.PolicyStatement({ actions, resources: [anyImageArn(this)] });
+      new iam.PolicyStatement({
+        actions,
+        resources: [
+          actions.length === 1 && actions[0] === "lambda:RunMicrovm"
+            ? image.imageArn
+            : anyImageArn(this),
+        ],
+      });
 
     // session references rotate by its fixed name, not by resource, so the graph stays acyclic:
     // rotate needs the session URL, session needs only rotate's ARN.
@@ -147,8 +158,47 @@ export class FleetStack extends cdk.Stack {
       schedule: cdk.aws_events.Schedule.rate(cdk.Duration.hours(1)),
       // Created disabled so a deploy never starts rotating on its own; `up` enables it (D20).
       enabled: false,
-      targets: [new cdk.aws_events_targets.LambdaFunction(this.rotate)],
+      targets: [
+        new cdk.aws_events_targets.LambdaFunction(this.rotate, {
+          // A rotation that throws is retried twice by the platform, within the hour (WP8.1).
+          retryAttempts: 2,
+          maxEventAge: cdk.Duration.minutes(30),
+        }),
+      ],
     });
+    // Alarms (WP8.1): a rotation or a session call that fails is a message to the operator, not
+    // a line in a log nobody reads. The topic mails the budget address when one is configured.
+    const alarms = new cdk.aws_sns.Topic(this, "Alarms", { topicName: NAMES.alarmTopic });
+    if (props.alarmEmail)
+      alarms.addSubscription(new cdk.aws_sns_subscriptions.EmailSubscription(props.alarmEmail));
+    const alarmOn = (id: string, metric: cdk.aws_cloudwatch.Metric, description: string) => {
+      const alarm = new cdk.aws_cloudwatch.Alarm(this, id, {
+        alarmDescription: description,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          cdk.aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cdk.aws_cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      alarm.addAlarmAction(new cdk.aws_cloudwatch_actions.SnsAction(alarms));
+      return alarm;
+    };
+    alarmOn(
+      "RotateErrors",
+      this.rotate.metricErrors({ period: cdk.Duration.minutes(5) }),
+      "Tabframe: the rotate function failed (a rotation, heal, or up did not complete)",
+    );
+    alarmOn(
+      "SessionErrors",
+      this.session.metricErrors({ period: cdk.Duration.minutes(5) }),
+      "Tabframe: the session function failed (visitors cannot find the control plane)",
+    );
+    alarmOn(
+      "RotateThrottles",
+      this.rotate.metricThrottles({ period: cdk.Duration.minutes(5) }),
+      "Tabframe: the rotate function was throttled (the account's Lambda pool is busy)",
+    );
     // The rule ARN comes from the fixed name: referencing the Rule construct here would close a
     // cycle (function → policy → rule → function).
     this.rotate.addToRolePolicy(

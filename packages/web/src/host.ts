@@ -4,8 +4,10 @@
 // programs, queue, the stage strip, the result of a bars or text program, files, task detail, the
 // ledger; and the polish of WP4.1: flashes with a log of what just moved, a legend, the rotation
 // and sleep banners, a throughput chart, and a spawn hint sized to this browser's cores.
+
 import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
+import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { connectionCopy, fmtCountdown, machineCopy, ROTATING_DETAIL } from "./banners.ts";
 import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
 import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
@@ -92,6 +94,7 @@ const panelMode = ((p) => (p && p in PANELS ? (p as keyof typeof PANELS) : null)
 );
 if (panelMode) {
   document.body.dataset.panel = panelMode;
+  for (const el of document.querySelectorAll<HTMLElement>(".panel-only")) el.hidden = false;
   document.getElementById(PANELS[panelMode])?.classList.add("panel-full");
   document.title = `Tabframe · ${panelMode}`;
 }
@@ -181,8 +184,8 @@ const spawnDefault = Math.max(1, cores - 1);
 els.spawnCount.textContent = String(spawnDefault);
 els.spawnHint.dataset.cores = String(cores);
 els.spawnHint.dataset.default = String(spawnDefault);
-els.spawnHint.textContent = `This browser reports ${cores} ${cores === 1 ? "core" : "cores"}; spawn ${spawnDefault} keeps one for the page. Nodes in this tab share those cores, so spawning more than ${spawnDefault} only slices them thinner — another tab on another device adds real ones.`;
-els.spawnN.title = `Spawn ${spawnDefault} nodes: one per core this browser reports, minus one for the page`;
+els.spawnHint.textContent = `This browser reports ${cores} CPU ${cores === 1 ? "thread" : "threads"}; spawn ${spawnDefault} keeps one for the page. Nodes in this tab share those cores, so spawning more than ${spawnDefault} only slices them thinner — another tab on another device adds real ones.`;
+els.spawnN.title = `Spawn ${spawnDefault} nodes: one per CPU thread this browser reports, minus one for the page`;
 if (observeOnly && !demoMode) {
   // An observer lends no cores (WP7.7, rule R3): the spawn controls stay, greyed, and say why.
   els.spawnHint.textContent =
@@ -424,7 +427,21 @@ function setMachine(state: MachineState, detail?: string): void {
     els.bannerTitle.textContent = copy.title;
     els.bannerBody.textContent = copy.body;
     els.bannerHint.textContent = copy.hint;
-    if (state === "outdated") setTimeout(() => location.reload(), 1_500);
+    if (state === "outdated") {
+      // One reload, not a loop (WP8.1): a stale bundle the cache keeps serving would reload into
+      // itself every second and a half; after one try the banner asks for a hard refresh.
+      let reloaded = false;
+      try {
+        reloaded = sessionStorage.getItem("tabframe-reloaded") === PROTOCOL_VERSION.toString();
+        if (!reloaded) sessionStorage.setItem("tabframe-reloaded", PROTOCOL_VERSION.toString());
+      } catch {
+        // storage may be off; reload once anyway
+      }
+      if (!reloaded) setTimeout(() => location.reload(), 1_500);
+      else
+        els.bannerHint.textContent =
+          "Reloaded once already: hard-refresh this page (Shift+reload) to fetch the current bundle.";
+    }
   }
   for (const [button] of controlButtons) {
     button.disabled = state !== "live";
@@ -898,6 +915,16 @@ function closeLocal(id: number): void {
 
 els.spawn1.onclick = () => spawn(1);
 els.spawnN.onclick = () => spawn(spawnDefault);
+if (demoMode) {
+  // The demo's cluster is scripted inside the page (WP8.1): a real node here would try to reach a
+  // machine that does not exist and say "connecting" for ever.
+  els.spawnHint.textContent =
+    "Demo: the nodes are scripted inside this page; open the live address to lend real cores.";
+  for (const b of [els.spawn1, els.spawnN, els.killMine]) {
+    b.disabled = true;
+    b.title = `${b.title} — the demo's nodes are scripted; open the live address to lend cores`;
+  }
+}
 els.killMine.onclick = () => {
   for (const id of [...locals.keys()]) closeLocal(id);
 };
@@ -964,15 +991,17 @@ for (const [button, control] of controlButtons) {
 els.redundancy.onchange = () => issue({ t: "setRedundancy", on: els.redundancy.checked });
 
 /** The files tab can open with a file and a root pinned by its query (WP6.8). */
+const HASH_RE = /^[0-9a-f]{64}$/;
 const openFile =
-  panelMode === "files" && params.get("file") && params.get("path")
+  panelMode === "files" && HASH_RE.test(params.get("file") ?? "") && params.get("path")
     ? {
         hash: params.get("file") as string,
         path: params.get("path") as string,
         size: Number(params.get("size") ?? "0") || 0,
       }
     : null;
-const openRoot = panelMode === "files" ? params.get("root") : null;
+const openRoot =
+  panelMode === "files" && HASH_RE.test(params.get("root") ?? "") ? params.get("root") : null;
 /** A panel tab can pause its own updates so a reader can inspect it (WP6.8). */
 let panelFrozen = false;
 let panelFrozenMissed = 0;
@@ -1045,6 +1074,15 @@ async function main(): Promise<void> {
   sessionUrl = new URL(config.sessionUrl, location.origin).toString();
   client = new ObserverClient(sessionUrl, {
     onState: setMachine,
+    onDropped: (count) => {
+      transientNotice = `${count === 1 ? "a click" : `${count} clicks`} made during the reconnect ${count === 1 ? "was" : "were"} not sent; try again`;
+      if (transientTimer) clearTimeout(transientTimer);
+      transientTimer = setTimeout(() => {
+        transientNotice = null;
+        scheduleRender();
+      }, 6_000);
+      scheduleRender();
+    },
     onCluster,
     onSession: (session) => {
       storeBase = session.storeBase;

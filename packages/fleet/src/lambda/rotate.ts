@@ -29,7 +29,7 @@ async function latestSnapshotKey(): Promise<string | null> {
   }
 }
 
-export const handler = createRotateHandler({
+const rotate = createRotateHandler({
   pointer: new SsmPointerStore(config.pointerParam),
   microvms,
   secrets: new SecretsManagerReader(),
@@ -40,3 +40,14 @@ export const handler = createRotateHandler({
   controlPlane: (secret) => new HttpControlPlaneClient({ microvms, secret }),
   latestSnapshotKey,
 });
+
+/**
+ * A rotation that failed is an invocation that failed (WP8.1): before, `{ action: "failed" }`
+ * returned as a success and the function's Errors metric never moved, so nothing could alarm.
+ * The rotation is idempotent, so the platform's retries are safe.
+ */
+export const handler = async (event?: unknown) => {
+  const result = await rotate(event);
+  if (result.action === "failed") throw new Error(`rotate failed: ${result.reason}`);
+  return result;
+};

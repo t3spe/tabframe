@@ -53,11 +53,15 @@ export class StoreClient {
         const p = byHash.get(it.hash);
         if (!p) throw new Error(`no presign for ${it.hash}`);
         if (p.url === null) return;
-        const res = await this.fetchImpl(p.url, {
-          method: "PUT",
-          headers: p.headers,
-          body: it.bytes as BodyInit,
-        });
+        // A transient failure is retried a few times (WP8.1): one S3 SlowDown must not end up as a
+        // program fault that fails everybody's frame.
+        const res = await this.withRetries(() =>
+          this.fetchImpl(p.url as string, {
+            method: "PUT",
+            headers: p.headers,
+            body: it.bytes as BodyInit,
+          }),
+        );
         if (!res.ok) throw new Error(`upload of ${it.hash} failed: ${res.status}`);
       }),
     );
@@ -68,9 +72,25 @@ export class StoreClient {
     const init: RequestInit = range
       ? { headers: { range: `bytes=${range.offset}-${range.offset + range.length - 1}` } }
       : {};
-    const res = await this.fetchImpl(this.urlFor(hash), init);
+    const res = await this.withRetries(() => this.fetchImpl(this.urlFor(hash), init));
     if (res.status === 404 || res.status === 403) return null;
     if (!res.ok && res.status !== 206) throw new Error(`fetch of ${hash} failed: ${res.status}`);
     return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** Three tries with a short backoff for network errors and 5xx / 429 answers (WP8.1). */
+  private async withRetries(attempt: () => Promise<Response>): Promise<Response> {
+    let last: unknown = null;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = await attempt();
+        if (res.status < 500 && res.status !== 429) return res;
+        last = new Error(`HTTP ${res.status}`);
+      } catch (err) {
+        last = err;
+      }
+      if (i < 2) await new Promise((r) => setTimeout(r, 250 * 2 ** i));
+    }
+    throw last instanceof Error ? last : new Error(String(last));
   }
 }

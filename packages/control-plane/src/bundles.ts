@@ -26,12 +26,16 @@ export type BundleResolution =
 /** Total bytes a bundle's own files may occupy, so an upload cannot fill the store on its own. */
 export const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
 
+/** What a launch may make the control plane read before it says no (WP8.1). */
+const BUNDLE_MANIFEST_CAP = 1024 * 1024;
+const PROGRAM_MANIFEST_CAP = 64 * 1024;
+
 export async function resolveBundle(
   store: StoreDriver,
   bundle: string,
   memoryPagesMax: number,
 ): Promise<BundleResolution> {
-  const manifestBytes = await store.get(bundle);
+  const manifestBytes = await store.get(bundle, BUNDLE_MANIFEST_CAP);
   if (!manifestBytes) return { ok: false, reason: "the bundle manifest is not in the store" };
   let fs: FsManifest;
   try {
@@ -63,7 +67,7 @@ export async function resolveBundle(
     }
   }
 
-  const programBytes = await store.get(manifestEntry.hash);
+  const programBytes = await store.get(manifestEntry.hash, PROGRAM_MANIFEST_CAP);
   if (!programBytes) return { ok: false, reason: "the program manifest is not in the store" };
   let manifest: ProgramManifest;
   try {
@@ -72,7 +76,7 @@ export async function resolveBundle(
     return { ok: false, reason: `the program manifest is invalid: ${short(err)}` };
   }
 
-  const wasm = await store.get(moduleEntry.hash);
+  const wasm = await store.get(moduleEntry.hash, LIMITS.maxModuleBytes);
   if (!wasm) return { ok: false, reason: "the module is not in the store" };
   const check = validateModuleBytes(wasm, { memoryPagesMax });
   if (!check.ok) return { ok: false, reason: check.reason };

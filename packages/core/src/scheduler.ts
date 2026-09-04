@@ -55,10 +55,28 @@ function freshNodeFree(ledger: Ledger, task: TaskRecord): boolean {
   return false;
 }
 
+/** The node gave this task up at its deadline once already. */
+function releasedBy(task: TaskRecord, nodeId: string): boolean {
+  return task.attempts.some((a) => a.nodeId === nodeId && a.outcome === "released");
+}
+
+/** Some other node with a free slot could take the task instead. */
+function otherNodeFree(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
+  for (const n of ledger.nodes.values()) {
+    if (n.nodeId === nodeId || n.commanded === "freeze" || n.inFlight.length >= LIMITS.maxInFlight)
+      continue;
+    if (!holds(task, n.nodeId) && !answered(task, n.nodeId)) return true;
+  }
+  return false;
+}
+
 function eligible(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
   if (holds(task, nodeId) || answered(task, nodeId)) return false;
   if (task.contestedRounds > 0 && reported(task, nodeId) && freshNodeFree(ledger, task))
     return false;
+  // Work a node released at its deadline goes to someone else while someone else is free (WP8.1):
+  // fill runs from the releasing node's own report, and would hand the task straight back.
+  if (releasedBy(task, nodeId) && otherNodeFree(ledger, task, nodeId)) return false;
   return true;
 }
 

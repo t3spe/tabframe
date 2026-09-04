@@ -98,7 +98,7 @@ describe("rotate handler", () => {
     ]);
     expect(run.params.idlePolicy).toEqual(CONTROL_PLANE_IDLE_POLICY);
     expect(run.params.maximumDurationInSeconds).toBe(CONTROL_PLANE_MAX_DURATION_SECONDS);
-    expect(run.params.clientToken).toBe("tabframe-cp-g2");
+    expect(run.params.clientToken).toMatch(/^tabframe-cp-g2-\d+$/); // per generation and hour (WP8.1)
 
     const payload = JSON.parse(run.params.runHookPayload) as ControlPlanePayload;
     expect(payload).toEqual({
@@ -150,12 +150,35 @@ describe("rotate handler", () => {
     expect(pointer.writes).toHaveLength(0);
   });
 
-  test("fails when the new control plane never reaches RUNNING before the deadline", async () => {
+  test("fails when the new control plane never reaches RUNNING before the deadline, and terminates it (WP8.1)", async () => {
     microvms.pendingPolls = 1000;
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer, { readyTimeoutMs: 5000 })();
     expect(result.action).toBe("failed");
     expect(pointer.writes).toHaveLength(0);
+    // The successor that never came up is not left running for hours, blocking every later try.
+    expect(microvms.terminated).toEqual([microvms.runs[0]?.microvmId ?? "?"]);
+    // And the client token carries the hour, so the next try is not resolved to the same VM.
+    expect(microvms.runs[0]?.params.clientToken).toMatch(/^tabframe-cp-g\d+-\d+$/);
+  });
+
+  test("a suspended control plane is left alone by the scheduled rule and rotated by an operator (WP8.1)", async () => {
+    microvms.add({ microvmId: "mvm-asleep", state: "SUSPENDED" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-asleep",
+      generation: 7,
+      updatedAt: new Date(clock.now() - 2 * 60 * 60_000).toISOString(),
+    });
+    const scheduled = await handler(pointer)({
+      source: "aws.events",
+      "detail-type": "Scheduled Event",
+    });
+    expect(scheduled).toEqual({ action: "skipped-suspended" });
+    expect(microvms.runs).toHaveLength(0);
+    const manual = await handler(pointer)();
+    expect(manual.action).toBe("rotated");
+    expect(microvms.runs).toHaveLength(1);
   });
 
   test("fails when the new control plane terminates during boot", async () => {
@@ -295,7 +318,8 @@ describe("rotation", () => {
     const result = await rotate(pointer)();
     expect(result.action).toBe("failed");
     expect(pointer.writes).toHaveLength(0);
-    expect(microvms.terminated).toEqual([]);
+    // The successor that never booted is cleaned up; the old control plane is not touched (WP8.1).
+    expect(microvms.terminated).toEqual(["mvm-1"]);
     expect(cp.calls).toEqual([]);
   });
 

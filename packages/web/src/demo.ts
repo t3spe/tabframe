@@ -253,6 +253,9 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   let gen = 7;
   let vnow = clock.now();
   let paused = false;
+  /** Stop and the editor's pause, as the demo answers them (WP8.1): the header reflects a click. */
+  let stopped = false;
+  let pausedByEditor = false;
   let timers = new Set<ReturnType<typeof setTimeout>>();
   let frame = 0;
   let executionCounter = 40;
@@ -372,6 +375,9 @@ export function startDemo(opts: DemoOptions): DemoHandle {
                 awake: !asleep,
                 reason: asleep ? DEMO_SLEEP_REASON : null,
                 redundancy,
+                stopped,
+                paused: pausedByEditor,
+                yielded: false,
                 nextRotationAt: vnow + 19 * 60_000,
                 uptimeMs: 41 * 60_000,
               },
@@ -397,6 +403,7 @@ export function startDemo(opts: DemoOptions): DemoHandle {
   // ---- executions ------------------------------------------------------------------------------
 
   const startNext = (): void => {
+    if (stopped) return; // held by Stop until Start (WP8.1)
     // A machine that went to sleep wakes for the next execution; its snapshot says so.
     if (asleep) {
       asleep = false;
@@ -1009,6 +1016,36 @@ export function startDemo(opts: DemoOptions): DemoHandle {
         redundancy = c.on;
         emit({ t: "controlApplied", op: "setRedundancy", nodeIds: [] });
         fill();
+        return;
+      case "stop": {
+        // Stop ends what runs and holds the loop until Start, in the demo as on the machine (WP8.1).
+        stopped = true;
+        if (execution) {
+          for (const h of timers) clearTimeout(h);
+          timers = new Set();
+          for (const t of tasks) t.running.clear();
+          emit({
+            t: "executionFailed",
+            executionId: execution.executionId,
+            reason: "stopped by a person",
+          });
+          execution = null;
+        }
+        emit({ t: "controlApplied", op: "stop", nodeIds: [] });
+        return;
+      }
+      case "start":
+        stopped = false;
+        emit({ t: "controlApplied", op: "start", nodeIds: [] });
+        if (!execution) after(400, startNext);
+        return;
+      case "pause":
+        pausedByEditor = true;
+        emit({ t: "controlApplied", op: "pause", nodeIds: [] });
+        return;
+      case "resume":
+        pausedByEditor = false;
+        emit({ t: "controlApplied", op: "resume", nodeIds: [] });
         return;
       case "launch": {
         // A launch from the programs panel: queue it, and run it next.

@@ -33,6 +33,11 @@ export function validateModuleBytes(
   if (!WebAssembly.validate(asSource(bytes))) {
     return { ok: false, reason: "not a valid WebAssembly module" };
   }
+  // One memory only (WP8.1): with multi-memory a module could declare a small first memory and
+  // grow an unbounded second one past the cap the design promises.
+  const memories = countMemories(bytes);
+  if (memories > 1)
+    return { ok: false, reason: `module declares ${memories} memories; one is allowed` };
   const memory = readMemoryLimits(bytes);
   if (!memory) return { ok: false, reason: "module declares no memory" };
   if (memory.shared) return { ok: false, reason: "shared memory is not allowed" };
@@ -83,6 +88,35 @@ export function validateCompiled(
  * Read the memory section's limits straight from the binary; the JS API does not expose them.
  * Returns null when the module defines no memory of its own.
  */
+/** How many memories the module's memory section declares (imported memories are refused by the allowlist). */
+export function countMemories(bytes: Uint8Array): number {
+  let pos = 8;
+  const leb = (): number => {
+    let result = 0;
+    let shift = 0;
+    for (;;) {
+      const b = bytes[pos++];
+      if (b === undefined) throw new RangeError("truncated");
+      result |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) return result >>> 0;
+      shift += 7;
+      if (shift > 35) throw new RangeError("bad LEB128");
+    }
+  };
+  try {
+    while (pos < bytes.length) {
+      const id = bytes[pos++];
+      const size = leb();
+      const end = pos + size;
+      if (id === 5) return leb();
+      pos = end;
+    }
+  } catch {
+    return 0;
+  }
+  return 0;
+}
+
 export function readMemoryLimits(bytes: Uint8Array): MemoryLimits | null {
   if (bytes.length < 8) return null;
   if (bytes[0] !== 0x00 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) return null;

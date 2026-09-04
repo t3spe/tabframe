@@ -1,12 +1,18 @@
 # Tabframe
 
 A fault-tolerant distributed computer whose cores are browser tabs and Firecracker microVMs,
-programmed with WebAssembly. Open the page and your tab is a core. Close it and the machine keeps
+programmed with WebAssembly. Every worker is a core — a thread in someone's tab, or one of the two
+MicroVMs in AWS, the *cloud cores*. Open the page and your tab is a core. Close it and the machine keeps
 computing, correctly. The control plane that schedules the work is itself replaced every hour, with
 the work in flight.
 
 Deployed: **https://d2w9z8juw4oo76.cloudfront.net** — the page lends one core when it opens, and
 shows the machine rendering a Mandelbrot frame with whoever else is there.
+
+**Try it, in five clicks.** Spawn 3 (the counters follow), kill half (tiles are taken back and finish
+elsewhere), redundancy on (the verified counter moves), editor ↗ (change `CYCLE`, compile, launch:
+your program goes ahead of the loop), the ledger tab (hashes, not bytes). `?observe` lends no cores,
+`?demo=1` runs a scripted cluster inside the page, and a rotation banner every hour is expected.
 
 ## What it is
 
@@ -16,7 +22,7 @@ bytes. Both execute on cores — the control plane runs no program code, not eve
 program's only view of the world is a per-execution filesystem of content-addressed blobs: it has
 no clock, no randomness, no network, and no failure type anywhere in its API.
 
-Two programs ship with the machine and go through the same path as anything you write in the
+Three programs ship with the machine and go through the same path as anything you write in the
 in-page editor: a distributed **Mandelbrot** render (640 tiles of 64×64 per frame, presets that
 advance while anyone watches) and a three-stage **word count** over *Moby-Dick* (map by byte range,
 reduce by partition, merge to a top-25). You can also compile your own: the editor holds the
@@ -82,7 +88,7 @@ rotation.
 - **Sandbox** (`packages/sandbox`): validation (five `tf` imports, four exports, a declared memory
   maximum), a fresh instance per task, filesystem glue, deadline kill.
 - **SDK** (`packages/sdk-as`) and **programs** (`programs/`): AssemblyScript mirrors of the ABI,
-  the two demo programs, goldens produced by single-node runs.
+  the demo programs, goldens produced by single-node runs.
 - **Web** (`packages/web`): the dashboard — verified tiles re-hashed before they are painted, the
   task grid, counters, cluster controls, the programs and files panels, the editor.
 - **Fleet** (`packages/fleet`) and **infra** (`packages/infra`): the session and rotate Lambda
@@ -105,7 +111,7 @@ Every milestone was verified against the deployed machine; the records are in `d
 | The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`m3-verification.md`](docs/m3-verification.md)) |
 | Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
 
-455 unit and integration tests (85 % line-coverage threshold on the core packages), 15 browser
+530 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
 tests in Playwright, and CI on every push with no AWS credentials.
 
 ## Limits, stated plainly
@@ -120,7 +126,7 @@ tests in Playwright, and CI on every push with no AWS credentials.
 - **One active control plane at a time.** Authority is a generation stamp and a pointer, not
   consensus. A control plane that dies without handing over is replaced from its last snapshot,
   at most five seconds stale, and idempotent tasks make that safe; a consensus control plane is the
-  first extension, not a feature.
+  an extension, not a feature (the second in the rationale's list; the client edge comes first).
 - **Programs are trusted to the extent the sandbox allows.** Five host imports, no clock, no
   randomness, no network, a memory maximum, a deadline, and byte caps on writes and logs. No
   capability model beyond that, and no K-way voting beyond two-way verification with a majority
@@ -179,10 +185,12 @@ left running all day, near zero suspended. The machine sleeps ten minutes after 
 leaves — cores terminated, automatic continuation paused — and wakes on the next visitor.
 
 **During the review period the machine stays up.** The public URL answers; while nobody
-watches, the machine sleeps (ten minutes), the control plane suspends (fifteen), and the platform
-terminates it after seven suspended hours, so an untouched machine converges to nothing running.
-The first visitor sees "starting" for the few seconds of a boot, the cores follow, and the loop
-resumes when the page is open. `mise run down` turns it off for good; `mise run up` brings it back.
+watches, the cores are terminated after ten minutes and the control plane suspends after fifteen.
+The hourly rotation leaves a suspended control plane alone (since WP8.1; before, it booted a fresh
+generation every hour of an idle night), so an untouched machine converges to one suspended
+MicroVM, which the platform terminates after seven suspended hours. The first visitor sees
+"starting" for the few seconds of a boot, the cores follow, the next hour rotates it, and the loop
+resumes while the page is open. `mise run down` turns it off for good; `mise run up` brings it back.
 
 ## Reading the repository
 
@@ -193,6 +201,10 @@ resumes when the page is open. `mise run down` turns it off for good; `mise run 
 | [`docs/implementation/`](docs/implementation/README.md) | one document per work package — what, how, why, evidence, drift, open items |
 | [`docs/m1-verification.md`](docs/m1-verification.md), [`m2`](docs/m2-verification.md), [`m3`](docs/m3-verification.md) | the runbook results against AWS |
 | [`docs/rationale.md`](docs/rationale.md) | the short design rationale the assignment asks for |
+| [`docs/runbook.md`](docs/runbook.md) | operating it: the mise tasks, what `/health` says, incidents and what they meant |
+| [`docs/walkthrough.md`](docs/walkthrough.md) | the page's contract: every screen, state, and control, checked by `e2e/walkthrough.e2e.ts` |
+| [`docs/feasibility-transformer.md`](docs/feasibility-transformer.md) | the small transformer on the cores: the assessment with measured numbers |
+| [`docs/transcripts/index.md`](docs/transcripts/index.md) | the build's session transcripts, scrubbed, one file per session |
 | [`docs/timelog.md`](docs/timelog.md) | time spent: developer time and total time, per session |
 
 ## License and attribution

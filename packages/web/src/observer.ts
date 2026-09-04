@@ -24,6 +24,8 @@ export type ControlRequest = Control extends infer C
   : never;
 
 export interface ObserverHandlers {
+  /** Controls held across a reconnect that were too old to send (WP8.1). */
+  onDropped?: (count: number) => void;
   onState(machine: MachineState, detail?: string): void;
   onCluster(state: ClusterState): void;
   onSession(session: Session & { kind: "on" }): void;
@@ -45,6 +47,8 @@ export const CONTROL_SPACING_MS = Math.ceil(1000 / (LIMITS.observerMessagesPerSe
  * machine that has been gone for longer is not (WP4.4: a demo run lost "kill half" this way).
  */
 export const CONTROL_HOLD_MS = 10_000;
+/** How often a page facing an off machine asks the session again (WP8.1). */
+export const OFF_POLL_MS = 15_000;
 /** A quiet refresh spreads the reconnects of many observers over this many milliseconds. */
 export const REFRESH_JITTER_MS = 4_000;
 
@@ -140,7 +144,10 @@ export class ObserverClient {
   private releaseHeld(): void {
     const now = Date.now();
     const fresh = this.held.filter((h) => now - h.at <= CONTROL_HOLD_MS);
+    const dropped = this.held.length - fresh.length;
     this.held = [];
+    // A click that waited longer than the hold is dropped, and said so (WP8.1, rule R2).
+    if (dropped > 0) this.handlers.onDropped?.(dropped);
     for (const h of fresh) {
       if (h.control.t === "setRedundancy") {
         this.state = withRedundancy(this.state, h.control.on);
@@ -220,13 +227,21 @@ export class ObserverClient {
     try {
       session = await fetchSession(this.sessionUrl, (url) => fetch(url, { cache: "no-store" }));
     } catch {
+      // A session that cannot be fetched is not a silent resubscribe any more (WP8.1): the page
+      // shows "connecting" instead of a live pill over stale numbers.
+      if (this.resubscribing) {
+        this.resubscribing = false;
+        this.handlers.onState("connecting");
+      }
       return this.later(this.backoff.next());
     }
     if (this.stopped) return;
     if (session.kind === "off") {
       this.off = true;
       this.held = [];
-      return this.handlers.onState("off");
+      this.handlers.onState("off");
+      // The banner says the page asks again on its own (WP8.1): it does, every fifteen seconds.
+      return this.later(OFF_POLL_MS);
     }
     this.off = false;
     if (session.kind === "starting") {
