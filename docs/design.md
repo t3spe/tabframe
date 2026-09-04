@@ -970,3 +970,8 @@ Dated deviations discovered while building, recorded before the code landed (pla
 - **2026-09-03 (WP7.3).** The programs panel no longer rebuilds its DOM on every event (§8.3): one
   row per program and one launch form per open program are kept and updated in place, so a person
   typing params keeps the caret; params are parsed on blur and on launch.
+
+- **2026-09-03 (WP7.4).** Files and ledger rows show their bytes in the page (§8.3): each panel tab
+  has a preview box that is always there, a click on a file name or a ledger row renders the bytes
+  by kind and changes only the row's class, and the store address is text with a small "raw ↗"
+  link. WP6.8's new-tab viewer stays behind a small arrow; nothing else opens a tab or downloads.

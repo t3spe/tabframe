@@ -93,13 +93,14 @@
       <p class="panel-explain">Every execution has a filesystem: a manifest listing each path with the hash and size of its bytes, itself a blob named by its hash — the <em>root</em> shown above. Stages fold their outputs into a new manifest (<code>/out/&lt;stage&gt;/&lt;task&gt;</code>) and a program's writes land beside them; the bundle's own files (<code>/program.wasm</code>, <code>/manifest.json</code>, anything under <code>/in/</code>) are always there. Click a path to fetch its bytes from the store by hash; nothing here passes through the control plane. This tab follows the running execution unless you browse another root.</p>
       <p class="muted small" id="filesNote">A filesystem is a manifest — path → hash and size — itself a blob named by its hash, the root. Click a file to fetch it from the store by hash; nothing here passed through the control plane.</p>
       <div id="files"></div>
-      <div id="filePreview" hidden></div>
+      <div id="filePreview" class="preview-box" hidden></div>
     </section>
     <section id="ledgerPanel">
       <h2>Ledger <a class="open-panel" href="/?observe&amp;panel=ledger" target="_blank" rel="noreferrer" title="Every settled task in its own tab">open ↗</a></h2>
       <p class="summary" id="ledgerSummary">hashes, not bytes — nothing settled yet</p>
       <p class="panel-explain">The ledger is what the control plane actually holds about finished work: for every settled task, the node that produced the accepted result, the 64-hex hash of the output, its size, and where the bytes live. The bytes themselves never pass through the control plane — a node uploads them to the store by hash and reports the hash; the dashboard fetches and re-hashes them before painting. A tick marks a task another node recomputed and agreed on. Newest first.</p>
       <p class="muted small" id="ledgerNote"></p>
+      <div id="ledgerPreview" class="preview-box" hidden></div>
       <table id="ledger" class="ledger">
         <thead><tr><th>task</th><th>node</th><th>output hash</th><th class="num">size</th><th>where</th></tr></thead>
         <tbody></tbody>

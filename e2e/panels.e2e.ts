@@ -266,16 +266,39 @@ test("demo: the ledger tab shows whole hashes and addresses, and can pause its u
   const hash =
     (await page.locator("#ledger tbody tr[data-hash] td.hash").first().textContent()) ?? "";
   expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  // A row shows its bytes in the page (WP7.4): the preview names the task and the hash and renders
+  // the tile; the store address stays text with a small raw link beside it.
+  await expect(page.locator("#ledgerPreview")).toContainText("Click a row");
+  await page.click("#ledger tbody tr[data-hash]");
+  await expect(page.locator("#ledgerPreview")).toContainText(hash, { timeout: 15_000 });
+  await expect(
+    page.locator("#ledgerPreview .tile-preview, #ledgerPreview .bars, #ledgerPreview .text-view"),
+  ).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator("#ledger tbody tr.selected")).toHaveCount(1);
+  expect(await page.locator("#ledger tbody tr[data-hash] td:nth-child(5) a").count()).toBe(0); // demo: no store address
 });
 
-test("demo: a file's name opens the file in its own tab, rendered, with the raw bytes a link away", async ({
+test("demo: a file's name shows the file in the page; the small arrow opens it in its own tab (WP7.4)", async ({
   page,
   context,
 }) => {
   test.setTimeout(150_000);
   await page.goto("/?demo=1&speed=12&program=wordcount&hold=1&panel=files");
   await waitHeld(page);
-  const link = page.locator('#files li[data-path="/out/2/0"] a.open-file');
+  // The preview box is there before anything is chosen, and explains itself.
+  await expect(page.locator("#filePreview")).toContainText("Click a file");
+  const row = page.locator('#files li[data-path="/out/2/0"]');
+  await row.evaluate((node) => {
+    (node as HTMLElement).dataset.marker = "same-node";
+  });
+  await row.locator(".open-file").click();
+  await expect(page.locator("#filePreview .bars .bar-row")).toHaveCount(25, { timeout: 30_000 });
+  await expect(page.locator("#filePreview")).toContainText("/out/2/0");
+  await expect(row).toHaveClass(/selected/);
+  await expect(row).toHaveAttribute("data-marker", "same-node"); // the list was not rebuilt
+  expect(context.pages().length).toBe(1); // nothing opened
+  // The arrow is the way to a tab of its own, pinned on the file.
+  const link = row.locator("a.open-file-tab");
   await expect(link).toHaveAttribute("href", /panel=files/);
   await expect(link).toHaveAttribute("href", /path=%2Fout%2F2%2F0/);
   const opened = context.waitForEvent("page");
@@ -283,7 +306,6 @@ test("demo: a file's name opens the file in its own tab, rendered, with the raw 
   const viewer = await opened;
   await expect(viewer).toHaveURL(/panel=files/);
   await waitHeld(viewer);
-  await expect(viewer.locator("#filePreview")).toBeVisible();
   await expect(viewer.locator("#filePreview .bars .bar-row")).toHaveCount(25, { timeout: 30_000 });
   await expect(viewer.locator("#filePreview")).toContainText("/out/2/0");
   await viewer.close();
