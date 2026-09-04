@@ -18,9 +18,11 @@ import {
   hostCount,
   inFlightByNode,
   isFlashing,
+  isRunning,
   loopLabel,
   loopState,
   machineBanner,
+  machineSentence,
   type Pulse,
   planTask,
   progress,
@@ -94,6 +96,16 @@ if (panelMode) {
   document.title = `Tabframe · ${panelMode}`;
 }
 const observeOnly = params.has("observe") || demoMode || panelMode !== null;
+// A panel tab's way back (WP7.7, rule R7): the dashboard with this page's own query, minus the panel's.
+{
+  const back = document.querySelector<HTMLAnchorElement>("#backToDashboard");
+  if (back) {
+    const q = new URLSearchParams(location.search);
+    for (const k of ["panel", "root", "file", "path", "size"]) q.delete(k);
+    const query = q.toString();
+    back.href = query ? `/?${query}` : "/";
+  }
+}
 // The panels' "open ↗" links carry the page's own query, so a demo opens the same demo and a live
 // page opens an observer; only the panel differs (WP6.3, WP6.8).
 for (const a of document.querySelectorAll<HTMLAnchorElement>("a.open-panel")) {
@@ -171,6 +183,15 @@ els.spawnHint.dataset.cores = String(cores);
 els.spawnHint.dataset.default = String(spawnDefault);
 els.spawnHint.textContent = `This browser reports ${cores} ${cores === 1 ? "core" : "cores"}; spawn ${spawnDefault} keeps one for the page. Nodes in this tab share those cores, so spawning more than ${spawnDefault} only slices them thinner — another tab on another device adds real ones.`;
 els.spawnN.title = `Spawn ${spawnDefault} nodes: one per core this browser reports, minus one for the page`;
+if (observeOnly && !demoMode) {
+  // An observer lends no cores (WP7.7, rule R3): the spawn controls stay, greyed, and say why.
+  els.spawnHint.textContent =
+    "Observing: this tab lends no cores. Open the plain address (without ?observe) to lend some.";
+  for (const b of [els.spawn1, els.spawnN, els.killMine]) {
+    b.disabled = true;
+    b.title = `${b.title} — an observer lends no cores; open the plain address to lend some`;
+  }
+}
 els.legend.replaceChildren(
   ...LEGEND.map(([key, label]) => {
     const item = document.createElement("span");
@@ -405,9 +426,18 @@ function setMachine(state: MachineState, detail?: string): void {
     els.bannerHint.textContent = copy.hint;
     if (state === "outdated") setTimeout(() => location.reload(), 1_500);
   }
-  for (const [button] of controlButtons) button.disabled = state !== "live";
+  for (const [button] of controlButtons) {
+    button.disabled = state !== "live";
+    button.title = reasoned(button, state === "live" ? null : "not connected yet");
+  }
   els.redundancy.disabled = state !== "live";
   scheduleRender();
+}
+
+/** A control's tooltip: what it does, and — when it cannot apply now — why (WP7.7, rule R3). */
+function reasoned(el: HTMLElement, reason: string | null): string {
+  if (!el.dataset.baseTitle) el.dataset.baseTitle = el.title;
+  return reason ? `${el.dataset.baseTitle} — ${reason}` : el.dataset.baseTitle;
 }
 
 const fmtMs = (ms: number | null): string => (ms === null ? "—" : `${ms} ms`);
@@ -461,8 +491,26 @@ function render(state: ClusterState): void {
   // The banner over the stage: a rotation with its countdown, the machine going to or being asleep.
   renderMachineBanner(state, now);
   renderChart(state, now);
-  els.notice.hidden = transientNotice === null;
-  els.notice.textContent = transientNotice ?? "";
+  // The status line: a control's echo for a few seconds, else the sentence of state (WP7.7, R1).
+  const sentence = machineSentence(state, {
+    live: machine === "live",
+    demo: demoMode,
+    observe: observeOnly && !demoMode && panelMode === null,
+  });
+  const said = transientNotice ?? sentence;
+  els.notice.hidden = said === null;
+  els.notice.textContent = said ?? "";
+  els.notice.classList.toggle("sentence", transientNotice === null);
+  // Restart and skip need something running; they stay where they are and say why (R3).
+  const running = isRunning(state);
+  for (const id of ["#restart", "#skip"]) {
+    const b = $<HTMLButtonElement>(id);
+    b.disabled = machine !== "live" || !running;
+    b.title = reasoned(
+      b,
+      machine !== "live" ? "not connected yet" : running ? null : "nothing is running",
+    );
+  }
 
   // Execution row.
   if (exec) {
@@ -955,7 +1003,7 @@ const panels: Panels = mountPanels(document, {
 let storeBase: string | null = null;
 
 function openEditor(): Window | null {
-  return window.open("/editor.html", "tabframe-editor");
+  return window.open(demoMode ? "/editor.html?demo=1" : "/editor.html", "tabframe-editor");
 }
 els.openEditor.onclick = () => void openEditor();
 

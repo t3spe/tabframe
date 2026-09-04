@@ -22,6 +22,7 @@
   <button type="button" id="start" title="Lets the automatic loop run again" hidden>start</button>
   <button type="button" id="resume" title="Resumes the machine an editor tab holds paused" hidden>resume</button>
   <button type="button" id="freezePanel" class="panel-only" hidden title="Stop this tab from updating so you can read it; updates queue and apply on resume">pause updates</button>
+  <a id="backToDashboard" class="panel-only" href="/" hidden title="Back to the dashboard this tab was opened from">← dashboard</a>
   <button type="button" id="openEditor" title="Open the editor in its own tab; the machine pauses while it is open">editor ↗</button>
 </header>
 <div class="status-line"><div id="machineBanner" class="machine-banner" role="status" hidden></div><div id="notice" class="notice" hidden></div></div>
@@ -58,7 +59,7 @@
         <button type="button" id="resumeAll" title="Undo freeze and throttle">resume all</button>
         <button type="button" id="restart" title="Abandon the execution and relaunch the same program first">restart</button>
         <button type="button" id="skip" title="End the execution and start the next in the queue">skip</button>
-        <button type="button" id="killExecution" class="danger" title="Cancel the running execution" hidden>kill execution</button>
+        <button type="button" id="killExecution" class="danger" title="Cancel the running execution" disabled>kill execution</button>
         <span id="tileStats" class="muted" style="margin-left:auto; font-family:var(--mono); font-size:12px"></span>
       </div>
       <div class="toggle-row"><label title="Every task is computed twice on different nodes and the bytes must agree; a liar is caught"><input type="checkbox" id="redundancy"> redundancy: every task twice</label></div>

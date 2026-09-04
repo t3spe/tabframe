@@ -373,7 +373,10 @@ export function taskView(t: TaskRecord): TaskView {
     status: t.status,
     holders: t.attempts.filter((a) => a.outcome === "running").map((a) => a.nodeId),
     attempts: t.attempts.length,
-    output: t.accepted?.output ?? null,
+    // A failed task has no output (a trap's record carries an empty one), and the view's output is
+    // a hash or null: an empty string here once made every snapshot after a trap undecodable, so
+    // no fresh dashboard could subscribe until the execution was pruned (found by the walkthrough).
+    output: t.status === "done" && t.accepted?.output ? t.accepted.output : null,
     place: t.place,
     contested: t.contestedRounds > 0 || t.resolvedByVote,
   };

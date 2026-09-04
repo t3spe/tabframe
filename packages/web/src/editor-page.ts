@@ -32,14 +32,38 @@ function setMachine(state: MachineState, detail?: string): void {
   }
 }
 
-function resume(): void {
+function resume(why: "launch" | "close" = "close"): void {
   if (!paused) return;
   paused = false;
   client?.send({ t: "resume" });
-  pauseEl.textContent = "resumed";
+  pauseEl.textContent =
+    why === "launch"
+      ? "launched · the pause ended and the machine runs your program · keep editing, or close this tab"
+      : "resumed";
+}
+
+/** The demo's editor (WP7.7): the compile is real, there is no machine to pause or launch on. */
+function mainDemo(): void {
+  machineEl.textContent = "demo";
+  machineEl.className = "pill live";
+  pauseEl.textContent =
+    "demo · the editor compiles here, nothing is sent anywhere; launching needs the live machine (the plain address)";
+  const editor = mountEditor($<HTMLElement>("#editor"), {
+    connected: () => false,
+    storeBase: () => null,
+    presign: () => Promise.reject(new Error("demo: nothing is sent anywhere")),
+    launch: () => false,
+    subscribe: () => () => undefined,
+    demo: true,
+  });
+  $<HTMLElement>("#editor").addEventListener("editor-closed", () => {
+    setTimeout(() => window.close(), 150);
+  });
+  (window as unknown as { tabframe: unknown }).tabframe = { editor, client: null };
 }
 
 async function main(): Promise<void> {
+  if (new URLSearchParams(location.search).has("demo")) return mainDemo();
   const config = (await (await fetch("/config.json", { cache: "no-store" })).json()) as {
     sessionUrl: string;
   };
@@ -60,7 +84,7 @@ async function main(): Promise<void> {
       client ? client.presign(items) : Promise.reject(new Error("not connected")),
     launch: (bundle, params) => {
       const sent = client?.send({ t: "launch", bundle, params, inherit: null }) ?? false;
-      if (sent) resume(); // a launch is what the pause was for
+      if (sent) resume("launch"); // a launch is what the pause was for
       return sent;
     },
     subscribe: (listener) => {

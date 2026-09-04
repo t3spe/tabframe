@@ -18,6 +18,7 @@ import {
   loopLabel,
   loopState,
   machineBanner,
+  machineSentence,
   PULSE_CAP,
   planTask,
   programList,
@@ -1136,5 +1137,81 @@ describe("the header's one slot and the loop pill (WP7.1)", () => {
     expect(sc.state.machine?.stopped).toBe(true);
     sc.send({ t: "controlApplied", op: "start", nodeIds: [] });
     expect(sc.state.activity.at(-1)?.text).toBe("start: the loop runs again");
+  });
+});
+
+describe("the sentence of state (WP7.7, rule R1)", () => {
+  const machine = (flags: { stopped?: boolean; yielded?: boolean; paused?: boolean }) => ({
+    awake: true,
+    reason: null,
+    redundancy: false,
+    stopped: flags.stopped ?? false,
+    yielded: flags.yielded ?? false,
+    paused: flags.paused ?? false,
+    nextRotationAt: null,
+    uptimeMs: 0,
+  });
+  const exec = (phase: string, human: boolean, view = "tiles") =>
+    ({
+      executionId: "e3",
+      programName: "mandelbrot",
+      phase,
+      human,
+      view,
+      stage: 0,
+      stageName: "render",
+    }) as unknown as ClusterState["execution"];
+  type NodeValue = ClusterState["nodes"] extends Map<string, infer V> ? V : never;
+  const at = (
+    flags: { stopped?: boolean; yielded?: boolean; paused?: boolean },
+    e: ClusterState["execution"] = null,
+    nodes = 0,
+  ): ClusterState => {
+    const s = { ...emptyState(), machine: machine(flags), execution: e };
+    s.nodes = new Map(
+      Array.from({ length: nodes }, (_, i) => [
+        `n${i}`,
+        { nodeId: `n${i}` } as unknown as NodeValue,
+      ]),
+    );
+    return s;
+  };
+  const live = { live: true, demo: false, observe: false };
+
+  test("nothing while disconnected; the loop's frame, a person's launch, held, yielded, paused, failed, idle", () => {
+    expect(machineSentence(at({}), { ...live, live: false })).toBeNull();
+    expect(machineSentence(at({}, exec("running", false), 9), live)).toBe(
+      "rendering mandelbrot e3 · render · 9 nodes",
+    );
+    expect(machineSentence(at({}, exec("planning", true), 1), live)).toBe(
+      "running your mandelbrot e3 · planning · 1 node · the loop waits behind it",
+    );
+    expect(machineSentence(at({ stopped: true }), live)).toBe(
+      "stopped by you · nothing runs until Start · a launch of yours still runs at once",
+    );
+    expect(machineSentence(at({ yielded: true }, exec("done", true)), live)).toBe(
+      "your mandelbrot e3 is done · the result stays · the loop waits for Start or ten quiet minutes",
+    );
+    expect(machineSentence(at({ paused: true }, exec("running", false), 2), live)).toMatch(
+      /^paused · the editor tab is open/,
+    );
+    expect(machineSentence(at({}, exec("failed", false)), live)).toBe(
+      "mandelbrot e3 failed · the loop tries again in a moment",
+    );
+    expect(machineSentence(at({}, exec("failed", true)), live)).toBe(
+      "your mandelbrot e3 failed · the loop is free again",
+    );
+    expect(machineSentence(at({}), live)).toBe(
+      "idle · the loop starts a frame when someone watches",
+    );
+  });
+
+  test("the demo and an observer say what they are first", () => {
+    expect(machineSentence(at({}), { ...live, demo: true })).toMatch(
+      /^demo · a scripted cluster inside this page, nothing is sent anywhere · idle/,
+    );
+    expect(machineSentence(at({}), { ...live, observe: true })).toMatch(
+      /^observing · this tab lends no cores · idle/,
+    );
   });
 });
