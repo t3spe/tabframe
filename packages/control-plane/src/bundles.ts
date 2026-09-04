@@ -78,7 +78,8 @@ export async function resolveBundle(
 
   const wasm = await store.get(moduleEntry.hash, LIMITS.maxModuleBytes);
   if (!wasm) return { ok: false, reason: "the module is not in the store" };
-  const check = validateModuleBytes(wasm, { memoryPagesMax });
+  // Shape from the binary's sections, no compile on the control plane (WP8.2).
+  const check = validateModuleBytes(wasm, { memoryPagesMax }, { compile: false });
   if (!check.ok) return { ok: false, reason: check.reason };
 
   return { ok: true, bundle, module: moduleEntry.hash, manifest, files };

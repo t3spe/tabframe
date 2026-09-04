@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@tabframe/protocol";
 import {
+  checkShape,
   countMemories,
   readMemoryLimits,
+  readModuleShape,
   validateCompiled,
   validateModuleBytes,
 } from "../src/validate.ts";
@@ -19,7 +21,7 @@ describe("validateModuleBytes", () => {
       expect(v.memory.shared).toBe(false);
       expect(v.memory.memory64).toBe(false);
       expect(
-        WebAssembly.Module.exports(v.module)
+        WebAssembly.Module.exports(v.module as WebAssembly.Module)
           .map((e) => e.name)
           .sort(),
       ).toEqual(["alloc", "memory", "plan", "run"]);
@@ -40,7 +42,9 @@ describe("validateModuleBytes", () => {
     const v = validateModuleBytes(trap, limits);
     expect(v.ok).toBe(true);
     if (v.ok) {
-      const imports = WebAssembly.Module.imports(v.module).map((i) => `${i.module}.${i.name}`);
+      const imports = WebAssembly.Module.imports(v.module as WebAssembly.Module).map(
+        (i) => `${i.module}.${i.name}`,
+      );
       expect(imports).toContain("env.abort");
     }
   });
@@ -120,5 +124,44 @@ describe("one memory only (WP8.1)", () => {
     const v = validateModuleBytes(twoMemories, { memoryPagesMax: 1024 });
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reason).toMatch(/memories; one is allowed|not a valid WebAssembly module/);
+  });
+});
+
+describe("readModuleShape (WP8.2)", () => {
+  test("reads the imports and exports from the binary and agrees with the compiled module", async () => {
+    const bytes = await compileFixture("echo", { maximumMemory: 256 });
+    const shape = readModuleShape(bytes);
+    expect(shape).not.toBeNull();
+    const compiled = new WebAssembly.Module(bytes as unknown as BufferSource);
+    expect(shape?.exports.map((e) => `${e.name}:${e.kind}`).sort()).toEqual(
+      WebAssembly.Module.exports(compiled)
+        .map((e) => `${e.name}:${e.kind}`)
+        .sort(),
+    );
+    expect(shape?.imports.map((i) => `${i.module}.${i.name}:${i.kind}`).sort()).toEqual(
+      WebAssembly.Module.imports(compiled)
+        .map((i) => `${i.module}.${i.name}:${i.kind}`)
+        .sort(),
+    );
+    expect(checkShape(shape as NonNullable<typeof shape>).ok).toBe(true);
+  });
+
+  test("the no-compile validation names a forbidden import and returns no module", async () => {
+    const bytes = await compileFixture("time", { maximumMemory: 256 });
+    const v = validateModuleBytes(bytes, limits, { compile: false });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toContain("forbidden import");
+    const good = validateModuleBytes(await compileFixture("echo", { maximumMemory: 256 }), limits, {
+      compile: false,
+    });
+    expect(good.ok).toBe(true);
+    if (good.ok) expect(good.module).toBeNull();
+  });
+
+  test("a truncated import section is malformed, not a crash", () => {
+    // magic + version, then an import section claiming ten entries with one byte of payload
+    const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 2, 1, 10]);
+    expect(readModuleShape(bytes)).toBeNull();
+    expect(readModuleShape(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))?.exports).toEqual([]);
   });
 });

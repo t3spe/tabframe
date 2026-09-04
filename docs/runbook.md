@@ -13,7 +13,9 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 | Session function | Lambda function URL (public) | vends the endpoint and a shared token; heals when nothing runs |
 | Rotate function | Lambda, hourly EventBridge rule | launches the successor, hands over, flips the pointer, drains, terminates |
 | Store | S3 behind CloudFront (`/blob/*`) | content-addressed, one-year lifecycle |
-| Snapshots | S3, `g<generation>/<time>.json.gz` and `latest.json.gz` | one-day lifecycle |
+| Snapshots | S3, `g<generation>/<time>.json.gz` and `latest.json.gz` | the `g*/` history expires after a day; `latest.json.gz` is kept |
+| Alarms | SNS topic `tabframe-alarms` | rotate and session errors, rotate throttles, and the canary's page and session checks (WP8.1, WP8.2); mailed to the budget address when configured. The subscription must be confirmed from that mailbox once: `aws sns list-subscriptions-by-topic` shows `PendingConfirmation` until then |
+| Canary | Lambda, five-minute EventBridge rule | fetches the page's `config.json` and the session URL, never the MicroVM endpoint; metrics under `Tabframe/Canary` |
 | Page | S3 behind the same CloudFront distribution | `https://d2w9z8juw4oo76.cloudfront.net` |
 
 ## Everyday
@@ -23,7 +25,7 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 | Is the machine up? | `mise run health` (`-- --cores` asks each cloud core too) | `/health` and `/diag` of the active control plane through the proxy on the private port, masked. Counts, phase, fleet, snapshotter status, a store round trip, memory. |
 | Bring it up | `mise run up` | Sets the pointer to *on*, enables the hourly rule, invokes rotate once. Idempotent: a running control plane is rotated, not duplicated. |
 | Take it down | `mise run down` | Disables the rule, terminates every MicroVM from our image, writes *off*. The page shows an off screen; the session function heals nothing. **Destructive: every MicroVM is terminated and the page goes dark until `up`.** |
-| Deploy | `mise run deploy` | Builds programs, page, and image; runs lint and every test; `cdk deploy --all`; then `up`, which rotates the running control plane onto the new image. A deploy is a rotation. |
+| Deploy | `mise run deploy` | Refuses unless the tree is clean, HEAD is on `origin/main`, and that commit's CI is green (`TABFRAME_DEPLOY_UNGATED=1` skips the check for an emergency deploy from a branch); builds programs, page, and image; runs lint and every test; fails on any IAM or security-group broadening in `cdk diff --security-only` (`TABFRAME_DEPLOY_IAM=1` acknowledges one); `cdk deploy --all`; then `up`, which rotates the running control plane onto the new image. A deploy is a rotation. |
 | Rotate by hand | `mise run rotate` | One rotation now (same code the hourly rule runs). |
 | Watch logs | `mise run logs`, `mise run logs:fleet` | The MicroVM log group (one stream per VM) and the two functions' groups. See *Observability* for what actually lands. |
 | Verify | `mise run verify:m1` / `verify:m2` / `verify:m3` | The milestone runbooks against the live machine: a frame through a kill-half, the editor and word count, a rotation under load. Each prints one line per check and exits non-zero on a failure. |
@@ -44,10 +46,11 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
    scheduler, the node, or the store; `verify:m2` for the editor, seeding, or programs; `verify:m3`
    for the fleet.
 
-**Rollback.** The image keeps every version. To run a previous one, set `TABFRAME_IMAGE_VERSION`
-in the rotate function's environment to that version (the fleet stack's `Rotate` function; it is
-read at every invocation) and `mise run rotate`; the successor boots from the pinned version and
-adopts the current ledger. Clear the pin once the fix is deployed. A rollback of the page is a
+**Rollback.** The image keeps every version, and `/health` names the one running. `mise run
+rollback -- <version>` pins the rotate function to that version (its `TABFRAME_IMAGE_VERSION`,
+read at every invocation, so the hourly rotations honour it too) and rotates once; the successor
+boots from the pinned version and adopts the current ledger. `mise run rollback -- --clear` removes
+the pin; a deploy also clears it, because it redeploys the function (WP8.2). A rollback of the page is a
 re-deploy of the Web stack from the previous commit.
 
 ## Rotation, and when it goes wrong
@@ -69,7 +72,8 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 
 - **`/health`** (private port, fleet secret): role, phase, generation, awake and why not, nodes by
   kind, cores with their age and whether their node is connected, programs, running execution,
-  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime.
+  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and since WP8.1 the
+  `build` stamp (commit, branch, and whether the deploy was ungated) and the `imageVersion` it runs.
 - **`/diag`** (private port, fleet secret): DNS, a store put-and-get round trip with its latency,
   which store driver, snapshotter status, memory, the environment facts that matter
   (`TABFRAME_SANDBOX_WORKER`, cloud cores enabled).
@@ -81,15 +85,13 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
   process writes** — measured on 2026-09-02 with the same line written to stdout and stderr: both
   copies arrive, nothing after. The platform forwards a process's output during boot and stops.
   So for a running control plane the truth is `/health`, `/diag`, the snapshots in S3, and the
-  dashboard; the rotate function's log says what every rotation did. Accepted; see design §9.3 (the platform forwards
-  the first line of a MicroVM's stdout only).
+  dashboard; the rotate function's log says what every rotation did. Accepted; see design §9.3.
 
 ## Cost and budget
 
 - The budget `tabframe-monthly` is $100 with notifications at 50, 80 and 100 % to the address in
-  `.env.local`; it never acts on its own (D20 — no automatic kill switch). `tabframe-alarm-test`
-  is a one-cent budget created to prove the notification path; delete it once the email has
-  arrived: `aws budgets delete-budget --account-id <id> --budget-name tabframe-alarm-test`.
+  `.env.local`; it never acts on its own (D20 — no automatic kill switch). The notification path
+  was proven on 2026-09-03 with a one-cent test budget, since deleted.
 - What costs money while the machine is up: the control plane MicroVM (always, until `down`), two
   cores while anyone is watching, snapshot writes every five seconds while the ledger changes,
   CloudFront and S3 for the page and blobs. Idle, it is one suspended MicroVM's snapshot storage.

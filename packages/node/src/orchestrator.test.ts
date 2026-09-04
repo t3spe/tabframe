@@ -11,6 +11,7 @@ import type { HostRequest, TaskResult } from "@tabframe/sandbox";
 import { sha256Hex } from "@tabframe/store";
 import { Backoff } from "./backoff.ts";
 import {
+  OFF_POLL_MS,
   Orchestrator,
   parseRotating,
   resolveStoreBase,
@@ -284,12 +285,16 @@ describe("orchestrator", () => {
     expect(h.statuses.at(-1)?.state).toBe("outdated");
   });
 
-  test("an off session reports off and stops; a starting session retries after the hint", async () => {
+  test("an off session reports off and asks again later; a starting session retries after the hint", async () => {
     const off = harness({ off: true });
     await off.o.start();
     expect(off.statuses.at(-1)?.state).toBe("off");
     expect(off.sockets.length).toBe(0);
-    expect(off.timers.pending).toBe(0);
+    // An off machine is asked again (WP8.2): when it comes back, the node joins without a reload.
+    expect(off.timers.pending).toBe(1);
+    off.setSession(sessionOn);
+    await off.timers.advance(OFF_POLL_MS);
+    expect(off.sockets.length).toBe(1);
 
     const starting = harness({ starting: true, retryAfterMs: 2_000 });
     await starting.o.start();

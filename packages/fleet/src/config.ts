@@ -82,7 +82,7 @@ export function loadRotateConfig(env: Env): RotateConfig {
     sessionUrl: required(env, "TABFRAME_SESSION_URL"),
     storeBase: required(env, "TABFRAME_STORE_BASE"),
     fleetSecretArn: required(env, "TABFRAME_FLEET_SECRET_ARN"),
-    readyTimeoutMs: 180_000,
+    readyTimeoutMs: 120_000, // (WP8.2) inside the function's budget with the fleet calls that follow
     pollIntervalMs: 2000,
   };
 }

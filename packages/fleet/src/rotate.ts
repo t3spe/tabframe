@@ -117,19 +117,34 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       storeBase: config.storeBase,
       fleetSecret: secret,
     };
-    const launched = await runWithBackoff({
-      imageArn: config.imageArn,
-      imageVersion: config.imageVersion,
-      executionRoleArn: config.controlPlaneRoleArn,
-      runHookPayload: JSON.stringify(payload),
-      ingressConnectors: [ingressConnectorArn(config.region)],
-      egressConnectors: [egressConnectorArn(config.region)],
-      idlePolicy: CONTROL_PLANE_IDLE_POLICY,
-      maximumDurationInSeconds: CONTROL_PLANE_MAX_DURATION_SECONDS,
-      // One control plane per generation and hour, however many rotations run at once (WP8.1: a
-      // token fixed per generation kept resolving to a successor that never reached RUNNING).
-      clientToken: `tabframe-cp-g${generation}-${Math.floor(clock.now() / 3_600_000)}`,
-    });
+    // One control plane per generation and hour, however many rotations run at once (WP8.1). A
+    // token that resolves to a MicroVM already gone — the replay of a launch a previous run
+    // terminated (WP8.2) — is retried with a numbered suffix, a few times.
+    const hour = Math.floor(clock.now() / 3_600_000);
+    let launched: MicrovmInfo | null = null;
+    for (let retry = 0; retry < 3 && !launched; retry++) {
+      const candidate = await runWithBackoff({
+        imageArn: config.imageArn,
+        imageVersion: config.imageVersion,
+        executionRoleArn: config.controlPlaneRoleArn,
+        runHookPayload: JSON.stringify(payload),
+        ingressConnectors: [ingressConnectorArn(config.region)],
+        egressConnectors: [egressConnectorArn(config.region)],
+        idlePolicy: CONTROL_PLANE_IDLE_POLICY,
+        maximumDurationInSeconds: CONTROL_PLANE_MAX_DURATION_SECONDS,
+        clientToken: `tabframe-cp-g${generation}-${hour}${retry ? `-r${retry}` : ""}`,
+      });
+      // The API answers a replayed token with the MicroVM it named the first time, state and all.
+      if (candidate.state === "TERMINATED" || candidate.state === "TERMINATING") {
+        log.warn("rotate: the client token replayed a MicroVM that is gone; retrying afresh", {
+          microvmId: candidate.microvmId,
+          retry,
+        });
+        continue;
+      }
+      launched = candidate;
+    }
+    if (!launched) return null;
     log.info("rotate: launched control plane", {
       microvmId: launched.microvmId,
       generation,
@@ -149,6 +164,7 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     vm: MicrovmInfo,
     generation: number,
     now: number,
+    retiring: ControlPlaneTarget | null = null,
   ): Promise<void> {
     await pointer.write({
       ...p,
@@ -159,6 +175,9 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       imageVersion: vm.imageVersion,
       updatedAt: new Date(now).toISOString(),
       pending: null,
+      // The predecessor is named until it is drained and gone (WP8.2), so a run that dies here is
+      // finished by the next one rather than leaving two active generations.
+      retiring: retiring ? { microvmId: retiring.microvmId, endpoint: retiring.endpoint } : null,
     });
   }
 
@@ -269,6 +288,18 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
     }
     const secret = await secrets.read(config.fleetSecretArn);
 
+    // A predecessor a dead rotation promoted over but never retired (WP8.2): finish that first.
+    if (p.retiring && p.retiring.microvmId !== p.microvmId) {
+      log.warn("rotate: finishing the retire a previous run left behind", {
+        microvmId: p.retiring.microvmId,
+      });
+      await retire(
+        { microvmId: p.retiring.microvmId, endpoint: p.retiring.endpoint ?? "" },
+        p.generation,
+        secret,
+      );
+      await pointer.write({ ...(await pointer.read()), retiring: null });
+    }
     const repaired = await repair(p, secret);
     if (repaired) return repaired;
     const current = p.pending ? await pointer.read() : p;
@@ -352,8 +383,9 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       }
     }
 
-    await promote(current, next, generation, clock.now());
+    await promote(current, next, generation, clock.now(), old);
     const drained = await retire(old, generation, secret);
+    await pointer.write({ ...(await pointer.read()), retiring: null });
     log.info("rotate: rotated", { from: old.microvmId, to: next.microvmId, generation });
     return {
       action: "rotated",

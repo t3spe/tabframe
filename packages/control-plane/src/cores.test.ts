@@ -17,7 +17,7 @@ describe("the cloud-core fleet", () => {
   test("launches a core with no ingress, no idle policy, and a four-hour ceiling", async () => {
     const microvms = new FakeMicrovmClient();
     const fleet = createCoreFleet(config, microvms);
-    const id = await fleet.launch();
+    const { microvmId: id, token } = await fleet.launch();
     expect(id).toBe("mvm-1");
     const run = microvms.runs[0];
     if (!run) throw new Error("no run");
@@ -36,7 +36,8 @@ describe("the cloud-core fleet", () => {
       snapshotKey: null,
       sessionUrl: config.sessionUrl,
       storeBase: config.storeBase,
-      fleetSecret: "s3cret",
+      fleetSecret: null, // a core gets no fleet secret (WP8.2)
+      coreToken: token,
     });
   });
 
@@ -65,6 +66,9 @@ describe("the cloud-core fleet", () => {
   });
 
   test("the payload names the core role and carries no snapshot", () => {
-    expect(JSON.parse(corePayload(config))).toMatchObject({ role: "core", snapshotKey: null });
+    expect(JSON.parse(corePayload(config, "t".repeat(32)))).toMatchObject({
+      role: "core",
+      snapshotKey: null,
+    });
   });
 });

@@ -20,7 +20,14 @@ export type Event =
   | { kind: "message"; connId: string; raw: unknown }
   | { kind: "disconnected"; connId: string }
   | { kind: "tick" }
-  | { kind: "blobFetched"; hash: string; bytes: Uint8Array | null; purpose: BlobPurpose }
+  | {
+      kind: "blobFetched";
+      hash: string;
+      bytes: Uint8Array | null;
+      purpose: BlobPurpose;
+      /** Set when the store errored rather than answered (WP8.2): a retry, not a missing blob. */
+      error?: string;
+    }
   | { kind: "blobStored"; hash: string; size: number; purpose: BlobPurpose }
   | {
       kind: "programAdded";
@@ -46,7 +53,7 @@ export type Event =
   /** Seeding points the machine's own loop at the shipped program (design §6.8, WP4.9). */
   | { kind: "setDefaultLoop"; loop: { bundle: string; params: Record<string, unknown> } | null }
   /** The process launched a cloud core, or found one gone (design §6.8). */
-  | { kind: "coreLaunched"; microvmId: string }
+  | { kind: "coreLaunched"; microvmId: string; token?: string }
   | { kind: "coreGone"; microvmId: string };
 
 /** Outbound effects. The process executes them; the core never touches a socket or the store. */

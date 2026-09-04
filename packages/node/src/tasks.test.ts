@@ -314,6 +314,10 @@ describe("host and store failures are releases, not program faults (WP8.1)", () 
     expect(hostFailure("Error: fetch of abc failed: 503")).toBe(true);
     expect(hostFailure("Error: upload of abc failed: 500")).toBe(true);
     expect(hostFailure("Error: presign timed out")).toBe(true);
+    // What the program says about itself is a program fault, whatever words it uses (WP8.2).
+    expect(hostFailure("abort: out of memory in tile 4 (assembly/index.ts:10:3)")).toBe(false);
+    expect(hostFailure("trap: unreachable network error")).toBe(false);
+    expect(hostFailure("link: fetch of x failed")).toBe(false);
     expect(hostFailure("TypeError: Failed to fetch")).toBe(true);
     expect(hostFailure("abort: this planner refuses to plan")).toBe(false);
     expect(hostFailure("RuntimeError: unreachable")).toBe(false);

@@ -4,7 +4,7 @@
 // until its lease runs out; turning redundancy off settles tasks that already hold a result.
 import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@tabframe/protocol";
-import { CONTROL_COOLDOWN_MS, HANDOVER_LEASE_MS, PRESIGN_BYTES_PER_CONN } from "./apply.ts";
+import { CONTROL_COOLDOWN_MS, HANDOVER_LEASE_MS, PRESIGN_BYTES_PER_MIN } from "./apply.ts";
 import { PARAMS_MAX_BYTES, QUEUE_CAP, STORE_RETRY_MS } from "./executions.ts";
 import { beginHandover } from "./handover.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
@@ -143,21 +143,35 @@ describe("bounds (WP8.1)", () => {
     ).toBe(true);
   });
 
-  test("a connection's presigned bytes are budgeted", () => {
+  test("a connection's presigned bytes are a refilling budget (WP8.2)", () => {
     const h = harness();
     h.hello("c1", "h1");
     const hash = "b".repeat(64);
-    // Each item is at the protocol's cap; the budget runs out after a bounded number of them.
+    // Each item is at the protocol's cap; the minute's budget runs out after a bounded number of
+    // them, and comes back with the next minute — so an honest core rendering all day is never closed.
     const perItem = LIMITS.maxOutputBytes;
-    const allowed = Math.floor(PRESIGN_BYTES_PER_CONN / perItem);
+    const allowed = Math.floor(PRESIGN_BYTES_PER_MIN / perItem);
     let closedAt = -1;
     for (let i = 0; i < allowed + 2 && closedAt < 0; i++) {
       const fx = h.send("c1", { t: "presign", items: [{ hash, size: perItem }] });
       if (fx.some((e) => e.kind === "close")) closedAt = i;
       else expect(fx.some((e) => e.kind === "presign")).toBe(true);
-      h.advance(100); // stay under the solicited bucket
     }
     expect(closedAt).toBe(allowed);
+    h.hello("c2", "h2");
+    for (let i = 0; i < allowed; i++) {
+      expect(
+        h
+          .send("c2", { t: "presign", items: [{ hash, size: perItem }] })
+          .some((e) => e.kind === "presign"),
+      ).toBe(true);
+    }
+    h.advance(60_000);
+    expect(
+      h
+        .send("c2", { t: "presign", items: [{ hash, size: perItem }] })
+        .some((e) => e.kind === "presign"),
+    ).toBe(true);
   });
 });
 

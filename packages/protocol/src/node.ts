@@ -12,6 +12,8 @@ export const hello = z.object({
   kind: nodeKind,
   cores: z.number().int().min(1).max(1024),
   sandboxVersion: z.string().min(1).max(32),
+  /** A cloud core proves it is the MicroVM it names: the token its run payload carried (WP8.2). */
+  coreToken: z.string().min(16).max(64).optional(),
 });
 
 export const heartbeat = z.object({

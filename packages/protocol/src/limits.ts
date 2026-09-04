@@ -28,7 +28,8 @@ export const LIMITS = {
   maxOutputBytes: 16 * 1024 * 1024,
   maxLogBytes: 64 * 1024,
   maxInlineLogBytes: 4 * 1024,
-  maxPresignItems: 300,
+  /** Items per presign, sized so a `presigned` reply of signed URLs (about 2 KB each) fits one frame (WP8.2). */
+  maxPresignItems: 24,
   maxModuleBytes: 8 * 1024 * 1024,
   /** Reconnect backoff window. */
   reconnectMinMs: 500,

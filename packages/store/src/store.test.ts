@@ -77,6 +77,9 @@ describe("S3Store", () => {
     // tampered body would be accepted (found against the real bucket, WP1.10).
     const signed = new URL(p?.url as string).searchParams.get("X-Amz-SignedHeaders") ?? "";
     expect(signed.split(";")).toContain("x-amz-checksum-sha256");
+    // And the declared size (WP8.2): S3 rejects a body of another length.
+    expect(signed.split(";")).toContain("content-length");
+    expect(p?.headers["content-length"]).toBeUndefined();
     expect(new URL(p?.url as string).searchParams.has("x-amz-checksum-sha256")).toBe(false);
     s3.on(HeadObjectCommand).resolves({});
     const [q] = await store.presign([{ hash: h, size: 4 }]);

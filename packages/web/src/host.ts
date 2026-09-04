@@ -308,7 +308,33 @@ class CanvasPainter implements TilePainter {
 const key = (p: PlaceView): string => `${p.x},${p.y}`;
 
 const painter = new CanvasPainter(els.tiles);
-const demoStore = new Map<string, Uint8Array>();
+/**
+ * The demo's in-page store is bounded (WP8.2): about two frames of tiles, not the whole afternoon.
+ * Reads refresh an entry, so the seeded program files and whatever the page keeps showing stay;
+ * tiles nobody asks for again are the ones that go.
+ */
+const DEMO_STORE_CAP = 1500;
+class BoundedBlobMap extends Map<string, Uint8Array> {
+  override get(key: string): Uint8Array | undefined {
+    const v = super.get(key);
+    if (v !== undefined) {
+      super.delete(key);
+      super.set(key, v);
+    }
+    return v;
+  }
+  override set(key: string, value: Uint8Array): this {
+    super.delete(key);
+    super.set(key, value);
+    while (this.size > DEMO_STORE_CAP) {
+      const oldest = this.keys().next().value;
+      if (oldest === undefined) break;
+      super.delete(oldest);
+    }
+    return this;
+  }
+}
+const demoStore = new BoundedBlobMap();
 let blobSource: BlobSource = {
   async get(hash) {
     return demoStore.get(hash) ?? null;
@@ -618,7 +644,11 @@ function render(state: ClusterState): void {
   // The panels: programs, queue, strip, failure, result, files, task detail. A frozen panel tab
   // keeps what it shows; the count of updates it is holding back is on the button (WP6.8).
   if (panelMode && panelFrozen) {
-    panelFrozenMissed++;
+    // The count is of states that arrived while frozen (WP8.2), not of frames rendered.
+    if (state.seq !== frozenSeenSeq) {
+      frozenSeenSeq = state.seq;
+      panelFrozenMissed++;
+    }
     freezeButton.textContent = `resume updates (${panelFrozenMissed} held)`;
     return;
   }
@@ -628,20 +658,25 @@ function render(state: ClusterState): void {
   $<HTMLParagraphElement>("#activitySummary").textContent = lastAct
     ? `${state.activity.length} lines · last: ${fmtTime(lastAct.at)} ${lastAct.text}`
     : "nothing yet";
-  els.activity.replaceChildren(
-    ...state.activity
-      .slice(panelMode === "activity" ? 0 : -14)
-      .reverse()
-      .map((a) => {
-        const li = document.createElement("li");
-        li.className = `act act-${a.kind}`;
-        const time = document.createElement("span");
-        time.className = "muted";
-        time.textContent = fmtTime(a.at);
-        li.append(time, ` ${a.text}`);
-        return li;
-      }),
-  );
+  // The activity list is redrawn when it changed (WP8.2), not on every frame.
+  const activitySig = `${state.activity.length}:${state.activity.at(-1)?.seq ?? 0}:${state.activity.at(-1)?.at ?? 0}`;
+  if (activitySig !== activityDrawn) {
+    activityDrawn = activitySig;
+    els.activity.replaceChildren(
+      ...state.activity
+        .slice(panelMode === "activity" ? 0 : -14)
+        .reverse()
+        .map((a) => {
+          const li = document.createElement("li");
+          li.className = `act act-${a.kind}`;
+          const time = document.createElement("span");
+          time.className = "muted";
+          time.textContent = fmtTime(a.at);
+          li.append(time, ` ${a.text}`);
+          return li;
+        }),
+    );
+  }
 
   // The node table changes slowly; four times a second is plenty at 256 rows.
   if (now - tableRenderedAt >= 250 || state.nodes.size !== els.tbody.childElementCount) {
@@ -1005,6 +1040,8 @@ const openRoot =
 /** A panel tab can pause its own updates so a reader can inspect it (WP6.8). */
 let panelFrozen = false;
 let panelFrozenMissed = 0;
+let activityDrawn = "";
+let frozenSeenSeq = -1;
 const freezeButton = $<HTMLButtonElement>("#freezePanel");
 freezeButton.onclick = () => {
   panelFrozen = !panelFrozen;

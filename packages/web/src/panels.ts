@@ -93,6 +93,8 @@ type Cached = Uint8Array | null | "pending" | "error";
 /** Fetches by hash, once each; a render reads what has landed and a landing asks for a render. */
 /** What the page keeps of fetched blobs (WP8.1): a dashboard open all day must not grow without bound. */
 export const BLOB_CACHE_BYTES = 64 * 1024 * 1024;
+/** How long a blob the store did not have is left alone before it is asked for again (WP8.2). */
+export const MISSING_RETRY_MS = 10_000;
 
 class BlobCache {
   private readonly got = new Map<string, Cached>();
@@ -105,6 +107,8 @@ class BlobCache {
     this.source = source;
     this.onChange = onChange;
   }
+  private readonly missingAt = new Map<string, number>();
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   get(hash: string): Cached {
     const known = this.got.get(hash);
     if (known !== undefined) {
@@ -113,13 +117,29 @@ class BlobCache {
       this.got.set(hash, known);
       return known;
     }
+    // A blob the store did not have is asked for again after a while, not on the next frame
+    // (WP8.2: a missing root made every render refetch it and rebuild the panels).
+    const missing = this.missingAt.get(hash);
+    if (missing !== undefined && Date.now() - missing < MISSING_RETRY_MS) return "pending";
     this.got.set(hash, "pending");
     void this.source()
       .get(hash)
       .then((bytes) => {
-        // A blob that is not there yet may land later; ask again on the next render.
-        if (bytes === null) this.got.delete(hash);
-        else {
+        // A blob that is not there yet may land later; ask again after the retry window.
+        if (bytes === null) {
+          this.got.delete(hash);
+          this.missingAt.set(hash, Date.now());
+          // The retry needs a render to ask again, and a held page renders nothing on its own:
+          // one is scheduled for when the window closes (a file pinned before the demo wrote it).
+          if (this.retryTimer === null) {
+            this.retryTimer = setTimeout(() => {
+              this.retryTimer = null;
+              this.version += 1;
+              this.onChange();
+            }, MISSING_RETRY_MS + 50);
+          }
+        } else {
+          this.missingAt.delete(hash);
           this.got.set(hash, bytes);
           this.bytes += bytes.length;
           this.evict();
@@ -697,6 +717,15 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         meta.append(tab);
         li.append(name, meta);
         li.onclick = () => selectFile(isSelected && selectedFile?.hash === f.hash ? null : f);
+        // Reachable by keyboard (WP8.2): a row is a button.
+        li.tabIndex = 0;
+        li.setAttribute("role", "button");
+        li.onkeydown = (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            li.click();
+          }
+        };
         list.append(li);
       }
       section.append(list);
@@ -980,6 +1009,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
       newest?.taskId,
       newest?.output,
       newest?.verified,
+      exec?.counters.verified,
+      exec?.counters.mismatched,
       store,
       cache.version,
     ]);
@@ -1027,6 +1058,14 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         }
         tr.classList.toggle("selected", selectedLedger?.hash === r.output);
         tr.title = "click to see the task's bytes in the preview";
+        tr.tabIndex = 0;
+        tr.setAttribute("role", "button");
+        tr.onkeydown = (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            tr.click();
+          }
+        };
         tr.onclick = () =>
           selectLedger(
             selectedLedger?.hash === r.output ? null : { hash: r.output, taskId: r.taskId, size },

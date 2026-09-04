@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { byteLength, canonicalStringify, encode, LIMITS, type StageSpec } from "@tabframe/protocol";
+import {
+  byteLength,
+  canonicalStringify,
+  encode,
+  LIMITS,
+  RELEASED,
+  type StageSpec,
+} from "@tabframe/protocol";
 import { executionTasks } from "./executions.ts";
 import { doneSpec, eventsOf, H, harness, renderSpec } from "./harness.ts";
 import { taskView } from "./ledger.ts";
@@ -310,31 +317,44 @@ describe("verification", () => {
     expect(h.invariants()).toEqual([]);
   });
 
-  test("a stale result for a cancelled attempt is evidence but closes no newer attempt", () => {
-    // c1 holds t1@1 and t3; c2 holds t2. A late result from c2 settles t1 and cancels c1's attempt.
-    const { h, spec } = machine(3, 3);
+  test("a late result for a released attempt settles the task and closes no newer attempt", () => {
+    // c1 holds t1@1 and gives it up at its deadline; c2 takes it as attempt 2. Then c1's result for
+    // attempt 1 arrives late: the attempt is known (released), so it counts (WP8.2: an unknown
+    // attempt could not settle an open task), it settles the round, and it cancels attempt 2 on
+    // c2 — attempt 2 is never marked as reported, and c2's in-flight list agrees with what c2 holds.
+    const { h, spec } = machine(2, 3);
     const [a] = h.assigns(spec);
     if (!a) throw new Error("no assign");
     expect(a.connId).toBe("c1");
-    h.result("c2", a.taskId, 9, H("2"));
-    expect(h.ledger.tasks.get(a.taskId)?.status).toBe("done");
-    // c3 disagrees late: contested, and c1 (a free slot) gets t1 again as attempt 2.
-    const [again] = h.assigns(h.result("c3", a.taskId, 9, H("3")));
+    const released = h.resultError(a.connId, a.taskId, a.attempt, RELEASED);
+    const again = h.assigns(released).find((x) => x.taskId === a.taskId);
     if (!again) throw new Error("no reassignment");
-    expect(again).toMatchObject({ connId: "c1", taskId: a.taskId, attempt: 2 });
-    // Now c1's result for the cancelled attempt 1 arrives. It settles round two (one result is
-    // enough with the toggle off), which cancels attempt 2 and tells c1 so; attempt 2 is never
-    // marked as reported, and c1's in-flight list agrees with what c1 holds.
+    expect(again).toMatchObject({ connId: "c2", taskId: a.taskId, attempt: 2 });
     const stale = h.result("c1", a.taskId, 1, H("1"));
     const task = h.ledger.tasks.get(a.taskId);
     expect(task?.status).toBe("done");
     expect(task?.accepted?.output).toBe(H("1"));
     expect(task?.attempts.find((x) => x.attempt === 2)?.outcome).toBe("cancelled");
-    expect(stale.some((e) => e.kind === "send" && e.connId === "c1" && e.msg.t === "cancel")).toBe(
+    expect(stale.some((e) => e.kind === "send" && e.connId === "c2" && e.msg.t === "cancel")).toBe(
       true,
     );
-    expect(h.ledger.nodes.get("n1")?.inFlight).not.toContain(a.taskId);
+    expect(h.ledger.nodes.get("n2")?.inFlight).not.toContain(a.taskId);
     expect(h.invariants()).toEqual([]);
+  });
+
+  test("a result from a node that was never given an open task does not settle it (WP8.2)", () => {
+    const { h, spec } = machine(2, 2);
+    const [a] = h.assigns(spec);
+    if (!a) throw new Error("no assign");
+    const other = a.connId === "c1" ? "c2" : "c1";
+    h.result(other, a.taskId, 9, H("9"));
+    expect(h.ledger.tasks.get(a.taskId)?.status).toBe("assigned");
+    expect(h.ledger.tasks.get(a.taskId)?.accepted).toBeNull();
+    // The node that holds it settles it; a late duplicate from the other may still contest it (D7).
+    h.result(a.connId, a.taskId, a.attempt, H("1"));
+    expect(h.ledger.tasks.get(a.taskId)?.status).toBe("done");
+    const contested = h.result(other, a.taskId, 9, H("2"));
+    expect(eventsOf(contested, "o1")).toContain("taskMismatch");
   });
 
   test("a contested task is recomputed by a node that has not reported, when one is free", () => {

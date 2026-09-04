@@ -4,6 +4,7 @@ import * as cdk from "aws-cdk-lib";
 
 export const NAMES = {
   alarmTopic: "tabframe-alarms",
+  canaryFunction: "tabframe-canary",
   imageName: "tabframe",
   sessionFunction: "tabframe-session",
   rotateFunction: "tabframe-rotate",

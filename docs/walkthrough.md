@@ -33,9 +33,9 @@ per state in the test's output. Written for WP7.7 (2026-09-04), from Mircea's th
 - **R5 · A click never moves the page.** Results land in boxes that were already there; lists
   change a row's class instead of being rebuilt; the only scrolling is the visitor's.
 - **R6 · One name per thing.** program · execution (e42) · frame (one execution of the loop's
-  program) · stage · task · tile · node (a worker: a browser tab's thread or a cloud core) · core (a
-  cloud node) · host (a browser) · tab. The pills, the activity log, the tooltips and the docs use
-  these words.
+  program) · stage · task · tile · core (any worker: a browser tab's thread or a MicroVM) · cloud
+  core (the MicroVM kind) · node (the ledger's word for a core that has joined) · host (a browser) ·
+  tab. The pills, the activity log, the tooltips and the docs use these words (aligned in WP8.2).
 - **R7 · Every screen says where you are and how to get back.** Panel tabs and the editor say they
   were opened from the dashboard and link back; the demo says it is a demo in the status line;
   observe-only says it lends no cores.
@@ -63,7 +63,8 @@ queue, files, ledger, activity, consent).
 | Execution failed | The failure box with the reason and "dismiss"; the stage says "no result" once, in grey; the sentence names the failed execution and what the loop does next. | dismiss; launch… again; its files and ledger rows stay browsable. | A second red "no result". |
 | Rotating | Banner "Control plane rotating to generation 90 · reconnecting in 1.9 s …". | Everything stays; a click is held ten seconds, then reported. | An "asleep" banner, a jump, a change of size. |
 | Asleep | Banner with the reason; controls greyed. | The page wakes the machine by itself. | Live-looking controls. |
-| Outdated page | Connection banner "This page is out of date … Reloading…"; the page reloads itself after 1.5 s. | Nothing needed. | Live-looking controls. |
+| Outdated page | Connection banner "This page is out of date … Reloading…"; the page reloads itself once after 1.5 s. | Nothing needed. | Live-looking controls. |
+| Outdated, reloaded once | The same banner with the hint "Reloaded once already: hard-refresh this page (Shift+reload) to fetch the current bundle." — the reload is remembered for the session, keyed by protocol version (WP8.1), so a stale cache cannot loop the page. | Shift+reload. | A reload loop. |
 | Off | "The machine is off." with what an operator does and the demo link. | The demo link. | Anything suggesting waiting helps. |
 | Observe only | "observing · this tab lends no cores · …"; the spawn hint says how to lend some. | Everything but spawn; spawn greyed with the reason. | A hint that counts this browser's cores. |
 | Demo | Machine pill "live · demo"; sentence "demo · a scripted cluster inside this page, nothing is sent anywhere · …". | Everything, against the script; the editor opens in demo mode. | Links to the live machine that look like the demo. |

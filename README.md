@@ -9,7 +9,7 @@ the work in flight.
 Deployed: **https://d2w9z8juw4oo76.cloudfront.net** — the page lends one core when it opens, and
 shows the machine rendering a Mandelbrot frame with whoever else is there.
 
-**Try it, in five clicks.** Spawn 3 (the counters follow), kill half (tiles are taken back and finish
+**Try it, in five clicks.** **spawn N** (N is one fewer than your machine's cores so the tab keeps a thread; the counters follow), kill half (tiles are taken back and finish
 elsewhere), redundancy on (the verified counter moves), editor ↗ (change `CYCLE`, compile, launch:
 your program goes ahead of the loop), the ledger tab (hashes, not bytes). `?observe` lends no cores,
 `?demo=1` runs a scripted cluster inside the page, and a rotation banner every hour is expected.
@@ -24,14 +24,12 @@ no clock, no randomness, no network, and no failure type anywhere in its API.
 
 Three programs ship with the machine and go through the same path as anything you write in the
 in-page editor: a distributed **Mandelbrot** render (640 tiles of 64×64 per frame, presets that
-advance while anyone watches) and a three-stage **word count** over *Moby-Dick* (map by byte range,
-reduce by partition, merge to a top-25). You can also compile your own: the editor holds the
-Mandelbrot source and the AssemblyScript compiler runs in a browser worker.
-
-Since M6 a third program ships with the image: **tiny GPT**, an 822 k-parameter character-level
+advance while anyone watches); a three-stage **word count** over *Moby-Dick* (map by byte range,
+reduce by partition, merge to a top-25); and **tiny GPT**, an 822 k-parameter character-level
 transformer trained on that same corpus, whose whole forward pass runs in WebAssembly on the cores —
 one continuation per task, four milliseconds a token, the same bytes on every core
-(`docs/feasibility-transformer.md`).
+(`docs/feasibility-transformer.md`). You can also compile your own: the editor holds every
+program's source and the AssemblyScript compiler runs in a browser worker.
 
 ## Why it looks the way it does
 
@@ -111,7 +109,7 @@ Every milestone was verified against the deployed machine; the records are in `d
 | The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`m3-verification.md`](docs/m3-verification.md)) |
 | Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
 
-530 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
+543 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
 tests in Playwright, and CI on every push with no AWS credentials.
 
 ## Limits, stated plainly
@@ -119,7 +117,7 @@ tests in Playwright, and CI on every push with no AWS credentials.
 - **One MicroVM endpoint accepts 16 concurrent connections.** That is an AWS quota, not
   adjustable, the same at every VM size we can launch — measured, then found in the account's
   Service Quotas ([design §9.7](docs/design.md), [`m3-verification.md`](docs/m3-verification.md)).
-  One control plane therefore serves about fifteen browser tabs, and the ledger's 256-node cap is
+  One control plane therefore serves about seven browser tabs that each lend a node (fifteen that only watch), and the ledger's 256-node cap is
   a property of the scheduler, not of the deployment. Scaling the client edge is an architecture
   decision recorded in the plan (WP4.6): document it for now, evaluate an EC2 host for the control
   plane after packaging.

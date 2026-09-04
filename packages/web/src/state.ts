@@ -20,7 +20,7 @@ export const CHART_WINDOW_MS = 60_000;
 /** Flash-worthy events kept for the pulse list beside the grid. */
 export const PULSE_CAP = 12;
 /** Notable events kept for the activity list. */
-export const ACTIVITY_CAP = 60;
+export const ACTIVITY_CAP = 400; // (WP8.2) the activity tab promises the last few hundred lines
 /** Attempt records kept per task; a task that churns more than this keeps the latest. */
 export const HISTORY_CAP = 16;
 
@@ -379,12 +379,14 @@ export function applyMessage(
             s.status === "running" || s.status === "folding" ? { ...s, status: "failed" } : s,
           ),
         };
-        next.lastFailure = {
-          executionId: msg.executionId,
-          programName: exec.programName,
-          reason: msg.reason,
-          at: now,
-        };
+        // A stop is what the person asked for, not a failure to show in red (WP8.2).
+        if (!stopped)
+          next.lastFailure = {
+            executionId: msg.executionId,
+            programName: exec.programName,
+            reason: msg.reason,
+            at: now,
+          };
       }
       const name =
         exec?.executionId === msg.executionId
@@ -666,6 +668,20 @@ function unreachable(msg: never): never {
   throw new Error(`unhandled message ${String((msg as { t?: unknown }).t)}`);
 }
 
+/** The failure a snapshot carries, if its execution failed for a reason other than a person's stop. */
+function seededFailure(snap: Snapshot, now: number): ClusterState["lastFailure"] {
+  const view = snap.execution;
+  if (!view?.failure) return null;
+  const failed = view.status === "failed" || view.status === "cancelled";
+  if (!failed || view.failure === "stopped by a person") return null;
+  return {
+    executionId: view.executionId,
+    programName: view.programName,
+    reason: view.failure,
+    at: now,
+  };
+}
+
 function applySnapshot(state: ClusterState, snap: Snapshot, now: number): ClusterState {
   const first = snap.page === 0;
   const nodes = first ? new Map<string, NodeView>() : new Map(state.nodes);
@@ -713,6 +729,8 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
     gap: false,
     refresh: false,
     execution,
+    // A failure box seeded from the snapshot (WP8.2), so a page that joins after a failure sees why.
+    lastFailure: first ? seededFailure(snap, now) : state.lastFailure,
     queue: first ? (snap.queue ?? []) : state.queue,
     machine: first ? (snap.machine ?? null) : state.machine,
     tasks,
@@ -785,7 +803,8 @@ function toExecutionState(view: ExecutionView): ExecutionState {
   return {
     ...view,
     phase,
-    failure: null,
+    // The wire's reason survives (WP8.2): a page joining after a failure used to read "failed: failed".
+    failure: phase === "stopped" ? null : (view.failure ?? null),
     followUp: null,
     budget: null,
     idBase: null,

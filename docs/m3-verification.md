@@ -60,7 +60,7 @@ endpoint, which is why two of the four rotations above fell back to the snapshot
 
 The M0 record's "250 sustained sockets" was a counting error, corrected in `docs/m0-verification.md`.
 
-What follows for the design: one control plane holds about fifteen browser tabs; the ledger's
+What follows for the design: one control plane holds about seven browser tabs that each lend a node, or fifteen that only watch; the ledger's
 256-node cap is a scheduler property, not a deployment one; and thousands of concurrent clients need
 an edge tier that is not a MicroVM endpoint — design §9.7 sets out the options, and the plan's WP4.6
 carries the decision. The system as built tolerates the limit: a rotation that cannot hand over

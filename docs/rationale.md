@@ -100,7 +100,7 @@ of the design record is the honest history.
   sockets per control plane are the extensions I would build next rather than the corners I
   rounded.
 - **MicroVMs, knowing what they cost.** The connection ceiling means one control plane serves
-  about fifteen tabs, and the demo is scoped to that. The decision on record is to document it
+  about seven tabs that each lend a node (fifteen that only watch), and the demo is scoped to that. The decision on record is to document it
   now and evaluate hosting the control plane on an EC2 instance after packaging — no per-VM
   connection quota, the same process and protocol, but a different rotation mechanism and the
   loss of snapshot boot and suspend/resume.
@@ -127,7 +127,7 @@ In order of what I would do first:
 The assignment grades scoping against an eight-hour ceiling and asks for the time spent. This
 build went well past that ceiling by deliberate choice: an evening of brainstorming, a day of
 design walkthrough (the decisions D1–D20 and the design record), and then the build itself — M0
-to M7 across one long session from the evening of 2026-09-01 through 2026-09-04, every milestone
+to M8 across one long session from the evening of 2026-09-01 through 2026-09-04, every milestone
 verified against AWS. I kept a time log with two columns because the honest number has two parts.
 `docs/timelog.md` records **about 45 hours** of session time in total (measured from the transcripts;
 the build session is still open as this is written and the log is finalised with it), plus eight and a

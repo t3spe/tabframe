@@ -9,6 +9,8 @@ import { StoreClient } from "@tabframe/store";
 export interface CoreOptions {
   sessionUrl: string;
   microvmId: string | null;
+  /** The run payload's core token, shown at hello (WP8.2). */
+  coreToken?: string | null;
   log: (event: string, fields?: Record<string, unknown>) => void;
   /** Test seam: skip the real sockets. */
   start?: boolean;
@@ -35,6 +37,7 @@ export function startCore(opts: CoreOptions): Orchestrator {
   const orchestrator = new Orchestrator({
     sessionUrl: opts.sessionUrl,
     hostId,
+    ...(opts.coreToken ? { coreToken: opts.coreToken } : {}),
     kind: "core",
     // A 0.5 GB core has a quarter vCPU that bursts to one; one worker is the honest number.
     cores: 1,

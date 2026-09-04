@@ -26,7 +26,10 @@ export const programManifest = z.object({
   name: z.string().min(1).max(64),
   view: z.enum(["tiles", "bars", "text"]),
   persist: z.boolean().default(false),
-  defaultParams: z.record(z.string(), z.unknown()).default({}),
+  defaultParams: z
+    .record(z.string(), z.unknown())
+    .default({})
+    .refine((p) => JSON.stringify(p).length <= 4096, "defaultParams over 4 KB"),
   description: z.string().max(512).optional(),
   /**
    * The hash of the program's source text in the store (WP7.6): the editor uploads it with the
