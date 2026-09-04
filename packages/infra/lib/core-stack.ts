@@ -94,12 +94,12 @@ export class CoreStack extends cdk.Stack {
       securityHeadersBehavior: {
         contentTypeOptions: { override: true },
         frameOptions: { frameOption: cf.HeadersFrameOption.DENY, override: true },
+        // A security header goes here, never among the custom headers: CloudFront refuses the
+        // policy otherwise (found by the first deploy after WP8.1 — synth cannot see it).
+        contentSecurityPolicy: { contentSecurityPolicy: "sandbox", override: true },
       },
       customHeadersBehavior: {
-        customHeaders: [
-          { header: "Content-Disposition", value: "attachment", override: true },
-          { header: "Content-Security-Policy", value: "sandbox", override: true },
-        ],
+        customHeaders: [{ header: "Content-Disposition", value: "attachment", override: true }],
       },
     });
     this.distribution = new cf.Distribution(this, "Distribution", {

@@ -124,6 +124,23 @@ In order of what I would do first:
    machine is read through its own `/health` and `/diag` (`mise run health`, per core with
    `--cores`) and through S3; a log shipper of its own is the next step.
 
+## Three review loops
+
+After the build I had the code reviewed three times over (M8, 2026-09-04), each time by five fresh
+readers with one persona each — a full-stack developer, a distributed-systems developer, a security
+engineer, a technical writer, a DevOps engineer — reading the tree, not my notes about it, with no
+access to the deployed machine. Each loop aggregated their findings into one table with a verdict
+per row — accepted, deferred with a reason, rejected with a reason — and the accepted ones landed
+with tests before the next loop started, which read the previous loop's note first so it could check
+what that note claimed. The three notes are under `docs/implementation/` (WP8.1–WP8.3): 54, 57, and
+58 findings, of which 45, 51, and 43 rows landed. Two things the loops taught. Fixes need a second
+look: each loop found claims of the previous one that did not hold — a cap that made many-file tasks
+loop across the cluster, an IAM scoping that never applied, a pointer field written but never read
+back, a canary that looked for a field that did not exist — so a review that only adds is worth
+less than one that also checks. And the simulation was gentler than the machine: it never enforced a
+deadline, never failed a store call, never rotated mid-run, so every failure-mode fix of the loops is
+unit-tested rather than simulated; a harsher simulation is the first thing I would build next.
+
 ## How long it took
 
 The assignment grades scoping against an eight-hour ceiling and asks for the time spent. This

@@ -191,6 +191,45 @@ describe("Image stack", () => {
   });
 });
 
+describe("CloudFront response header policies", () => {
+  const { core } = synth();
+  test("security headers are never custom headers (CloudFront refuses the policy at deploy time)", () => {
+    // Found by the first deploy after WP8.1: `Content-Security-Policy` in `customHeaders` synthesises
+    // fine and fails as CREATE_FAILED. The blob policy's CSP now lives in the security headers block.
+    const security = new Set([
+      "content-security-policy",
+      "x-frame-options",
+      "x-content-type-options",
+      "strict-transport-security",
+      "referrer-policy",
+      "x-xss-protection",
+    ]);
+    const policies = core.findResources("AWS::CloudFront::ResponseHeadersPolicy");
+    expect(Object.keys(policies).length).toBeGreaterThan(0);
+    for (const policy of Object.values(policies)) {
+      const custom =
+        (
+          policy as {
+            Properties?: {
+              ResponseHeadersPolicyConfig?: {
+                CustomHeadersConfig?: { Items?: Array<{ Header: string }> };
+              };
+            };
+          }
+        ).Properties?.ResponseHeadersPolicyConfig?.CustomHeadersConfig?.Items ?? [];
+      for (const item of custom) expect(security.has(item.Header.toLowerCase())).toBe(false);
+    }
+    // And the blob policy still sandboxes what it serves.
+    core.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+      ResponseHeadersPolicyConfig: Match.objectLike({
+        SecurityHeadersConfig: Match.objectLike({
+          ContentSecurityPolicy: { ContentSecurityPolicy: "sandbox", Override: true },
+        }),
+      }),
+    });
+  });
+});
+
 describe("Fleet stack", () => {
   const { fleet, image } = synth();
 
