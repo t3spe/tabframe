@@ -9,10 +9,14 @@ import {
   emptyState,
   FLASH_MS,
   HISTORY_CAP,
+  headerSlot,
   hostCount,
   inFlightByNode,
   isFlashing,
+  isRunning,
   ledgerRows,
+  loopLabel,
+  loopState,
   machineBanner,
   PULSE_CAP,
   planTask,
@@ -21,6 +25,7 @@ import {
   rotationCountdown,
   stageStrip,
   stageTasks,
+  stopTitle,
   TASK_COLOR_LABELS,
   THROUGHPUT_WINDOW_MS,
   taskColor,
@@ -1051,7 +1056,7 @@ describe("stop and start (WP6.1)", () => {
     s = applyMessage(s, { t: "controlApplied", ...env, seq: 2, op: "stop", nodeIds: [] });
     expect(s.machine?.stopped).toBe(true);
     expect(s.refresh).toBe(false);
-    expect(s.activity.at(-1)?.text).toBe("stop");
+    expect(s.activity.at(-1)?.text).toContain("stop: the loop is held until Start");
     s = applyMessage(s, { t: "controlApplied", ...env, seq: 3, op: "start", nodeIds: [] });
     expect(s.machine?.stopped).toBe(false);
     // Pause and resume the same way (WP6.4).
@@ -1059,5 +1064,76 @@ describe("stop and start (WP6.1)", () => {
     expect(s.machine?.paused).toBe(true);
     s = applyMessage(s, { t: "controlApplied", ...env, seq: 5, op: "resume", nodeIds: [] });
     expect(s.machine?.paused).toBe(false);
+  });
+});
+
+describe("the header's one slot and the loop pill (WP7.1)", () => {
+  const machine = (flags: { stopped?: boolean; yielded?: boolean; paused?: boolean }) => ({
+    awake: true,
+    reason: null,
+    redundancy: false,
+    stopped: flags.stopped ?? false,
+    yielded: flags.yielded ?? false,
+    paused: flags.paused ?? false,
+    nextRotationAt: null,
+    uptimeMs: 0,
+  });
+  const execution = (phase: string, human = false) =>
+    ({
+      executionId: "e7",
+      programName: "wordcount",
+      phase,
+      human,
+    }) as unknown as ClusterState["execution"];
+  const at = (
+    flags: { stopped?: boolean; yielded?: boolean; paused?: boolean },
+    exec: ClusterState["execution"] = null,
+  ): ClusterState => ({ ...emptyState(), machine: machine(flags), execution: exec });
+
+  test("the loop's state reads paused, held, yielded, running, in that order of precedence", () => {
+    expect(loopState(at({}))).toBe("running");
+    expect(loopState(at({ stopped: true }))).toBe("held");
+    expect(loopState(at({ yielded: true }))).toBe("yielded");
+    expect(loopState(at({ stopped: true, yielded: true }))).toBe("held");
+    expect(loopState(at({ paused: true, stopped: true }))).toBe("paused");
+    expect(loopState({ ...emptyState(), machine: null })).toBe("running");
+    expect(loopLabel(at({ yielded: true }))).toBe("loop · yielded to you");
+    expect(loopLabel(at({ paused: true }))).toBe("loop · paused by the editor");
+  });
+
+  test("the slot follows what a visitor can do now: Stop while anything runs, Start when idle and held", () => {
+    for (const phase of ["planning", "running", "folding"]) {
+      expect(isRunning(at({}, execution(phase)))).toBe(true);
+      expect(headerSlot(at({}, execution(phase)))).toBe("stop");
+      expect(headerSlot(at({ stopped: true }, execution(phase, true)))).toBe("stop");
+      expect(headerSlot(at({ yielded: true }, execution(phase, true)))).toBe("stop");
+      expect(headerSlot(at({ paused: true }, execution(phase)))).toBe("resume");
+    }
+    for (const phase of ["done", "failed", "stopped"]) {
+      expect(isRunning(at({}, execution(phase)))).toBe(false);
+      expect(headerSlot(at({}, execution(phase)))).toBe("stop"); // the loop is free: hold it
+      expect(headerSlot(at({ stopped: true }, execution(phase)))).toBe("start");
+      expect(headerSlot(at({ yielded: true }, execution(phase)))).toBe("start");
+      expect(headerSlot(at({ paused: true }, execution(phase)))).toBe("resume");
+    }
+    expect(headerSlot(at({}))).toBe("stop");
+    expect(headerSlot(at({ stopped: true }))).toBe("start");
+  });
+
+  test("Stop's tooltip names what it would end", () => {
+    expect(stopTitle(at({}, execution("running", true)))).toContain(
+      "Ends wordcount e7 (a person's launch)",
+    );
+    expect(stopTitle(at({ yielded: true }, execution("done")))).toContain("before its next frame");
+  });
+
+  test("the activity line says what Stop and Start did (rule R2)", () => {
+    const sc = new Script(3);
+    sc.startStage(2);
+    sc.send({ t: "controlApplied", op: "stop", nodeIds: [] });
+    expect(sc.state.activity.at(-1)?.text).toContain("the loop is held until Start");
+    expect(sc.state.machine?.stopped).toBe(true);
+    sc.send({ t: "controlApplied", op: "start", nodeIds: [] });
+    expect(sc.state.activity.at(-1)?.text).toBe("start: the loop runs again");
   });
 });

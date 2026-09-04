@@ -593,7 +593,18 @@ export function applyMessage(
       if ((msg.op === "pause" || msg.op === "resume") && next.machine)
         next.machine = { ...next.machine, paused: msg.op === "pause" };
       const who = msg.nodeIds.length ? `: ${msg.nodeIds.join(" ")}` : "";
-      return note(next, now, "control", `${msg.op}${who}`);
+      // The line says what the control did, in the words of the page (WP7.1, rule R2).
+      const said =
+        msg.op === "stop"
+          ? `stop: ${state.execution && isRunningPhase(state.execution.phase) ? `${state.execution.executionId} ended, ` : ""}the loop is held until Start; a launch still runs at once`
+          : msg.op === "start"
+            ? "start: the loop runs again"
+            : msg.op === "pause"
+              ? "pause: an editor tab holds the machine; in-flight tasks finish, nothing new starts"
+              : msg.op === "resume"
+                ? "resume: the editor's pause is lifted"
+                : `${msg.op}${who}`;
+      return note(next, now, "control", said);
     }
     case "programAdded": {
       const next = advance(state, msg.seq);
@@ -997,6 +1008,67 @@ function pruneTo(times: readonly number[], now: number, windowMs: number): numbe
 /** The page that toggles redundancy knows the value it asked for; the wire's echo carries none. */
 export function withRedundancy(state: ClusterState, on: boolean): ClusterState {
   return state.machine ? { ...state, machine: { ...state.machine, redundancy: on } } : state;
+}
+
+// ---- the header's one slot and the loop pill (WP7.1) -------------------------------------------
+
+/** Planning, running, and folding are "running" to a visitor: something is happening on the stage. */
+export function isRunningPhase(phase: Phase): boolean {
+  return phase === "planning" || phase === "running" || phase === "folding";
+}
+
+/** Whether an execution is on the stage right now. */
+export function isRunning(state: ClusterState): boolean {
+  return state.execution !== null && isRunningPhase(state.execution.phase);
+}
+
+/** The automatic loop's state, in the order a visitor needs to know it. */
+export type LoopState = "paused" | "held" | "yielded" | "running";
+
+export function loopState(state: ClusterState): LoopState {
+  const m = state.machine;
+  if (m?.paused) return "paused";
+  if (m?.stopped) return "held";
+  if (m?.yielded) return "yielded";
+  return "running";
+}
+
+/** The loop pill's words: what the loop is doing and what changes it. */
+export function loopLabel(state: ClusterState): string {
+  switch (loopState(state)) {
+    case "paused":
+      return "loop · paused by the editor";
+    case "held":
+      return "loop · held by Stop";
+    case "yielded":
+      return "loop · yielded to you";
+    default:
+      return "loop · running";
+  }
+}
+
+/**
+ * The header's one slot always means "what you can do to the machine right now": Resume while an
+ * editor tab holds it, Stop while anything runs (the loop's frame or a person's launch), Start
+ * when nothing runs and the loop is held or has yielded, and Stop again when the loop is free —
+ * to hold it before its next frame.
+ */
+export type HeaderSlot = "stop" | "start" | "resume";
+
+export function headerSlot(state: ClusterState): HeaderSlot {
+  const loop = loopState(state);
+  if (loop === "paused") return "resume";
+  if (isRunning(state)) return "stop";
+  if (loop === "held" || loop === "yielded") return "start";
+  return "stop";
+}
+
+/** Stop's tooltip depends on what it would end. */
+export function stopTitle(state: ClusterState): string {
+  const exec = state.execution;
+  if (exec && isRunningPhase(exec.phase))
+    return `Ends ${exec.programName} ${exec.executionId}${exec.human ? " (a person's launch)" : ""} and holds the automatic loop until Start; a launch of yours still runs at once`;
+  return "Holds the automatic loop before its next frame; Start lets it run again; a launch of yours still runs at once";
 }
 
 // ---- selectors --------------------------------------------------------------------------------

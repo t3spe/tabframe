@@ -169,13 +169,17 @@ test("live: cluster controls go over the observer socket and the machine answers
   await expect(page.locator("#start")).toBeHidden();
   await page.click("#stop");
   await expect(page.locator("#activity")).toContainText("stop");
-  await expect(page.locator("#exec")).toHaveText("idle · stopped by a person");
+  await expect(page.locator("#exec")).toHaveText("idle");
+  await expect(page.locator("#loop")).toHaveText("loop · held by Stop");
   await expect(page.locator("#start")).toBeVisible();
   await expect(page.locator("#stop")).toBeHidden();
+  // The page says what its control did (WP7.1, rule R2).
+  await expect(page.locator("#notice")).toContainText("the loop is held until Start");
   await page.reload();
   await expect(page.locator("#machine")).toHaveText(/live/);
   await expect(page.locator("#start")).toBeVisible(); // the snapshot carries it
   await page.click("#start");
   await expect(page.locator("#stop")).toBeVisible();
   await expect(page.locator("#exec")).toHaveText("idle");
+  await expect(page.locator("#loop")).toHaveText("loop · running");
 });

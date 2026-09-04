@@ -1255,3 +1255,14 @@ body[data-panel] .panel-only {
   border-color: var(--warn);
   color: var(--warn);
 }
+
+/* WP7.1: the loop pill is quiet while the loop runs and amber whenever a person holds it. */
+.pill.loop[data-loop="running"] {
+  color: var(--dim);
+}
+.pill.loop[data-loop="held"],
+.pill.loop[data-loop="yielded"],
+.pill.loop[data-loop="paused"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}

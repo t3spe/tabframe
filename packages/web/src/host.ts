@@ -14,14 +14,18 @@ import {
   applyMessage,
   type ClusterState,
   emptyState,
+  headerSlot,
   hostCount,
   inFlightByNode,
   isFlashing,
+  loopLabel,
+  loopState,
   machineBanner,
   type Pulse,
   planTask,
   progress,
   stageTasks,
+  stopTitle,
   TASK_COLOR_LABELS,
   type TaskColor,
   taskColor,
@@ -123,6 +127,7 @@ const els = {
   bannerTitle: $<HTMLElement>("#bannerTitle"),
   bannerBody: $<HTMLSpanElement>("#bannerBody"),
   bannerHint: $<HTMLSpanElement>("#bannerHint"),
+  loop: $<HTMLSpanElement>("#loop"),
   chart: $<HTMLCanvasElement>("#throughputChart"),
   figure: $<HTMLSpanElement>("#throughputFigure"),
   pulses: $<HTMLUListElement>("#pulses"),
@@ -422,25 +427,29 @@ function render(state: ClusterState): void {
   els.gen.textContent = `gen ${state.generation ?? "—"}`;
   els.seq.textContent = `seq ${state.seq}`;
   els.counts.textContent = `${state.nodes.size} nodes · ${hostCount(state)} hosts`;
-  const stopped = state.machine?.stopped === true;
-  const yielded = state.machine?.yielded === true && !stopped;
-  const paused = state.machine?.paused === true;
-  const suffix = `${stopped && exec?.phase !== "running" && exec?.phase !== "stopped" ? " · stopped" : ""}${yielded && exec?.phase !== "running" ? " · loop yielded to you" : ""}${paused ? " · paused (editor open)" : ""}`;
+  // The execution pill is about the execution; the loop pill is about the loop (WP7.1).
   els.exec.textContent = exec
-    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}${suffix}`
-    : stopped
-      ? "idle · stopped by a person"
-      : yielded
-        ? "idle · loop yielded to you"
-        : paused
-          ? "idle · paused (editor open)"
-          : "idle";
-  $<HTMLButtonElement>("#resume").hidden = !paused;
+    ? `${exec.programName} · ${exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase} · ${prog.done}/${prog.total}`
+    : "idle";
   els.exec.className = `pill ${exec?.phase === "failed" ? "off" : exec ? "live" : ""}`;
-  // One of the two shows: Stop while the loop may run, Start once a person stopped it or the
-  // loop yielded to one (WP6.8).
-  $<HTMLButtonElement>("#stop").hidden = stopped || yielded;
-  $<HTMLButtonElement>("#start").hidden = !(stopped || yielded);
+  const loop = loopState(state);
+  els.loop.textContent = loopLabel(state);
+  els.loop.dataset.loop = loop;
+  els.loop.title =
+    loop === "running"
+      ? "The automatic loop renders frame after frame while someone watches"
+      : loop === "held"
+        ? "A person pressed Stop: the loop launches nothing until Start; a launch of yours still runs at once"
+        : loop === "yielded"
+          ? "Your launch ended: the result stays on the stage until Start or ten quiet minutes"
+          : "An editor tab holds the machine: in-flight tasks finish, nothing new starts; closing it or launching resumes";
+  // The header's one slot means "what you can do to the machine right now" (WP7.1, rule R3).
+  const slot = headerSlot(state);
+  $<HTMLButtonElement>("#stop").hidden = slot !== "stop";
+  $<HTMLButtonElement>("#start").hidden = slot !== "start";
+  $<HTMLButtonElement>("#resume").hidden = slot !== "resume";
+  $<HTMLButtonElement>("#stop").title = stopTitle(state);
+  noticeOwnControl(state);
   els.rate.textContent = `${throughput(state, now).toFixed(1)} tasks/s`;
   const due = state.machine?.nextRotationAt ?? null;
   els.nextRotation.hidden = due === null;
@@ -820,8 +829,27 @@ function issue(control: ControlRequest): boolean {
   }
   return sent;
 }
+/**
+ * What a control did, said back (WP7.1, rule R2): when a control this page issued in the last ten
+ * seconds is echoed by the machine, its activity line shows in the notice for a few seconds.
+ */
+let issuedAt = 0;
+let noticedSeq = 0;
+function noticeOwnControl(state: ClusterState): void {
+  if (Date.now() - issuedAt > 10_000) return;
+  const last = state.activity.at(-1);
+  if (!last || last.kind !== "control" || last.seq <= noticedSeq) return;
+  noticedSeq = last.seq;
+  transientNotice = last.text;
+  if (transientTimer) clearTimeout(transientTimer);
+  transientTimer = setTimeout(() => {
+    transientNotice = null;
+    scheduleRender();
+  }, 5_000);
+}
 for (const [button, control] of controlButtons) {
   button.onclick = () => {
+    issuedAt = Date.now();
     issue(control);
     button.disabled = true;
     setTimeout(() => {

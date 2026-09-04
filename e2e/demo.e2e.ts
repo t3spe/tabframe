@@ -311,7 +311,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await page.click("#openEditor");
   const editor = await editorOpened;
   await expect(editor.locator("#machine")).toHaveText(/live/, { timeout: 60_000 });
-  await expect(page.locator("#exec")).toContainText("paused (editor open)", { timeout: 30_000 });
+  await expect(page.locator("#loop")).toContainText("paused by the editor", { timeout: 30_000 });
   await expect(page.locator("#resume")).toBeVisible();
   beat("paused while the editor is open");
   await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
@@ -353,30 +353,47 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   const stageOf = () =>
     page.evaluate(() => {
       const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? "";
+      const shown = ["#stop", "#start", "#resume"].find(
+        (sel) => !(document.querySelector(sel) as HTMLElement).hidden,
+      );
       return {
         exec: text("#exec"),
+        loop: text("#loop"),
+        slot: shown ?? "none",
         stages: document.querySelectorAll("#strip .stage").length,
         bars: document.querySelectorAll("#result .bars .bar-row").length,
       };
     });
   let last = "";
   let seenStages = 0;
+  let stopWhileRunning = false;
   await expect
     .poll(
       async () => {
         const s = await stageOf();
-        const line = `${s.exec} · stages ${s.stages} · bars ${s.bars}`;
+        const line = `${s.exec} · ${s.loop} · ${s.slot} · stages ${s.stages} · bars ${s.bars}`;
         if (line !== last) {
           beat(`word count: ${line}`);
           last = line;
         }
         if (s.exec.startsWith("wordcount")) seenStages = Math.max(seenStages, s.stages);
+        // While a person's launch runs the slot offers Stop, whatever the loop's state (WP7.1).
+        if (
+          s.exec.startsWith("wordcount") &&
+          !s.exec.startsWith("wordcount · done") &&
+          s.slot === "#stop"
+        )
+          stopWhileRunning = true;
         return s.exec.startsWith("wordcount · done") && s.bars > 0;
       },
       { timeout: 300_000, intervals: [500] },
     )
     .toBe(true);
   expect(seenStages).toBeGreaterThanOrEqual(3); // the strip shows a fold row while folding
+  expect(stopWhileRunning).toBe(true);
+  // Once it ends the loop has yielded: nothing runs, the slot offers Start.
+  await expect(page.locator("#loop")).toContainText("yielded to you", { timeout: 15_000 });
+  await expect(page.locator("#start")).toBeVisible();
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", /\w+/);
   await expect(page.locator("#files")).toContainText("/in/corpus.txt", { timeout: 15_000 });
   beat("word count drew its bars");
@@ -396,7 +413,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   );
   // The loop yielded to the person's launches and waits for Start (WP6.8): the text stays on the
   // stage until someone asks for the loop back.
-  await expect(page.locator("#exec")).toContainText("loop yielded to you", { timeout: 30_000 });
+  await expect(page.locator("#loop")).toContainText("yielded to you", { timeout: 30_000 });
   await expect(page.locator("#start")).toBeVisible();
   await page.waitForTimeout(5_000);
   await expect(page.locator("#result .text-view")).toContainText("Call me Ishmael");
