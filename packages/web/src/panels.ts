@@ -134,6 +134,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     files: $<HTMLDivElement>(root, "#files"),
     filesRoot: $<HTMLSpanElement>(root, "#filesRoot"),
     filePreview: $<HTMLDivElement>(root, "#filePreview"),
+    ledgerPreview: $<HTMLDivElement>(root, "#ledgerPreview"),
     taskDetail: $<HTMLDivElement>(root, "#taskDetail"),
     ledger: $<HTMLTableSectionElement>(root, "#ledger tbody"),
     ledgerNote: $<HTMLParagraphElement>(root, "#ledgerNote"),
@@ -149,6 +150,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   /** A viewer tab opened on a file keeps it across executions until the reader browses elsewhere. */
   let pinned = deps.openFile != null || deps.openRoot != null;
   let dismissedFailure: string | null = null;
+  /** The ledger row whose bytes are shown in the ledger tab's preview (WP7.4). */
+  let selectedLedger: { hash: string; taskId: string; size: number | null } | null = null;
   /** Programs whose launch form is open, with the text typed so far. */
   /**
    * The programs panel keeps one DOM row per program and one launch form per open program, and
@@ -558,13 +561,8 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   function renderFiles(state: ClusterState): void {
     const exec = state.execution;
     const root = browsingRoot ?? exec?.root ?? null;
-    const sig = JSON.stringify([
-      root,
-      browsingRoot,
-      exec?.executionId,
-      selectedFile,
-      cache.version,
-    ]);
+    // The selection is not part of the signature: a click changes a class, never the list (WP7.4).
+    const sig = JSON.stringify([root, browsingRoot, exec?.executionId, cache.version]);
     if (!changed("files", sig)) return;
     els.filesRoot.textContent = root ? short(root, 16) : "—";
     els.filesRoot.title = root ?? "";
@@ -642,26 +640,39 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         const isSelected = selectedFile?.hash === f.hash && selectedFile.path === f.path;
         const li = el("li", `file${isSelected ? " selected" : ""}`);
         li.dataset.path = f.path;
-        li.title = f.hash;
-        // The name opens the file in its own tab, rendered (WP6.8); the row still selects it here.
-        const name = el("a", "mono open-file", f.path);
-        name.href = fileViewerUrl(root, f);
-        name.target = "_blank";
-        name.rel = "noreferrer";
-        name.title = `open ${f.path} in a new tab`;
-        name.onclick = (ev) => ev.stopPropagation();
-        li.append(name, el("span", "muted", ` ${fmtBytes(f.size)} · ${short(f.hash, 8)}`));
-        li.onclick = () => {
-          pinned = false;
-          selectedFile = isSelected ? null : f;
-          deps.rerender();
-        };
+        li.dataset.hash = f.hash;
+        li.title = `${f.hash} · click to see the bytes here`;
+        // The name shows the file here, in the preview box (WP7.4, D3); the small arrow opens it in
+        // its own tab, pinned (WP6.8).
+        const name = el("span", "mono open-file", f.path);
+        const tab = el("a", "open-file-tab", "↗");
+        tab.href = fileViewerUrl(root, f);
+        tab.target = "_blank";
+        tab.rel = "noreferrer";
+        tab.title = `open ${f.path} in its own tab`;
+        tab.onclick = (ev) => ev.stopPropagation();
+        const meta = el("span", "muted", ` ${fmtBytes(f.size)} · ${short(f.hash, 8)} `);
+        meta.append(tab);
+        li.append(name, meta);
+        li.onclick = () => selectFile(isSelected && selectedFile?.hash === f.hash ? null : f);
         list.append(li);
       }
       section.append(list);
       els.files.append(section);
     }
     renderPreview(state);
+  }
+
+  /** A click on a file: the row's class and the preview change; the list stays as it is. */
+  function selectFile(f: FileEntry | null): void {
+    pinned = false;
+    selectedFile = f;
+    for (const li of els.files.querySelectorAll<HTMLLIElement>("li.file"))
+      li.classList.toggle(
+        "selected",
+        f !== null && li.dataset.hash === f.hash && li.dataset.path === f.path,
+      );
+    if (last) renderPreview(last);
   }
 
   /**
@@ -683,25 +694,85 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
 
   function renderPreview(state: ClusterState): void {
     const f = selectedFile;
-    els.filePreview.hidden = !f;
-    els.filePreview.replaceChildren();
-    if (!f) return;
-    const head = el("div", "muted small mono", `${f.path} · ${fmtBytes(f.size)} · ${f.hash}`);
+    const sig = JSON.stringify([
+      f?.hash,
+      f?.path,
+      f ? cache.get(f.hash) !== "pending" : null,
+      cache.version,
+    ]);
+    if (!changed("preview", sig)) return;
+    renderBytesInto(
+      els.filePreview,
+      f ? { hash: f.hash, label: f.path, size: f.size } : null,
+      state,
+      "Click a file to see its bytes here: a bar chart, text, a tile, a manifest, or the raw bytes.",
+    );
+  }
+
+  /** The ledger tab's preview: the bytes behind the clicked row (WP7.4, D3). */
+  function renderLedgerPreview(state: ClusterState): void {
+    const r = selectedLedger;
+    const sig = JSON.stringify([
+      r?.hash,
+      r ? cache.get(r.hash) !== "pending" : null,
+      cache.version,
+    ]);
+    if (!changed("ledgerPreview", sig)) return;
+    renderBytesInto(
+      els.ledgerPreview,
+      r ? { hash: r.hash, label: `task ${r.taskId}`, size: r.size, taskId: r.taskId } : null,
+      state,
+      "Click a row to see the task's bytes here: a tile, a payload, text, or the raw bytes.",
+    );
+  }
+
+  function selectLedger(row: { hash: string; taskId: string; size: number | null } | null): void {
+    selectedLedger = row;
+    for (const tr of els.ledger.querySelectorAll<HTMLTableRowElement>("tbody tr"))
+      tr.classList.toggle("selected", row !== null && tr.dataset.hash === row.hash);
+    if (last) renderLedgerPreview(last);
+  }
+
+  /**
+   * One renderer for both previews: a head with the name, size, hash, and a small "raw ↗" link to
+   * the store, then the bytes rendered by kind. The box is always there; empty, it explains itself.
+   */
+  function renderBytesInto(
+    box: HTMLElement,
+    target: { hash: string; label: string; size: number | null; taskId?: string } | null,
+    state: ClusterState,
+    placeholder: string,
+  ): void {
+    box.hidden = false;
+    box.replaceChildren();
+    if (!target) {
+      box.append(el("p", "muted small placeholder", placeholder));
+      return;
+    }
+    const head = el(
+      "div",
+      "muted small mono",
+      `${target.label}${target.size !== null ? ` · ${fmtBytes(target.size)}` : ""} · ${target.hash}`,
+    );
     const store = deps.storeBase();
     if (store) {
-      const raw = el("a", "mono", " raw bytes ↗");
-      raw.href = `${store.replace(/\/$/, "")}/${f.hash}`;
+      const raw = el("a", "mono raw", " raw ↗");
+      raw.href = `${store.replace(/\/$/, "")}/${target.hash}`;
       raw.target = "_blank";
       raw.rel = "noreferrer";
-      raw.title = "the bytes as the store holds them, by hash";
+      raw.title = "the bytes as the store holds them, by hash (your browser will save the file)";
       head.append(raw);
     }
-    els.filePreview.append(head);
-    const bytes = cache.get(f.hash);
-    if (bytes === "pending") return void els.filePreview.append(el("p", "muted", "fetching…"));
+    box.append(head);
+    const bytes = cache.get(target.hash);
+    if (bytes === "pending") return void box.append(el("p", "muted", "fetching…"));
     if (bytes === "error" || bytes === null)
-      return void els.filePreview.append(el("p", "bad", "could not be fetched"));
-    els.filePreview.append(previewNode(previewOf(bytes, tileHint(state.execution, state)), bytes));
+      return void box.append(el("p", "bad", "could not be fetched"));
+    const task = target.taskId ? state.tasks.get(target.taskId) : undefined;
+    const tile = task?.place
+      ? { w: task.place.w, h: task.place.h }
+      : tileHint(state.execution, state);
+    box.append(previewNode(previewOf(bytes, tile), bytes));
   }
 
   function previewNode(p: Preview, bytes: Uint8Array): HTMLElement {
@@ -885,18 +956,27 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
         hash.title = r.output;
         const where = el("td");
         if (store) {
+          // The whole address as text (WP6.8); the small link is the download, the row is the view.
           const href = `${store.replace(/\/$/, "")}/${r.output}`;
-          const a = el("a", "mono", href);
+          where.append(el("span", "mono", href), " ");
+          const a = el("a", "mono raw", "raw ↗");
           a.href = href;
           a.target = "_blank";
           a.rel = "noreferrer";
-          a.title = "the bytes, by hash, from the store";
+          a.title = "the bytes as the store holds them (your browser will save the file)";
+          a.onclick = (ev) => ev.stopPropagation();
           where.append(a);
         } else {
           const here = el("span", "muted", "demo store");
           here.title = "this page's in-memory store; nothing is on the network";
           where.append(here);
         }
+        tr.classList.toggle("selected", selectedLedger?.hash === r.output);
+        tr.title = "click to see the task's bytes in the preview";
+        tr.onclick = () =>
+          selectLedger(
+            selectedLedger?.hash === r.output ? null : { hash: r.output, taskId: r.taskId, size },
+          );
         tr.append(
           el("td", "mono", r.taskId + (r.verified ? " ✓" : "")),
           el("td", "mono", r.nodeId ?? "—"),
@@ -949,6 +1029,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     renderFiles(state);
     renderTask(state);
     renderLedger(state);
+    renderLedgerPreview(state);
   }
 
   return {

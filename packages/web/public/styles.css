@@ -866,6 +866,7 @@ body:not([data-panel]) #ledger,
 body:not([data-panel]) #ledgerNote,
 body:not([data-panel]) #files,
 body:not([data-panel]) #filePreview,
+body:not([data-panel]) #ledgerPreview,
 body:not([data-panel]) #filesNote,
 body:not([data-panel]) #activity {
   display: none;
@@ -1293,4 +1294,38 @@ body[data-panel] .panel-only {
 .pill.loop[data-loop="paused"] {
   color: var(--warn);
   border-color: var(--warn);
+}
+
+/* WP7.4: on a panel tab the preview box is always there, so a click never moves the page. */
+body[data-panel] .preview-box {
+  display: block;
+  min-height: 11rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem 0.7rem;
+  margin: 0.5rem 0;
+}
+body[data-panel] .preview-box[hidden] {
+  display: block !important;
+  visibility: visible;
+}
+.preview-box .placeholder {
+  margin: 0.2rem 0;
+}
+.open-file-tab {
+  color: var(--dim);
+  text-decoration: none;
+  padding: 0 0.2rem;
+}
+.open-file-tab:hover {
+  color: var(--acc);
+}
+#ledger tbody tr {
+  cursor: pointer;
+}
+#ledger tbody tr:hover td {
+  background: rgba(110, 168, 255, 0.05);
+}
+#ledger tbody tr.selected td {
+  background: rgba(110, 168, 255, 0.1);
 }
