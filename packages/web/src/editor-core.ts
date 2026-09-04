@@ -231,8 +231,10 @@ export function inspectModule(bytes: Uint8Array): ModuleInfo {
   return {
     ok: true,
     size: bytes.length,
-    imports: WebAssembly.Module.imports(v.module).map((i) => `${i.module}.${i.name}`),
-    exports: WebAssembly.Module.exports(v.module).map((e) => e.name),
+    imports: WebAssembly.Module.imports(v.module as WebAssembly.Module).map(
+      (i) => `${i.module}.${i.name}`,
+    ),
+    exports: WebAssembly.Module.exports(v.module as WebAssembly.Module).map((e) => e.name),
     memoryMax: v.memory.max,
   };
 }

@@ -36,9 +36,9 @@ class FakeFleet implements CoreFleet {
   launches = 0;
   terminated: string[] = [];
   dead = new Set<string>();
-  async launch(): Promise<string> {
+  async launch(): Promise<{ microvmId: string; token: string }> {
     this.launches += 1;
-    return `microvm-fake-${this.launches}`;
+    return { microvmId: `microvm-fake-${this.launches}`, token: "t".repeat(32) };
   }
   async terminate(microvmId: string): Promise<void> {
     this.terminated.push(microvmId);

@@ -39,9 +39,15 @@ try {
 } catch {
   // not a git checkout: the stamp stays unknown
 }
+let branch = "unknown";
+try {
+  branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
+} catch {
+  // not a git checkout
+}
 writeFileSync(
   path.join(out, "build.json"),
-  `${JSON.stringify({ sha, at: new Date().toISOString() })}\n`,
+  `${JSON.stringify({ sha, branch, ungated: process.env.TABFRAME_DEPLOY_UNGATED === "1", at: new Date().toISOString() })}\n`,
 );
 // Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
 // inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as

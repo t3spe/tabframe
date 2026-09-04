@@ -39,17 +39,19 @@ export class FleetStack extends cdk.Stack {
     };
 
     const pointerArn = parameterArn(this, NAMES.pointerParam);
-    // Launches are allowed from the Tabframe image only (WP8.1); the other MicroVM actions keep
-    // the image-wide resource until the API's resource model for a MicroVM is pinned down.
-    const microvmActionsOnImages = (actions: string[]) =>
-      new iam.PolicyStatement({
-        actions,
-        resources: [
-          actions.length === 1 && actions[0] === "lambda:RunMicrovm"
-            ? image.imageArn
-            : anyImageArn(this),
-        ],
-      });
+    // Launches are allowed from the Tabframe image only (WP8.2: loop 1's version only applied to a
+    // single-action statement, which no caller used); the other MicroVM actions keep the image-wide
+    // resource until the API's resource model for a MicroVM is pinned down.
+    const microvmActionsOnImages = (actions: string[]) => {
+      const run = actions.filter((a) => a === "lambda:RunMicrovm");
+      const rest = actions.filter((a) => a !== "lambda:RunMicrovm");
+      const statements: cdk.aws_iam.PolicyStatement[] = [];
+      if (run.length)
+        statements.push(new iam.PolicyStatement({ actions: run, resources: [image.imageArn] }));
+      if (rest.length)
+        statements.push(new iam.PolicyStatement({ actions: rest, resources: [anyImageArn(this)] }));
+      return statements;
+    };
 
     // session references rotate by its fixed name, not by resource, so the graph stays acyclic:
     // rotate needs the session URL, session needs only rotate's ARN.
@@ -78,9 +80,8 @@ export class FleetStack extends cdk.Stack {
       },
       description: "Tabframe session: vends the control-plane endpoint and a shared token; heals",
     });
-    this.session.addToRolePolicy(
-      microvmActionsOnImages(["lambda:CreateMicrovmAuthToken", "lambda:GetMicrovm"]),
-    );
+    for (const st of microvmActionsOnImages(["lambda:CreateMicrovmAuthToken", "lambda:GetMicrovm"]))
+      this.session.addToRolePolicy(st);
     this.session.addToRolePolicy(
       new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [pointerArn] }),
     );
@@ -102,7 +103,9 @@ export class FleetStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 256,
-      timeout: cdk.Duration.minutes(5),
+      // Ten minutes (WP8.2): a ready wait of two minutes plus handover, adopt, drain, and their
+      // retries must not be cut off between the pointer flip and the retire.
+      timeout: cdk.Duration.minutes(10),
       bundling,
       environment: {
         TABFRAME_POINTER_PARAM: NAMES.pointerParam,
@@ -116,15 +119,14 @@ export class FleetStack extends cdk.Stack {
       description:
         "Tabframe rotate: launches and hands over control planes; the sole pointer writer",
     });
-    this.rotate.addToRolePolicy(
-      microvmActionsOnImages([
-        "lambda:RunMicrovm",
-        "lambda:GetMicrovm",
-        "lambda:TerminateMicrovm",
-        "lambda:CreateMicrovmAuthToken",
-        "lambda:GetMicrovmImage",
-      ]),
-    );
+    for (const st of microvmActionsOnImages([
+      "lambda:RunMicrovm",
+      "lambda:GetMicrovm",
+      "lambda:TerminateMicrovm",
+      "lambda:CreateMicrovmAuthToken",
+      "lambda:GetMicrovmImage",
+    ]))
+      this.rotate.addToRolePolicy(st);
     this.rotate.addToRolePolicy(
       new iam.PolicyStatement({ actions: ["lambda:ListMicrovms"], resources: ["*"] }),
     );
@@ -158,13 +160,13 @@ export class FleetStack extends cdk.Stack {
       schedule: cdk.aws_events.Schedule.rate(cdk.Duration.hours(1)),
       // Created disabled so a deploy never starts rotating on its own; `up` enables it (D20).
       enabled: false,
-      targets: [
-        new cdk.aws_events_targets.LambdaFunction(this.rotate, {
-          // A rotation that throws is retried twice by the platform, within the hour (WP8.1).
-          retryAttempts: 2,
-          maxEventAge: cdk.Duration.minutes(30),
-        }),
-      ],
+      targets: [new cdk.aws_events_targets.LambdaFunction(this.rotate)],
+    });
+    // A rotation that throws is retried twice by the platform within the hour (WP8.2: this is the
+    // function's own asynchronous-invoke policy; the rule target's retries govern delivery only).
+    this.rotate.configureAsyncInvoke({
+      retryAttempts: 2,
+      maxEventAge: cdk.Duration.minutes(30),
     });
     // Alarms (WP8.1): a rotation or a session call that fails is a message to the operator, not
     // a line in a log nobody reads. The topic mails the budget address when one is configured.
@@ -199,6 +201,73 @@ export class FleetStack extends cdk.Stack {
       this.rotate.metricThrottles({ period: cdk.Duration.minutes(5) }),
       "Tabframe: the rotate function was throttled (the account's Lambda pool is busy)",
     );
+
+    // A synthetic canary (WP8.2): every five minutes it fetches the page's config and asks the
+    // session function, and records what it saw. It never touches the MicroVM endpoint — that is
+    // idle-policy traffic and would keep a suspended machine awake all night — so "starting" for
+    // three periods running is the signal that a heal is stuck.
+    const canary = new nodejs.NodejsFunction(this, "Canary", {
+      logRetention,
+      functionName: NAMES.canaryFunction,
+      entry: `${props.fleetDir}/src/lambda/canary.ts`,
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      bundling,
+      environment: {
+        TABFRAME_WEB_ORIGIN: core.webOrigin,
+        TABFRAME_SESSION_URL: this.sessionUrl.url,
+      },
+    });
+    canary.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ["cloudwatch:PutMetricData"], resources: ["*"] }),
+    );
+    new cdk.aws_events.Rule(this, "CanaryEvery5", {
+      schedule: cdk.aws_events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new cdk.aws_events_targets.LambdaFunction(canary)],
+    });
+    const canaryMetric = (name: string) =>
+      new cdk.aws_cloudwatch.Metric({
+        namespace: "Tabframe/Canary",
+        metricName: name,
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(5),
+      });
+    for (const [id, name, description] of [
+      [
+        "PageDown",
+        "PageOk",
+        "Tabframe: the page's config.json did not answer for two of three checks",
+      ],
+      [
+        "SessionDown",
+        "SessionOk",
+        "Tabframe: the session function did not answer for two of three checks",
+      ],
+    ] as const) {
+      const alarm = new cdk.aws_cloudwatch.Alarm(this, id, {
+        alarmDescription: description,
+        metric: canaryMetric(name),
+        threshold: 1,
+        evaluationPeriods: 3,
+        datapointsToAlarm: 2,
+        comparisonOperator: cdk.aws_cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cdk.aws_cloudwatch.TreatMissingData.BREACHING,
+      });
+      alarm.addAlarmAction(new cdk.aws_cloudwatch_actions.SnsAction(alarms));
+    }
+    const stuck = new cdk.aws_cloudwatch.Alarm(this, "StuckStarting", {
+      alarmDescription:
+        "Tabframe: the session has said 'starting' for fifteen minutes — a heal is stuck",
+      metric: canaryMetric("Starting"),
+      threshold: 1,
+      evaluationPeriods: 3,
+      comparisonOperator: cdk.aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cdk.aws_cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    stuck.addAlarmAction(new cdk.aws_cloudwatch_actions.SnsAction(alarms));
     // The rule ARN comes from the fixed name: referencing the Rule construct here would close a
     // cycle (function → policy → rule → function).
     this.rotate.addToRolePolicy(

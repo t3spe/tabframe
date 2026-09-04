@@ -1,6 +1,7 @@
 // The control plane's rotation routes against two real processes in image mode: handover, adopt,
 // drain, and the fleet secret that gates them (design §9.3, §9.4).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { HANDOVER_LEASE_MS } from "@tabframe/core";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
 import type { Config } from "./config.ts";
@@ -211,4 +212,65 @@ describe("rotation", () => {
     expect(bad.status).toBe(400);
     expect(neutral.phase).toBe("active");
   }, 30_000);
+});
+
+describe("lease expiry (WP8.2)", () => {
+  test("a control plane whose lease ran out drains and terminates itself when the pointer names a newer generation", async () => {
+    let t = 1_000_000;
+    const clock = { now: () => t };
+    const terminated: string[] = [];
+    const cp = await createControlPlane({ ...imageConfig, generation: 3 }, clock, {
+      store,
+      snapshots: new MemorySnapshots(),
+      programs: [],
+      cores: {
+        launch: async () => ({ microvmId: "core-x", token: "t" }),
+        terminate: async (id) => {
+          terminated.push(id);
+        },
+        gone: async () => [],
+      },
+      pointer: async () => ({ microvmId: "vm-9", generation: 9 }),
+    });
+    planes.push(cp);
+    await run(cp, 3);
+    const handover = await fetch(priv(cp, "/handover"), { method: "POST", headers: withSecret() });
+    expect(handover.status).toBe(200);
+    expect(cp.phase).toBe("handing-over");
+    // The rotation died after the flip: nobody drains this one. The lease runs out.
+    t += HANDOVER_LEASE_MS + 1_000;
+    const deadline = Date.now() + 5_000;
+    while (cp.phase !== "drained" && Date.now() < deadline) await Bun.sleep(25);
+    expect(cp.phase).toBe("drained");
+    expect(terminated).toEqual(["vm-3"]);
+  });
+
+  test("a lease that runs out while the pointer still names this control plane carries on", async () => {
+    let t = 2_000_000;
+    const clock = { now: () => t };
+    const terminated: string[] = [];
+    const cp = await createControlPlane({ ...imageConfig, generation: 4 }, clock, {
+      store,
+      snapshots: new MemorySnapshots(),
+      programs: [],
+      cores: {
+        launch: async () => ({ microvmId: "core-x", token: "t" }),
+        terminate: async (id) => {
+          terminated.push(id);
+        },
+        gone: async () => [],
+      },
+      pointer: async () => ({ microvmId: "vm-4", generation: 4 }),
+    });
+    planes.push(cp);
+    await run(cp, 4);
+    expect(
+      (await fetch(priv(cp, "/handover"), { method: "POST", headers: withSecret() })).status,
+    ).toBe(200);
+    t += HANDOVER_LEASE_MS + 1_000;
+    const deadline = Date.now() + 2_000;
+    while (cp.phase !== "active" && Date.now() < deadline) await Bun.sleep(25);
+    expect(cp.phase).toBe("active");
+    expect(terminated).toEqual([]);
+  });
 });

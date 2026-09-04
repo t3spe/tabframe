@@ -321,3 +321,23 @@ describe("presign bounds (WP8.1)", () => {
     expect(nodeToControlPlane.safeParse(one(1, 65)).success).toBe(false);
   });
 });
+
+describe("presign sizing (WP8.2)", () => {
+  test("a full presigned reply fits one frame", () => {
+    // Twenty-four signed S3 URLs of a generous length, with the headers the store asks for.
+    const query = `X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${"A".repeat(20)}%2F20260904%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20260904T120000Z&X-Amz-Expires=300&X-Amz-SignedHeaders=content-type%3Bhost%3Bx-amz-checksum-sha256&X-Amz-Security-Token=${"T".repeat(1100)}&X-Amz-Signature=${"f".repeat(64)}`;
+    const urls = Array.from({ length: LIMITS.maxPresignItems }, (_, i) => ({
+      hash: i.toString(16).padStart(64, "0"),
+      url: `https://tabframe-blobs-000000000000-us-west-2.s3.us-west-2.amazonaws.com/blob/${"0".repeat(64)}?${query}`,
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-amz-checksum-sha256": "Q".repeat(44),
+      },
+    }));
+    const msg = { t: "presigned", ...base, urls } as const;
+    expect(urls[0]?.url.length).toBeGreaterThan(1400);
+    const wire = encode(msg);
+    expect(wire.length).toBeLessThanOrEqual(LIMITS.maxMessageBytes);
+    expect(decode(controlPlaneToNode, wire).ok).toBe(true);
+  });
+});

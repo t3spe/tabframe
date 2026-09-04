@@ -69,7 +69,14 @@ export function loadProgram(name = "mandelbrot"): LoadedProgram {
   } catch {
     goldens = null;
   }
-  return { name, wasm, module: validation.module, moduleHash: sha256(wasm), manifest, goldens };
+  return {
+    name,
+    wasm,
+    module: validation.module as WebAssembly.Module,
+    moduleHash: sha256(wasm),
+    manifest,
+    goldens,
+  };
 }
 
 /** Put the bundle into the store the way seeding does: module, manifest, bundle manifest. */

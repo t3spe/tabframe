@@ -189,6 +189,9 @@ export class TaskRunner {
 
 /** An error from the host, not from the program: the module never ran (memory, instantiation). */
 export function hostFailure(error: string): boolean {
+  // A program fault is never the host's (WP8.2): an abort whose message says "out of memory" or a
+  // trap naming "network error" would otherwise be released and re-run on every node for ever.
+  if (/^(abort|trap|link): /.test(error)) return false;
   // The host, not the program: memory the host could not give, and the store or the network the
   // host could not reach (WP8.1) — a fetch that 5xx'd, an upload that failed, a presign that timed
   // out. Another node will run the task; the program did nothing wrong.

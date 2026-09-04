@@ -1,3 +1,4 @@
+import { LIMITS } from "@tabframe/protocol";
 import type { PresignedUpload, PresignItem } from "./driver.ts";
 import { sha256Hex } from "./hash.ts";
 
@@ -37,17 +38,21 @@ export class StoreClient {
     return r;
   }
 
-  /** Upload many blobs with one presign round trip; blobs the store already has are skipped. */
+  /** Upload many blobs, presigning in capped batches; blobs the store already has are skipped. */
   async putMany(blobs: Uint8Array[]): Promise<Array<{ hash: string; size: number }>> {
     const items = await Promise.all(
       blobs.map(async (b) => ({ hash: await sha256Hex(b), size: b.length, bytes: b })),
     );
     const unique = new Map<string, { hash: string; size: number; bytes: Uint8Array }>();
     for (const it of items) unique.set(it.hash, it);
-    const presigned = await this.requester.presign(
-      [...unique.values()].map(({ hash, size }) => ({ hash, size })),
-    );
-    const byHash = new Map(presigned.map((p) => [p.hash, p]));
+    // Presigns go in batches of the protocol's cap (WP8.2), one round trip at a time: a frame of
+    // 256 tiles is eleven small requests, not one the control plane refuses.
+    const wanted = [...unique.values()].map(({ hash, size }) => ({ hash, size }));
+    const byHash = new Map<string, PresignedUpload>();
+    for (let i = 0; i < wanted.length; i += LIMITS.maxPresignItems) {
+      const batch = await this.requester.presign(wanted.slice(i, i + LIMITS.maxPresignItems));
+      for (const p of batch) byHash.set(p.hash, p);
+    }
     await Promise.all(
       [...unique.values()].map(async (it) => {
         const p = byHash.get(it.hash);

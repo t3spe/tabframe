@@ -15,6 +15,7 @@ import {
   type Ledger,
   systemClock,
 } from "@tabframe/core";
+import { SsmPointerStore } from "@tabframe/fleet/aws";
 import { CLOSE, encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
 import {
   HASH_RE,
@@ -47,6 +48,10 @@ const FETCH_CAPS = { stageSpec: 1024 * 1024, inheritRoot: 4 * 1024 * 1024 } as c
 const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
 /** Private routes that require the fleet secret from the run payload (design §8). */
 const FLEET_ROUTES = new Set(["/handover", "/adopt", "/drain", "/snapshot", "/diag"]);
+
+/** Client sockets the control plane accepts: the endpoint's sixteen minus two for the fleet (WP8.2). */
+const CLIENT_CONNECTION_CAP = 14;
+let loggedForwarding = false;
 
 function parseNext(body: Uint8Array | null): number | null {
   if (!body || body.length === 0) return null;
@@ -88,6 +93,8 @@ export interface ControlPlaneDeps {
   programs?: DiscoveredProgram[];
   /** Injected in tests; in the image it is built from the run payload. */
   cores?: CoreFleet;
+  /** Who the fleet's pointer names (WP8.2); in the image it reads the SSM parameter. */
+  pointer?: () => Promise<{ microvmId: string | null; generation: number }>;
 }
 
 /**
@@ -105,6 +112,15 @@ export async function createControlPlane(
   let ledger: Ledger | null = null;
   let fleetSecret: string | null = null;
   let cores: CoreFleet | null = deps.cores ?? null;
+  let selfMicrovmId: string | null = null;
+  const readPointer =
+    deps.pointer ??
+    (config.mode === "image" && config.pointerParam
+      ? (() => {
+          const ssm = new SsmPointerStore(config.pointerParam);
+          return () => ssm.read();
+        })()
+      : null);
   let sessionUrl: string | null = config.sessionUrl;
   let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
@@ -253,8 +269,46 @@ export async function createControlPlane(
   }
 
   const timer = setInterval(() => {
-    if (ledger) dispatch({ kind: "tick" });
+    if (!ledger) return;
+    const before = ledger.meta.phase;
+    dispatch({ kind: "tick" });
+    if (before === "handing-over" && ledger.meta.phase === "active") void leaseExpired();
   }, config.tickMs);
+
+  /**
+   * The handover lease ran out (WP8.2): a rotation that died between the pointer flip and the
+   * drain would leave two active generations fighting over the cores. Before carrying on, ask the
+   * pointer; if it names a newer generation elsewhere, this one drains and terminates itself.
+   */
+  async function leaseExpired(): Promise<void> {
+    if (!ledger || !readPointer) {
+      log("lease-expired", { checked: false });
+      return;
+    }
+    let named: { microvmId: string | null; generation: number } | null = null;
+    try {
+      named = await readPointer();
+    } catch (err) {
+      log("lease-expired", { checked: false, error: String(err) });
+      return;
+    }
+    const superseded =
+      named.microvmId !== null &&
+      named.microvmId !== selfMicrovmId &&
+      named.generation > ledger.meta.generation;
+    log("lease-expired", { checked: true, superseded, pointer: named.generation });
+    if (!superseded || !ledger || ledger.meta.phase !== "active") return;
+    const clients = ledger.conns.size;
+    execute(drain(ledger, named.generation, rng));
+    for (const ws of conns.values()) ws.close(1001, "rotating");
+    conns.clear();
+    log("superseded", { by: named.generation, clients, self: selfMicrovmId });
+    if (selfMicrovmId && cores) {
+      await cores
+        .terminate(selfMicrovmId)
+        .catch((err) => log("self-terminate-failed", { error: String(err) }));
+    }
+  }
   // The core's fleet policy counts records; only a `coreGone` removes one. Without this poll a
   // core whose MicroVM died would keep its record until the age ceiling and never be replaced
   // (found by the churn simulation, WP1.9 sim cores).
@@ -310,8 +364,13 @@ export async function createControlPlane(
             .presign(e.items)
             .then((urls) => {
               const ws = conns.get(e.connId);
-              if (ws && ws.readyState === ws.OPEN) {
+              if (!ws || ws.readyState !== ws.OPEN) return;
+              try {
                 ws.send(encode({ t: "presigned", v: PROTOCOL_VERSION, gen: generation, urls }));
+              } catch (err) {
+                // A reply the protocol refuses to encode closes the socket, like "send" (WP8.2).
+                log("send-failed", { connId: e.connId, t: "presigned", error: String(err) });
+                ws.close(CLOSE.invalidMessage, "frame too large");
               }
             })
             .catch((err) => log("presign-failed", { error: String(err) }));
@@ -326,17 +385,24 @@ export async function createControlPlane(
               dispatch({ kind: "blobFetched", hash: e.hash, bytes, purpose: e.purpose }),
             )
             .catch((err) => {
+              // An error is not "missing" (WP8.2): the core retries the effect and fails only past a cap.
               log("fetch-failed", { hash: e.hash, error: String(err) });
-              dispatch({ kind: "blobFetched", hash: e.hash, bytes: null, purpose: e.purpose });
+              dispatch({
+                kind: "blobFetched",
+                hash: e.hash,
+                bytes: null,
+                purpose: e.purpose,
+                error: String(err).slice(0, 200),
+              });
             });
           break;
         case "launchCore": {
           if (!cores) break;
           void cores
             .launch()
-            .then((microvmId) => {
+            .then(({ microvmId, token }) => {
               log("core-launched", { microvmId });
-              dispatch({ kind: "coreLaunched", microvmId });
+              dispatch({ kind: "coreLaunched", microvmId, token });
             })
             .catch((err) => log("core-launch-failed", { error: String(err) }));
           break;
@@ -395,6 +461,23 @@ export async function createControlPlane(
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
+    }
+    // The endpoint holds sixteen connections (design §9.7); two stay free for the fleet's own
+    // calls, so a full house of tabs cannot block a handover or a drain (WP8.2). The client's
+    // address is logged once, to learn whether the proxy forwards it (a per-address quota needs it).
+    if (conns.size >= CLIENT_CONNECTION_CAP) {
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 10\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    if (!loggedForwarding) {
+      loggedForwarding = true;
+      log("upgrade-headers", {
+        forwardedFor: req.headers["x-forwarded-for"] ?? null,
+        realIp: req.headers["x-real-ip"] ?? null,
+      });
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const connId = `c${++connCounter}`;
@@ -487,6 +570,7 @@ export async function createControlPlane(
       }
       fleetSecret = payload.fleetSecret;
       sessionUrl = payload.sessionUrl ?? sessionUrl;
+      selfMicrovmId = microvmId;
       log("run", {
         microvmId,
         role: payload.role,
@@ -519,7 +603,12 @@ export async function createControlPlane(
       // The node orchestrator is the same code a browser tab runs (design §4, §9.3). It is
       // started here rather than as a separate process so the image stays one entry point.
       const { startCore } = await import("./core-node.ts");
-      startCore({ sessionUrl: payload.sessionUrl, microvmId, log });
+      startCore({
+        sessionUrl: payload.sessionUrl,
+        microvmId,
+        coreToken: payload.coreToken ?? null,
+        log,
+      });
       log("role", { role, generation, hostId: `core-${microvmId ?? "unknown"}` });
       return true;
     },
@@ -539,6 +628,9 @@ export async function createControlPlane(
   /** The lifecycle hooks write a snapshot whatever the change state; failures are logged. */
   async function snapshotNow(reason: string): Promise<string | null> {
     if (!ledger || role !== "control-plane") return null;
+    // A control plane that handed over or drained writes no `latest` (WP8.2): the successor owns
+    // the lineage now, and a heal must not boot from a drained predecessor's ledger.
+    if (ledger.meta.phase !== "active" && reason !== "handover") return null;
     try {
       const key = await snapshotter.write(ledger, clock.now(), true);
       log("snapshot", { reason, key });
@@ -554,7 +646,10 @@ export async function createControlPlane(
    * there is no payload and no secret, so they are open — the private port is not routable from a
    * browser in either case, and locally it is bound to the loopback address.
    */
+  let adoptedOnce = false;
   function fleetAuthorized(req: IncomingMessage): boolean {
+    // A core gates no fleet route and never becomes a control plane (WP8.2).
+    if (role === "core") return false;
     // Without a secret the fleet routes are open only on a laptop (WP8.1): an image that has not
     // received its run payload yet refuses /adopt and the rest instead of failing open.
     if (!fleetSecret) return config.mode !== "image" || config.allowOpenFleetRoutes === true;
@@ -578,7 +673,10 @@ export async function createControlPlane(
     if (url.pathname === "/handover" && req.method === "POST") {
       // Step 2 of a rotation: stop assigning, pause intake, hand the ledger over (design §9.4).
       if (!ledger || role !== "control-plane") return sendJson(res, 409, { error: "no ledger" });
-      const { json, generation: gen } = beginHandover(ledger);
+      // A drained control plane has let its clients go; a handover from it would resurrect a
+      // generation that is over (WP8.2).
+      if (ledger.meta.phase === "drained") return sendJson(res, 409, { error: "already drained" });
+      const { json, generation: gen } = beginHandover(ledger, clock.now());
       await snapshotNow("handover");
       log("handover", { generation: gen, nodes: ledger.nodes.size, bytes: json.length });
       return send(res, 200, "application/json", `{"generation":${gen},"ledger":${json}}`);
@@ -601,18 +699,15 @@ export async function createControlPlane(
         return sendJson(res, 409, { error: "that ledger is newer than this control plane" });
       }
       const gen = generation;
-      if (
-        role === "control-plane" &&
-        ledger &&
-        (conns.size > 0 || ledger.meta.seq > adopted.meta.seq)
-      ) {
-        // A retried adopt after we already serve this ledger or a newer one (WP8.1): swapping
-        // it under live sockets would orphan them and roll the machine back; the first adopt
-        // stands. A successor that booted from a snapshot is older than the handover and takes it.
+      if (role === "control-plane" && ledger && adoptedOnce) {
+        // A retried adopt after this process already took a handover (WP8.2): swapping the ledger
+        // under live sockets would orphan them and roll the machine back; the first adopt stands.
+        // A successor that booted from a snapshot has taken none yet and takes this one.
         log("adopt-repeat", { generation: gen, ours: ledger.meta.seq, theirs: adopted.meta.seq });
         return sendJson(res, 200, { adopted: true, generation: gen, repeated: true });
       }
       becomeControlPlane(gen, adopted.meta.storeBase || storeBase, adopted);
+      adoptedOnce = true;
       await seeding;
       dispatch({ kind: "tick" });
       log("adopt", { generation: gen, nodes: adopted.nodes.size });

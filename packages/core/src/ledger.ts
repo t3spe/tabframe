@@ -54,8 +54,8 @@ export interface ConnState {
   bucket: { tokens: number; refilledAt: number };
   /** A second bucket for results and presigns, which answer assignments (WP8.1). */
   solicited: { tokens: number; refilledAt: number };
-  /** Bytes this connection has been given presigned uploads for; a budget, not a meter (WP8.1). */
-  presignedBytes: number;
+  /** A refilling budget of presigned bytes (WP8.2): honest nodes never see it, a flood does. */
+  presignBytes: { tokens: number; refilledAt: number };
 }
 
 export type AttemptOutcome = "running" | "result" | "released" | "cancelled" | "error";
@@ -157,6 +157,8 @@ export interface ExecutionRecord {
   counters: Counters;
   /** When the pending store effect was issued, null while none is outstanding (WP8.1). */
   waitingSince: number | null;
+  /** Store errors on the pending effect so far (WP8.2); the execution fails past a cap. */
+  storeErrors: number;
 }
 
 /**
@@ -168,6 +170,8 @@ export interface CoreRecord {
   launchedAt: number;
   /** The node this core connected as, once it has said hello. */
   nodeId: string | null;
+  /** The token the core's run payload carried; a hello must show it to link (WP8.2). Absent on records from before. */
+  token?: string;
   /**
    * Since when the core has had no node: its launch, or the moment its node left. A core that
    * stays unlinked past `CORE_LINK_TIMEOUT_MS` is terminated and replaced (WP4.4); absent in
@@ -371,7 +375,8 @@ export function emptyCounters(): Counters {
 export function nodeView(n: NodeRecord): NodeView {
   return {
     nodeId: n.nodeId,
-    hostId: n.hostId,
+    // A cloud core's MicroVM id stays out of the view (WP8.2): with it, anyone could name a core.
+    hostId: n.kind === "core" ? "fleet" : n.hostId,
     kind: n.kind,
     health: n.health,
     visible: n.visible,

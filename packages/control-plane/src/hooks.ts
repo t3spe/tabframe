@@ -12,6 +12,8 @@ export interface RunPayload {
   sessionUrl: string | null;
   storeBase: string | null;
   fleetSecret: string | null;
+  /** A core's proof of identity for its hello (WP8.2); the control plane that launched it knows it. */
+  coreToken?: string | null;
 }
 
 export interface HookHost {
@@ -100,6 +102,7 @@ export function parseRunBody(
       sessionUrl: str(p.sessionUrl),
       storeBase: str(p.storeBase),
       fleetSecret: str(p.fleetSecret),
+      coreToken: str(p.coreToken),
     },
   };
 }

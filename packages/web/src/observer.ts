@@ -117,15 +117,20 @@ export class ObserverClient {
    * which case nothing is queued: a control issued against a dead machine should not fire later.
    */
   send(control: ControlRequest): boolean {
-    if (this.stopped || this.off) return false;
+    return this.sendStatus(control) !== "refused";
+  }
+
+  /** Like `send`, but says whether the control went out now or waits for the next socket (WP8.2). */
+  sendStatus(control: ControlRequest): "sent" | "held" | "refused" {
+    if (this.stopped || this.off) return "refused";
     this.anticipate(control);
     if (!this.connected) {
       this.held.push({ control, at: Date.now() });
-      return true;
+      return "held";
     }
     this.outbox.push(control);
     this.drain();
-    return true;
+    return "sent";
   }
 
   /** This page knows the redundancy value it asked for: show it now, and expect the echo. */

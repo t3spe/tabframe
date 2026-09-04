@@ -192,12 +192,13 @@ describe("Image stack", () => {
 });
 
 describe("Fleet stack", () => {
-  const { fleet } = synth();
+  const { fleet, image } = synth();
 
-  test("two Node 22 arm64 functions with the design's names and concurrency", () => {
-    // Ours, plus the retention provider CDK adds for `logRetention` on existing log groups.
-    fleet.resourceCountIs("AWS::Lambda::Function", 3);
-    fleet.resourceCountIs("Custom::LogRetention", 2);
+  test("three Node 22 arm64 functions with the design's names and concurrency", () => {
+    // Ours (session, rotate, and since WP8.2 the canary), plus the retention provider CDK adds
+    // for `logRetention` on existing log groups.
+    fleet.resourceCountIs("AWS::Lambda::Function", 4);
+    fleet.resourceCountIs("Custom::LogRetention", 3);
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-session",
       Runtime: "nodejs22.x",
@@ -205,7 +206,7 @@ describe("Fleet stack", () => {
     });
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-rotate",
-      Timeout: 300,
+      Timeout: 600,
       Environment: {
         Variables: Match.objectLike({
           TABFRAME_SESSION_URL: Match.anyValue(),
@@ -213,6 +214,34 @@ describe("Fleet stack", () => {
         }),
       },
     });
+  });
+
+  test("the canary (WP8.2) runs every five minutes, may only write metrics, and its alarms mail the topic", () => {
+    fleet.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "tabframe-canary",
+      MemorySize: 128,
+      Timeout: 10,
+      Environment: {
+        Variables: Match.objectLike({
+          TABFRAME_WEB_ORIGIN: Match.anyValue(),
+          TABFRAME_SESSION_URL: Match.anyValue(),
+        }),
+      },
+    });
+    fleet.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)" });
+    // Its policy names CloudWatch only: never a MicroVM action, so it cannot wake the machine.
+    const policies = fleet.findResources("AWS::IAM::Policy");
+    const canaryPolicy = Object.entries(policies).find(([id]) => id.startsWith("Canary"));
+    expect(canaryPolicy).toBeDefined();
+    const statements = JSON.stringify(canaryPolicy?.[1]);
+    expect(statements).toContain("cloudwatch:PutMetricData");
+    expect(statements).not.toContain("lambda-microvms");
+    for (const name of ["PageOk", "SessionOk", "Starting"]) {
+      fleet.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        Namespace: "Tabframe/Canary",
+        MetricName: name,
+      });
+    }
   });
 
   test("a public function URL without URL-level CORS (the handler answers it), and an hourly rule created disabled", () => {
@@ -244,6 +273,12 @@ describe("Fleet stack", () => {
     expect(sessionPolicy).not.toContain("lambda:RunMicrovm");
     const rotatePolicy = policies.find((p) => p.includes("RotateServiceRole"));
     expect(rotatePolicy).toContain("lambda:RunMicrovm");
+    // The launchers may run the Tabframe image only (WP8.1 claimed it, WP8.2 landed it): no
+    // RunMicrovm statement in either stack names a wildcard image.
+    for (const resources of [runMicrovmResources(fleet), runMicrovmResources(image)]) {
+      expect(resources.length).toBeGreaterThan(0);
+      for (const r of resources) expect(r).not.toContain("microvm-image:*");
+    }
     expect(rotatePolicy).toContain("ssm:PutParameter");
     expect(rotatePolicy).toContain("secretsmanager:GetSecretValue");
   });
@@ -294,3 +329,18 @@ describe("Web stack", () => {
     expect(byKey.TABFRAME_HOST).toBe("0.0.0.0");
   });
 });
+
+/** The stringified Resource of every IAM statement that grants lambda:RunMicrovm. */
+function runMicrovmResources(template: Template): string[] {
+  const out: string[] = [];
+  for (const policy of Object.values(template.findResources("AWS::IAM::Policy"))) {
+    const doc = (policy as { Properties?: { PolicyDocument?: { Statement?: unknown[] } } })
+      .Properties?.PolicyDocument?.Statement;
+    for (const st of doc ?? []) {
+      const actions = JSON.stringify((st as { Action?: unknown }).Action ?? "");
+      if (actions.includes("lambda:RunMicrovm"))
+        out.push(JSON.stringify((st as { Resource?: unknown }).Resource ?? ""));
+    }
+  }
+  return out;
+}

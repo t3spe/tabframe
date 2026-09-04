@@ -60,6 +60,8 @@ export interface Status {
 export interface OrchestratorDeps {
   sessionUrl: string;
   hostId: string;
+  /** A cloud core's proof of identity (WP8.2); tabs have none. */
+  coreToken?: string;
   kind: NodeKind;
   cores: number;
   sandboxVersion: string;
@@ -88,6 +90,8 @@ export const THROTTLE_MIN_MS = 50;
  * them one at a time through the sandbox, upload what they produced, report. Commands from the
  * dashboard (close, freeze, throttle, resume) act on this loop.
  */
+/** How often a node facing an off machine asks the session again (WP8.2). */
+export const OFF_POLL_MS = 15_000;
 export class Orchestrator {
   private socket: SocketLike | null = null;
   private session: (Session & { kind: "on" }) | null = null;
@@ -157,8 +161,10 @@ export class Orchestrator {
       return this.scheduleReconnect(this.backoff.next());
     }
     if (session.kind === "off") {
+      // Asked again every so often (WP8.2): a node that lived through `down` and `up` used to
+      // stay "off" beside a live dashboard until the tab was reloaded.
       this.status("off", "the machine is off");
-      return;
+      return this.scheduleReconnect(OFF_POLL_MS);
     }
     if (session.kind === "starting") {
       this.status("connecting", "control plane starting");
@@ -187,6 +193,7 @@ export class Orchestrator {
       kind: this.deps.kind,
       cores: this.deps.cores,
       sandboxVersion: this.deps.sandboxVersion,
+      ...(this.deps.coreToken ? { coreToken: this.deps.coreToken } : {}),
     };
     this.socket?.send(encode(hello));
   }

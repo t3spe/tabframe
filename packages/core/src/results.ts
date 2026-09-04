@@ -47,7 +47,11 @@ export function onResult(
   // verifies, or contests; the tests and the design lean on it), but it cannot *fail* a task
   // (WP8.1): without this, any connected node could end any execution with one error message.
   const known = task?.attempts.find((a) => a.attempt === msg.attempt && a.nodeId === node.nodeId);
-  if (task && !known && msg.error !== undefined) return { effects, settlement: { kind: "none" } };
+  // (WP8.2) An unknown attempt may verify or contest a *settled* task (D7's late duplicate); it
+  // can neither settle an open task nor fail one: any visitor holds the public token and task ids
+  // are sequential, so an open task must only be closed by a node that was given it.
+  if (task && !known && (task.status !== "done" || !task.accepted || msg.error !== undefined))
+    return { effects, settlement: { kind: "none" } };
   // Compute time is what the node says, within a bound (WP8.1): the attempt's own deadline window
   // or ten minutes, whichever is longer, so a report cannot spend the execution's budget at will.
   const bound = Math.max(COMPUTE_MS_REPORT_CAP, known ? known.deadlineAt - known.assignedAt : 0);
@@ -55,8 +59,26 @@ export function onResult(
   if (task) msg = checkTileSize(ledger, task, msg);
   if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   if (msg.error === RELEASED) {
-    // The node gave up at its own deadline: the attempt is released, the task is not judged.
+    // The node gave up at its own deadline: the attempt is released, the task is not judged — but
+    // the time it held the task is charged to the execution (WP8.2: a program that spins for ever
+    // used to be free), and a task released too many times is a program fault, not bad luck.
     if (attempt) attempt.outcome = "released";
+    const exec = task ? ledger.executions.get(task.executionId) : undefined;
+    if (exec?.status === "running" && known)
+      exec.computeMsUsed += Math.max(0, Math.min(now, known.deadlineAt) - known.assignedAt);
+    if (task && exec?.status === "running") {
+      const released = task.attempts.filter((a) => a.outcome === "released").length;
+      if (released >= RELEASES_PER_TASK_CAP && task.status !== "done" && task.status !== "failed") {
+        effects.push(...cancelOthers(ledger, task, null));
+        task.status = "failed";
+        task.failure = `released ${released} times: the task never finishes within its deadline`;
+        exec.counters.failed += 1;
+        effects.push(
+          ...broadcast(ledger, { t: "taskFailed", taskId: task.taskId, reason: task.failure }),
+        );
+        return { effects, settlement: { kind: "failed", task, reason: task.failure } };
+      }
+    }
     if (task) effects.push(...releaseIfOrphaned(ledger, task, node.nodeId));
     return { effects, settlement: { kind: "none" } };
   }
@@ -161,6 +183,8 @@ export function onResult(
 
 /** Records kept per task (WP8.1). */
 export const RESULTS_PER_TASK_CAP = 16;
+/** Releases a task survives before it is a program fault (WP8.2). */
+export const RELEASES_PER_TASK_CAP = 6;
 /** The most compute time one report may claim (WP8.1). */
 export const COMPUTE_MS_REPORT_CAP = 10 * 60_000;
 

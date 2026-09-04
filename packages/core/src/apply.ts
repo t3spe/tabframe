@@ -29,6 +29,7 @@ import {
   onInheritRoot,
   onManifestStored,
   onStageSpec,
+  onStoreError,
   pruneExecutions,
   resumeAll,
   resumePending,
@@ -82,7 +83,7 @@ export function apply(
     case "tick":
       return tick(ledger, now);
     case "coreLaunched":
-      return coreLaunched(ledger, event.microvmId, now);
+      return coreLaunched(ledger, event.microvmId, now, event.token);
     case "coreGone":
       return coreGone(ledger, event.microvmId);
     case "bundleRejected":
@@ -119,6 +120,8 @@ export function apply(
       return [...r.effects, ...fill(ledger, now)];
     }
     case "blobFetched":
+      if (event.error !== undefined && event.purpose.type !== "manifest")
+        return onStoreError(ledger, event.purpose.executionId, event.error, now);
       if (event.purpose.type === "stageSpec")
         return onStageSpec(
           ledger,
@@ -177,7 +180,7 @@ function onConnected(ledger: Ledger, connId: string, role: ConnRole, now: number
     openedAt: now,
     bucket: { tokens: rate, refilledAt: now },
     solicited: { tokens: SOLICITED_RATE, refilledAt: now },
-    presignedBytes: 0,
+    presignBytes: { tokens: PRESIGN_BYTES_PER_MIN, refilledAt: now },
   });
   return [];
 }
@@ -204,7 +207,15 @@ function onMessage(
       return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
     // Results and presigns get a bucket of their own (WP8.1): generous, since maxInFlight paces an
     // honest node, but a bound — a node that says hello and floods presigns costs S3 calls.
-    if (solicited && !takeToken(conn.solicited, SOLICITED_RATE, now))
+    if (
+      solicited &&
+      !takeTokens(
+        conn.solicited,
+        SOLICITED_RATE,
+        now,
+        d.msg.t === "presign" ? d.msg.items.length : 1,
+      )
+    )
       return refuse(ledger, connId, CLOSE.rateLimited, "result rate exceeded", now);
     switch (d.msg.t) {
       case "hello":
@@ -225,7 +236,7 @@ function onMessage(
         const node = nodeOf(ledger, connId);
         if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello", now);
         node.lastSeen = now;
-        if (!chargePresign(conn, d.msg.items))
+        if (!chargePresign(conn, d.msg.items, now))
           return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
         return [{ kind: "presign", connId, items: d.msg.items }];
       }
@@ -243,7 +254,7 @@ function onMessage(
     case "presign":
       if (!ledger.observers.has(connId))
         return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe", now);
-      if (!chargePresign(conn, d.msg.items))
+      if (!chargePresign(conn, d.msg.items, now))
         return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
       return [{ kind: "presign", connId, items: d.msg.items }];
     default:
@@ -257,18 +268,36 @@ function onMessage(
 /** The per-connection token bucket: refill at the rate, spend one; false when it is empty. */
 /** Results and presigns per second per node (WP8.1); maxInFlight keeps an honest node far below. */
 export const SOLICITED_RATE = 256;
-/** Bytes of presigned uploads one connection may be given (WP8.1): a bound on what a visitor can write. */
-export const PRESIGN_BYTES_PER_CONN = 1024 * 1024 * 1024;
+/** Presigned bytes a connection may ask for per minute (WP8.2): a refilling bucket, so an honest core rendering all day is never closed and a flood is. */
+export const PRESIGN_BYTES_PER_MIN = 64 * 1024 * 1024;
 /** Destructive controls are applied at most this often, machine-wide (WP8.1). */
 export const CONTROL_COOLDOWN_MS = 2_000;
 const DESTRUCTIVE = new Set(["killHalf", "freezeHalf", "throttleHalf", "restart", "stop"]);
 
-/** Count the bytes a presign asks for against the connection's budget; false once it is spent. */
-function chargePresign(conn: ConnState, items: Array<{ size: number }>): boolean {
+/** Charge a presign's bytes against the connection's refilling budget (WP8.2); false when it is spent. */
+function chargePresign(conn: ConnState, items: Array<{ size: number }>, now: number): boolean {
   let total = 0;
   for (const it of items) total += it.size;
-  if (conn.presignedBytes + total > PRESIGN_BYTES_PER_CONN) return false;
-  conn.presignedBytes += total;
+  const b = conn.presignBytes;
+  const perMs = PRESIGN_BYTES_PER_MIN / 60_000;
+  b.tokens = Math.min(PRESIGN_BYTES_PER_MIN, b.tokens + (now - b.refilledAt) * perMs);
+  b.refilledAt = now;
+  if (total > b.tokens) return false;
+  b.tokens -= total;
+  return true;
+}
+
+/** Take `n` tokens at once (WP8.2): a presign costs one per item, since each item is an S3 call. */
+function takeTokens(
+  b: { tokens: number; refilledAt: number },
+  rate: number,
+  now: number,
+  n: number,
+): boolean {
+  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
+  b.refilledAt = now;
+  if (b.tokens < n) return false;
+  b.tokens -= n;
   return true;
 }
 
@@ -502,14 +531,20 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
   };
   ledger.nodes.set(nodeId, node);
   ledger.nodeByConn.set(connId, nodeId);
-  // A cloud core names itself after its MicroVM, which is how the ledger links the two (§6.8).
+  // A cloud core names itself after its MicroVM and proves it with the token its run payload
+  // carried (WP8.2): a hello links only a record the control plane launched, and only with the
+  // token; nothing is created from a hello, so a visitor cannot name a core and get it terminated.
   const microvmId = microvmIdOfHost(msg.hostId);
   if (microvmId) {
     const core = ledger.cores.get(microvmId);
-    if (core) {
+    if (core && (core.token === undefined || core.token === msg.coreToken)) {
       core.nodeId = nodeId;
       core.unlinkedAt = undefined;
-    } else ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId });
+    } else {
+      ledger.nodes.delete(nodeId);
+      ledger.nodeByConn.delete(connId);
+      return refuse(ledger, connId, CLOSE.invalidMessage, "unknown core or bad core token", now);
+    }
   }
 
   const effects: Effect[] = [
@@ -589,7 +624,9 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
  * Page 0 carries the cluster; every page carries task rows (design §8.3). Pages are packed by
  * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
  * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
- */ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
+ */
+const pageMemo = new WeakMap<Ledger, { gen: number; seq: number; pages: TaskView[][] }>();
+export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   // Nothing running: the snapshot shows the execution that ended last, so a visitor arriving
   // during the hold after a person's launch — or a dashboard resubscribing for a fresh snapshot —
   // sees the result on the stage rather than "idle" (WP4.4; the loop's hold is what makes the
@@ -616,23 +653,38 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
       .map(queueEntry),
     machine,
   };
-  const pages: TaskView[][] = [];
-  let current: TaskView[] = [];
-  let used = byteLength(canonicalStringify(cluster));
-  for (const view of tasks) {
-    const size = byteLength(canonicalStringify(view)) + 1;
-    if (
-      current.length > 0 &&
-      (current.length >= LIMITS.snapshotPageTasks || used + size > SNAPSHOT_PAGE_BUDGET)
-    ) {
-      pages.push(current);
-      current = [];
-      used = 0;
-    }
-    current.push(view);
-    used += size;
+  // Page 0 must fit one frame whatever the programs carry (WP8.2): sixty-four programs with four
+  // kilobytes of defaults each would not, so the defaults are the first thing to go — the editor
+  // reads the manifest from the store anyway — and a subscribe degrades instead of closing.
+  if (byteLength(canonicalStringify(cluster)) > SNAPSHOT_PAGE_BUDGET) {
+    cluster.programs = cluster.programs.map((p) => ({ ...p, defaultParams: {} }));
   }
-  pages.push(current);
+  // The page split is memoised per (generation, seq) (WP8.2): a connect-subscribe-close loop
+  // used to re-serialise every task row per subscribe; now it costs one serialisation per change.
+  const memo = pageMemo.get(ledger);
+  let pages: TaskView[][];
+  if (memo && memo.gen === ledger.meta.generation && memo.seq === ledger.meta.seq) {
+    pages = memo.pages;
+  } else {
+    pages = [];
+    let current: TaskView[] = [];
+    let used = byteLength(canonicalStringify(cluster));
+    for (const view of tasks) {
+      const size = byteLength(canonicalStringify(view)) + 1;
+      if (
+        current.length > 0 &&
+        (current.length >= LIMITS.snapshotPageTasks || used + size > SNAPSHOT_PAGE_BUDGET)
+      ) {
+        pages.push(current);
+        current = [];
+        used = 0;
+      }
+      current.push(view);
+      used += size;
+    }
+    pages.push(current);
+    pageMemo.set(ledger, { gen: ledger.meta.generation, seq: ledger.meta.seq, pages });
+  }
   const effects: Effect[] = [];
   for (let page = 0; page < pages.length; page++) {
     const base: Snapshot = {

@@ -33,6 +33,8 @@ export interface Config {
   /** Image mode: what the control plane needs to launch cloud cores (design §6.8). */
   imageArn: string | null;
   imageVersion: string | null;
+  /** Image mode: the SSM pointer the fleet flips (WP8.2); read once when a handover lease expires. */
+  pointerParam?: string | null;
   coreRoleArn: string | null;
   region: string;
   sessionUrl: string | null;
@@ -63,6 +65,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     coreCheckMs: intEnv(env.TABFRAME_CORE_CHECK_MS, 30_000),
     imageArn: env.TABFRAME_IMAGE_ARN ?? null,
     imageVersion: env.TABFRAME_IMAGE_VERSION ?? null,
+    pointerParam: env.TABFRAME_POINTER_PARAM ?? null,
     coreRoleArn: env.TABFRAME_CORE_ROLE_ARN ?? null,
     region: env.AWS_REGION ?? "us-west-2",
     sessionUrl: env.TABFRAME_SESSION_URL ?? null,

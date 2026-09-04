@@ -323,6 +323,36 @@ describe("rotation", () => {
     expect(cp.calls).toEqual([]);
   });
 
+  test("a retire a dead rotation left behind is finished first (WP8.2)", async () => {
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    microvms.add({ microvmId: "mvm-cur", state: "RUNNING" });
+    const pointer = pointerStoreWith({
+      state: "on",
+      microvmId: "mvm-cur",
+      endpoint: "cur.on.aws",
+      generation: 8,
+      retiring: { microvmId: "mvm-old", endpoint: "old.on.aws" },
+    });
+    const result = await rotate(pointer)();
+    expect(result.action).toBe("rotated");
+    // The predecessor is drained and terminated before anything else happens, and the pointer forgets it.
+    expect(cp.calls[0]).toBe("drain:mvm-old");
+    expect(microvms.terminated[0]).toBe("mvm-old");
+    expect(pointer.writes[0]).toMatchObject({ microvmId: "mvm-cur", retiring: null });
+  });
+
+  test("a run that resolves to a terminated replay is retried with a fresh token (WP8.2)", async () => {
+    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    microvms.terminateNextRuns = 1;
+    const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
+    const result = await rotate(pointer)();
+    expect(result.action).toBe("rotated");
+    expect(microvms.runs).toHaveLength(2);
+    expect(microvms.runs[0]?.params.clientToken).toMatch(/^tabframe-cp-g8-\d+$/);
+    expect(microvms.runs[1]?.params.clientToken).toMatch(/^tabframe-cp-g8-\d+-r1$/);
+    expect(result.action === "rotated" ? result.to : "").toBe(microvms.runs[1]?.microvmId ?? "?");
+  });
+
   test("a rotation that died after launching is finished by the next run", async () => {
     const successor = microvms.add({ microvmId: "mvm-new", state: "RUNNING" });
     microvms.add({ microvmId: "mvm-old", state: "RUNNING" });

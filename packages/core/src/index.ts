@@ -1,4 +1,4 @@
-export { apply, removeConnection, snapshotPages, sweep } from "./apply.ts";
+export { apply, HANDOVER_LEASE_MS, removeConnection, snapshotPages, sweep } from "./apply.ts";
 export { fromBase64, toBase64 } from "./bytes.ts";
 export type { BlobPurpose, Effect, Event } from "./events.ts";
 export {

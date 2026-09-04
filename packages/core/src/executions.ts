@@ -35,8 +35,24 @@ export function addProgram(
   now: number,
 ): Effect[] {
   ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
-  return broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
+  const effects = broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
+  // Bounded (WP8.2): every program rides page 0 of every snapshot. Past the cap the oldest ones
+  // nobody runs, refers to, or loops on are retired.
+  const live = [...ledger.programs.values()].filter((p) => !p.retired);
+  if (live.length > PROGRAMS_CAP) {
+    const referenced = new Set([...ledger.executions.values()].map((e) => e.bundle));
+    if (ledger.config.defaultLoop) referenced.add(ledger.config.defaultLoop.bundle);
+    const spare = live
+      .filter((p) => p.bundle !== bundle && !referenced.has(p.bundle))
+      .sort((a, b) => a.addedAt - b.addedAt);
+    for (const p of spare.slice(0, live.length - PROGRAMS_CAP))
+      effects.push(...retireProgram(ledger, p.bundle));
+  }
+  return effects;
 }
+
+/** Programs the ledger keeps before the oldest unused ones are retired (WP8.2). */
+export const PROGRAMS_CAP = 64;
 
 /**
  * A newer bundle ships under this program's name (WP4.9): the record is hidden and refuses
@@ -129,6 +145,7 @@ export function enqueue(
     failure: null,
     counters: emptyCounters(),
     waitingSince: null,
+    storeErrors: 0,
   };
   ledger.executions.set(executionId, exec);
   if (req.human) {
@@ -223,6 +240,7 @@ export function onInheritRoot(
   const exec = ledger.executions.get(executionId);
   if (exec?.status !== "running" || exec.root !== null) return [];
   exec.waitingSince = null;
+  exec.storeErrors = 0;
   const program = ledger.programs.get(exec.bundle);
   const inherited = bytes === null ? null : parseManifest(bytes);
   if (inherited === null) {
@@ -349,6 +367,7 @@ export function onStageSpec(
   if (exec?.status !== "running" || !planTask || exec.planTaskId !== taskId) return [];
   if (!bytes) return failExecution(ledger, exec, "stage spec blob missing", now);
   exec.waitingSince = null;
+  exec.storeErrors = 0;
   let spec: ReturnType<typeof decodeStageSpec>;
   try {
     spec = decodeStageSpec(bytes);
@@ -473,6 +492,7 @@ export function onManifestStored(
   const exec = ledger.executions.get(executionId);
   if (exec?.status !== "running") return [];
   exec.waitingSince = null;
+  exec.storeErrors = 0;
   if (stage === -1) {
     // The initial filesystem of an execution that inherited one: plan can start now.
     if (exec.root !== null) return [];
@@ -512,6 +532,29 @@ export const STORE_RETRY_MS = 10_000;
  * idempotent: blobs are content-addressed and the handlers ignore an answer that arrived already.
  * Called on adopt (`force`) and on every tick once `STORE_RETRY_MS` have passed.
  */
+/** Store errors on one pending effect before the execution fails (WP8.2): a minute of retries. */
+export const STORE_ERRORS_MAX = 6;
+
+/**
+ * The store answered a pending effect with an error rather than bytes (WP8.2): not "missing", so
+ * the execution keeps waiting and `resumePending` asks again; past `STORE_ERRORS_MAX` it fails
+ * with the store's reason.
+ */
+export function onStoreError(
+  ledger: Ledger,
+  executionId: string,
+  reason: string,
+  now: number,
+): Effect[] {
+  const exec = ledger.executions.get(executionId);
+  if (exec?.status !== "running") return [];
+  exec.storeErrors += 1;
+  if (exec.storeErrors > STORE_ERRORS_MAX)
+    return failExecution(ledger, exec, `the store kept failing: ${reason.slice(0, 200)}`, now);
+  // Leave waitingSince as it is: the retry interval counts from the original request.
+  return [];
+}
+
 export function resumePending(ledger: Ledger, now: number, force = false): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   if (exec?.status !== "running") return [];

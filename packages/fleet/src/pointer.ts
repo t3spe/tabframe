@@ -16,6 +16,12 @@ export interface Pointer {
    * rolls it back rather than leaving an orphan MicroVM burning money.
    */
   pending: { microvmId: string; endpoint: string | null; generation: number } | null;
+  /**
+   * The predecessor a rotation promoted over and has not yet drained and terminated (WP8.2). A
+   * rotation that dies between the pointer flip and the retire leaves this behind; the next run
+   * finishes the retire instead of leaving a second active generation running for hours.
+   */
+  retiring?: { microvmId: string; endpoint: string | null } | null;
 }
 
 export const EMPTY_POINTER: Pointer = {

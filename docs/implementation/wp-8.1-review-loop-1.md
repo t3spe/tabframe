@@ -9,11 +9,14 @@ aggregate, critique, incorporate; three loops. This is loop one.
 
 Five independent reviewers (fresh agents, read-only, no AWS access) each returned at most twelve
 findings with severity, location, cause, and fix. The 52 findings were de-duplicated into the
-table below; each was accepted, deferred to a later loop, or rejected with the reason (the
-critique). The accepted ones landed on this branch with tests; CI gates the merge; the next loop
+table below (52 rows); each was accepted, deferred to a later loop, or rejected with the reason (the
+critique): 46 accepted in full or in part, 6 deferred to loops 2–3, and one (11) rejected as a change but kept as a bound. The accepted ones landed on this branch with tests; CI gates the merge; the next loop
 reviews the tree with these changes in.
 
 ## The findings and what was done
+
+*From*: dist = distributed-systems developer, sec = security engineer, fs = full-stack developer,
+tw = technical writer, devops = DevOps engineer. *Sev*: H/M/L as the reviewer rated it.
 
 | # | From | Sev | Finding | Decision |
 |---|---|---|---|---|
@@ -27,7 +30,7 @@ reviews the tree with these changes in.
 | 8 | tw, devops | H | The hourly rule rotated a *suspended* control plane, so an idle night booted a generation an hour and the README's stays-up paragraph was false. | **Accepted.** A scheduled invocation skips a `SUSPENDED` control plane (`skipped-suspended`); the README says what happens now. |
 | 9 | devops | H | `deploy` ran build and test in parallel from the working tree with no clean-tree or green-main guard and no commit stamp. | **Accepted.** `deploy` is sequential: build → test → `deploy-guard.ts` (clean tree, HEAD on origin/main; `TABFRAME_DEPLOY_UNGATED=1` to skip) → stacks → up. `stage-image.ts` writes `build.json`; `/health` shows `build` and `imageVersion`. |
 | 10 | devops | H | The rotate function returned failures as successes; nothing alarmed. | **Accepted.** The Lambda entry throws on `failed`; CloudWatch alarms on rotate/session errors and rotate throttles go to an SNS topic mailed to the budget address when configured; the hourly rule's target retries twice within thirty minutes. |
-| 11 | sec | M | Destructive controls are unauthenticated; kill-half in a loop terminates and relaunches cloud cores. | **Rejected as a change, accepted as a bound.** A public machine anyone may drive is the design (D4, §6.7); a machine-wide cooldown of three seconds per destructive control (`CONTROL_COOLDOWN_MS`) removes the cost loop. |
+| 11 | sec | M | Destructive controls are unauthenticated; kill-half in a loop terminates and relaunches cloud cores. | **Rejected as a change, accepted as a bound.** A public machine anyone may drive is the design (D4, §6.7); a machine-wide cooldown of two seconds per destructive control (`CONTROL_COOLDOWN_MS`) removes the cost loop. |
 | 12 | fs | M | The editor tab re-sent `pause` on every live socket, including after its own launch. | **Accepted.** `holdWanted` is cleared by launch and close. |
 | 13 | fs | M | A failing session fetch during a silent resubscribe kept a green pill; held clicks were dropped silently. | **Accepted.** The page goes back to "connecting"; dropped clicks are said in the status line (`onDropped`). |
 | 14 | fs | M | An outdated page reloaded itself in a loop. | **Accepted.** One reload per protocol version (`sessionStorage`), then a hard-refresh hint. |
@@ -60,7 +63,24 @@ reviews the tree with these changes in.
 | 41 | fs | L | Keyboard and screen-reader gaps. | **Accepted in part.** `aria-live` on the status line, queue ages tick in place, panel-only controls drop `hidden`, the file input is reachable; row buttons and canvas keys are deferred. |
 | 42 | fs | L | Exact-copy assertions in the browser tests. | **Deferred (loop 3).** |
 | 43 | fs | L | Duplicated helpers; `MAX_BLOB_BYTES` 8 MB vs 16 MB outputs; query hashes unchecked. | **Accepted for the cap and the hashes**; the duplicate helpers are deferred. |
-| 44–52 | tw | H–L | The README's stays-up paragraph; the design record's status line and four stale body facts; "core" meaning three things; stale counts; no "try it"; missing reading rows; the rationale's "first extension"; runbook rows for a removed constant; the drift log's orphan paragraph and §9 numbering; the plan's "six milestones"; the editor's select label; the guide's repo-only sections and §5.6's API. | **Accepted**, all applied in this loop (see the diffs to `README.md`, `docs/design.md`, `docs/rationale.md`, `docs/runbook.md`, `docs/plan.md`, `packages/web/public/editor.html`, `packages/sdk-as/README.md`). |
+| 44 | tw | H | The README's stays-up paragraph was false while the hourly rule rotated a suspended control plane. | **Accepted.** Rewritten around the `skipped-suspended` rule of finding 8. |
+| 45 | tw | M | The design record's status line and four stale body facts. | **Accepted.** Corrected in place; the drift log carries the WP8.1 entry. |
+| 46 | tw | M | "Core" meant three things across the docs. | **Accepted in part.** The README and glossary were aligned; loop 2 amends the walkthrough's R6 (a core is any worker, a cloud core a MicroVM worker, a node the ledger's word). |
+| 47 | tw | M | Stale counts of tests and programs. | **Accepted.** Counts are re-derived at each close-out. |
+| 48 | tw | M | No "try it" in the README; missing reading rows. | **Accepted.** A try-it list and the reading rows were added. |
+| 49 | tw | L | The rationale said "first extension" where there had been two. | **Accepted.** "second extension". |
+| 50 | tw | L | Runbook rows for a removed constant; the plan's "six milestones". | **Accepted.** Rows dropped; eight milestones plus M8. |
+| 51 | tw | L | The drift log's orphan paragraph and §9 numbering. | **Accepted, badly.** The repair garbled the WP1.9 entry and fused seven entries; loop 2 rebuilt §17 from the pre-loop text, removing only the duplicated paragraph. |
+| 52 | tw | L | The editor's select label; the guide's repository-only sections; §5.6's API. | **Accepted.** The label names the program; the guide is cut before "## Compiling" in `guideMarkdown()` (`packages/web/src/editor-core.ts`), not in the SDK README; §5.6 describes the API as built. |
+
+## Deferred to loops 2–3
+
+- 22 (loop 2): Sixteen sockets from one client lock everyone out.
+- 23 (loop 2): A subscribe re-serialised the whole snapshot.
+- 27 (loop 2): No real rollback; cores not pinned to an image version.
+- 28 (loop 2): The base image tag and `nodejs22` are unpinned.
+- 36 (loop 2): Cores are identified by a self-declared name.
+- 42 (loop 3): Exact-copy assertions in the browser tests.
 
 ## Tests
 

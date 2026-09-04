@@ -38,6 +38,10 @@ export interface EditorHost {
   workerUrl?: string;
   /** A demo page: the compile is real, launching needs the live machine (WP7.7). */
   demo?: boolean;
+  /** Whether the last control went out or is held for the next socket (WP8.2). */
+  launchStatus?: () => "sent" | "held";
+  /** The machine acknowledged the launch (queued or running): the pause has really ended (WP8.2). */
+  onLaunched?: () => void;
 }
 
 export interface EditorHandle {
@@ -154,6 +158,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
         // The worker died or misbehaved (WP8.1): every compile it owed is rejected — the compile
         // button used to stay disabled for the life of the tab — and the next compile gets a fresh worker.
         status(`compiler failed: ${message}`, "off");
+        w.terminate();
         ready = null;
         worker = null;
         for (const [, settle] of pending)
@@ -172,11 +177,16 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       const w = worker;
       if (!w) return reject(new Error("no compiler worker"));
       const id = nextId++;
-      pending.set(id, resolve);
-      // A compile that never answers (WP8.1) is failed after two minutes rather than for ever.
+      // A compile that never answers (WP8.1) is failed after two minutes rather than for ever, and
+      // the hung worker goes with it (WP8.2): the next compile starts a fresh one.
       const timer = setTimeout(() => {
         if (!pending.has(id)) return;
         pending.delete(id);
+        if (worker === w) {
+          w.terminate();
+          worker = null;
+          ready = null;
+        }
         reject(new Error("the compiler did not answer within two minutes"));
       }, COMPILE_TIMEOUT_MS);
       pending.set(id, (r) => {
@@ -288,6 +298,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
 
   // ---- launch -------------------------------------------------------------------------------------
   let awaitingAnswer = false;
+  let acknowledged = false;
   let launchedAt = 0;
   let launchedName = "";
   let unsubscribe: (() => void) | null = null;
@@ -327,6 +338,7 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     }
     els.launch.disabled = true;
     launchedAt = Date.now();
+    acknowledged = false;
     try {
       const bundle = await buildBundle(module, manifest.value, [], {
         ...(sourceBytes ? { source: sourceBytes } : {}),
@@ -342,6 +354,11 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
         info(els.launchInfo, "the socket closed before the launch was sent", true);
         return false;
       }
+      if (host.launchStatus?.() === "held")
+        info(
+          els.launchInfo,
+          "the socket is reconnecting; the launch is held for it and goes out when it is back",
+        );
       els.launchInfo.replaceChildren(
         line(
           `uploaded ${bundle.blobs.length} blobs · launch sent for bundle `,
@@ -382,11 +399,19 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     if (running) {
       info(els.launchInfo, `running as ${running.executionId} · ${running.phase}`);
       if (running.phase === "done" || running.phase === "failed") awaitingAnswer = false;
+      if (!acknowledged) {
+        acknowledged = true;
+        host.onLaunched?.();
+      }
     } else if (mine) {
       info(
         els.launchInfo,
         `queued as ${mine.executionId}; a person's launch goes ahead of the machine's own loop`,
       );
+      if (!acknowledged) {
+        acknowledged = true;
+        host.onLaunched?.();
+      }
     }
   }
 
@@ -617,8 +642,13 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     else if (module) void showModule(module, "compiled");
   };
   els.source.onkeydown = (e) => {
-    // Tab inserts two spaces instead of leaving the field.
-    if (e.key === "Tab") {
+    // Tab inserts two spaces; Shift+Tab leaves the field backwards and Escape leaves it forwards
+    // (WP8.2): a keyboard user must be able to get out of the box.
+    if (e.key === "Escape") {
+      els.compile.focus();
+      return;
+    }
+    if (e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
       const { selectionStart: s, selectionEnd: t, value } = els.source;
       els.source.value = `${value.slice(0, s)}  ${value.slice(t)}`;

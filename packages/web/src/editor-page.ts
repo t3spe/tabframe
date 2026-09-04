@@ -18,6 +18,7 @@ let client: ObserverClient | null = null;
 let paused = false;
 /** Whether this tab still wants the machine held (WP8.1): not after its launch, not after close. */
 let holdWanted = true;
+let lastLaunch: "sent" | "held" | "refused" = "sent";
 
 function setMachine(state: MachineState, detail?: string): void {
   machineEl.textContent = detail ? `${state} · ${detail}` : state;
@@ -76,6 +77,13 @@ async function main(): Promise<void> {
   const sessionUrl = new URL(config.sessionUrl, location.origin).toString();
   client = new ObserverClient(sessionUrl, {
     onState: setMachine,
+    onDropped: (count) => {
+      const info = document.querySelector<HTMLElement>("#launchInfo");
+      if (info) {
+        info.textContent = `${count === 1 ? "a message" : `${count} messages`} sent during the reconnect ${count === 1 ? "was" : "were"} dropped; the launch did not reach the machine — launch again`;
+        info.className = "bad";
+      }
+    },
     onCluster: (state) => {
       for (const l of listeners) l(state);
     },
@@ -89,10 +97,12 @@ async function main(): Promise<void> {
     presign: (items) =>
       client ? client.presign(items) : Promise.reject(new Error("not connected")),
     launch: (bundle, params) => {
-      const sent = client?.send({ t: "launch", bundle, params, inherit: null }) ?? false;
-      if (sent) resume("launch"); // a launch is what the pause was for
-      return sent;
+      lastLaunch = client?.sendStatus({ t: "launch", bundle, params, inherit: null }) ?? "refused";
+      return lastLaunch !== "refused";
     },
+    launchStatus: () => (lastLaunch === "held" ? "held" : "sent"),
+    // The pause ends when the machine has the launch, not when the page sent it (WP8.2).
+    onLaunched: () => resume("launch"),
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

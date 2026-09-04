@@ -106,6 +106,8 @@ export class FakeMicrovmClient implements MicrovmClient {
   pendingPolls = 0;
   /** When true, a freshly run VM is TERMINATED on its first `get` (a failed boot). */
   terminateAfterRun = false;
+  /** This many runs come back already TERMINATED (WP8.2): a client token replayed onto a dead VM. */
+  terminateNextRuns = 0;
   private counter = 0;
   private readonly pendingLeft = new Map<string, number>();
 
@@ -137,9 +139,11 @@ export class FakeMicrovmClient implements MicrovmClient {
     }
     this.counter++;
     const microvmId = `mvm-${this.counter}`;
+    const replayed = this.terminateNextRuns > 0;
+    if (replayed) this.terminateNextRuns--;
     const info = this.add({
       microvmId,
-      state: "PENDING",
+      state: replayed ? "TERMINATED" : "PENDING",
       imageArn: params.imageArn,
       imageVersion: params.imageVersion ?? "1",
     });

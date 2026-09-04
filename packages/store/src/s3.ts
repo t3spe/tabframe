@@ -75,7 +75,10 @@ export class S3Store implements StoreDriver {
         const url = await getSignedUrl(this.s3, new PutObjectCommand(input), {
           expiresIn: this.expiresIn,
           unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
-          signableHeaders: new Set(["x-amz-checksum-sha256"]),
+          // The size is signed too (WP8.2): a presign for "1 byte" must not accept a 5 GB object
+          // whose key happens to be its own hash. Browsers and undici send Content-Length
+          // themselves, so the client never sets it — signedHeaders() leaves it out on purpose.
+          signableHeaders: new Set(["x-amz-checksum-sha256", "content-length"]),
         });
         const headers = signedHeaders(url, input);
         if (!headers["x-amz-checksum-sha256"]) {

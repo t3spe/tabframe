@@ -26,6 +26,9 @@ export class WebStack extends cdk.Stack {
       distribution: props.core.distribution,
       distributionPaths: ["/*"],
       prune: true,
+      // Nothing is content-hashed (WP8.2), so nothing is immutable: every object is revalidated,
+      // and a protocol bump reaches a tab on its next load instead of leaning on the reload guard.
+      cacheControl: [deploy.CacheControl.fromString("no-cache")],
       memoryLimit: 512,
     });
     new cdk.CfnOutput(this, "PageUrl", { value: props.core.webOrigin });

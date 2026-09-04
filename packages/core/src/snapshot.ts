@@ -75,7 +75,12 @@ export function deserializeLedger(json: string): Ledger {
     // A snapshot written before bundles carried their files has none.
     programs: new Map(s.programs.map((p) => [p.bundle, { ...p, files: p.files ?? {} }])),
     cores: new Map((s.cores ?? []).map((c) => [c.microvmId, c])),
-    executions: new Map(s.executions.map((e) => [e.executionId, e])),
+    executions: new Map(
+      s.executions.map((e) => [
+        e.executionId,
+        { ...e, waitingSince: e.waitingSince ?? null, storeErrors: e.storeErrors ?? 0 },
+      ]),
+    ),
     queue: s.queue,
     running: s.running,
     tasks: new Map(s.tasks.map((t) => [t.taskId, { ...t, input: fromBase64(t.input) }])),

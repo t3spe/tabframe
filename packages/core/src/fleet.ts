@@ -111,10 +111,21 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
 }
 
 /** The process launched a core: remember it so a handover carries it (design §6.8). */
-export function coreLaunched(ledger: Ledger, microvmId: string, now: number): Effect[] {
+export function coreLaunched(
+  ledger: Ledger,
+  microvmId: string,
+  now: number,
+  token?: string,
+): Effect[] {
   ledger.meta.coreLaunches.shift(); // the oldest launch asked for is the one answered
   if (!ledger.cores.has(microvmId)) {
-    ledger.cores.set(microvmId, { microvmId, launchedAt: now, nodeId: null, unlinkedAt: now });
+    ledger.cores.set(microvmId, {
+      microvmId,
+      launchedAt: now,
+      nodeId: null,
+      unlinkedAt: now,
+      ...(token ? { token } : {}),
+    });
   }
   return [];
 }

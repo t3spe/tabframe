@@ -78,14 +78,14 @@ export class ImageStack extends cdk.Stack {
         resources: [parameterArn(this, NAMES.pointerParam)],
       }),
     );
+    // Launches from the Tabframe image only (WP8.2); Get/Terminate keep the image-wide resource
+    // until the API's resource model for a MicroVM is pinned down.
+    this.controlPlaneRole.addToPolicy(
+      new iam.PolicyStatement({ actions: ["lambda:RunMicrovm"], resources: [imageArn(this)] }),
+    );
     this.controlPlaneRole.addToPolicy(
       new iam.PolicyStatement({
-        actions: [
-          "lambda:RunMicrovm",
-          "lambda:GetMicrovm",
-          "lambda:TerminateMicrovm",
-          "lambda:GetMicrovmImage",
-        ],
+        actions: ["lambda:GetMicrovm", "lambda:TerminateMicrovm", "lambda:GetMicrovmImage"],
         resources: [anyImageArn(this)],
       }),
     );

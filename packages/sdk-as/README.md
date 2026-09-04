@@ -57,6 +57,11 @@ Multi-stage programs read the previous stage's results as files: `fs.list("/out/
 task output of stage 0, `fs.readRange` reads a slice of one. See `programs/wordcount` for a
 three-stage map/reduce/merge that does exactly this.
 
+**Allowed imports:** `tf.stat`, `tf.read`, `tf.write`, `tf.list`, `tf.log`, and `env.abort`.
+Anything else — `Date.now`, `Math.random` (which needs `env.seed`), `console`, WASI — is rejected
+at upload. AssemblyScript's `Math` compiles to WebAssembly and is deterministic across browsers and
+machines; never write NaN into an output, because NaN payload bits are not.
+
 ## Compiling
 
 Programs depend on `@tabframe/sdk-as` (workspace) and import it by the subpath above; asc resolves
@@ -75,10 +80,6 @@ asc programs/<name>/assembly/index.ts --outFile programs/<name>/dist/program.was
   16 MiB, the reference value) and rejects modules without one or above its cap.
 - `-O3 --noAssert`: speed; assertions are development aids, not runtime checks.
 
-**Allowed imports:** `tf.stat`, `tf.read`, `tf.write`, `tf.list`, `tf.log`, and `env.abort`.
-Anything else — `Date.now`, `Math.random` (which needs `env.seed`), `console`, WASI — is rejected
-at upload. AssemblyScript's `Math` compiles to WebAssembly and is deterministic across browsers and
-machines; never write NaN into an output, because NaN payload bits are not.
 
 ## Byte formats
 
