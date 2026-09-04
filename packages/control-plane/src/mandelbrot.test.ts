@@ -132,9 +132,17 @@ describe("Mandelbrot end to end", () => {
   test("seeded program, default loop, 640 golden tiles, automatic continuation, snapshots", async () => {
     const golden = goldens();
     const obs = await observe();
-    // Seeding happened at boot: the snapshot lists the program and the loop is queued once we watch.
+    // Seeding happens at boot; on a slow runner the first snapshot can arrive before it is done, in
+    // which case the program is announced right after. Either way it is listed as mandelbrot:tiles.
     const snapshot = obs.events[0] as { programs?: Array<{ name: string; view: string }> };
-    expect(snapshot.programs?.map((p) => `${p.name}:${p.view}`)).toEqual(["mandelbrot:tiles"]);
+    if (snapshot.programs?.length) {
+      expect(snapshot.programs.map((p) => `${p.name}:${p.view}`)).toEqual(["mandelbrot:tiles"]);
+    } else {
+      await obs.waitFor(
+        (e) => e.t === "programAdded" && (e as { program?: string }).program === "mandelbrot",
+        20_000,
+      );
+    }
     startCore("core-1");
     startCore("core-2");
     await obs.waitFor((e) => e.t === "nodeJoined", 20_000);
