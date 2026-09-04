@@ -419,8 +419,16 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     const offered = exec && exec.phase === "done" && exec.human && exec.followUp;
     els.followUp.hidden = !offered;
     els.followUp.replaceChildren();
-    els.killExecution.hidden =
-      !exec || exec.phase === "done" || exec.phase === "failed" || exec.phase === "stopped";
+    // Kill execution stays where it is and says why when nothing runs (WP7.7, rule R3).
+    const runningNow =
+      !!exec && exec.phase !== "done" && exec.phase !== "failed" && exec.phase !== "stopped";
+    els.killExecution.hidden = false;
+    els.killExecution.disabled = !runningNow;
+    if (!els.killExecution.dataset.baseTitle)
+      els.killExecution.dataset.baseTitle = els.killExecution.title;
+    els.killExecution.title = runningNow
+      ? (els.killExecution.dataset.baseTitle as string)
+      : `${els.killExecution.dataset.baseTitle} — nothing is running`;
     if (!offered || !exec.followUp) return;
     const params = exec.followUp;
     const button = el("button", undefined, `run follow-up ${JSON.stringify(params)}`);
@@ -463,7 +471,7 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     els.result.dataset.view = exec.view;
     if (exec.phase === "failed") {
       els.result.replaceChildren(
-        el("p", "bad", `no result: ${exec.failure ?? "the execution failed"}`),
+        el("p", "muted", `no result · the execution failed; the box above says why`),
       );
       return;
     }

@@ -1329,3 +1329,21 @@ body[data-panel] .preview-box[hidden] {
 #ledger tbody tr.selected td {
   background: rgba(110, 168, 255, 0.1);
 }
+
+/* WP7.7: a reading tab drives nothing — the machine's controls leave the header, a way back arrives;
+   the sentence of state is quiet, a control's echo is not. */
+body[data-panel] header #stop,
+body[data-panel] header #start,
+body[data-panel] header #resume,
+body[data-panel] header #openEditor {
+  display: none !important;
+}
+header a.panel-only {
+  color: var(--acc);
+  white-space: nowrap;
+  align-self: center;
+  font-size: 13px;
+}
+#notice.sentence {
+  color: var(--dim);
+}

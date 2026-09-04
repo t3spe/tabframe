@@ -127,7 +127,9 @@ test("demo: the control plane rotates mid-frame and the picture survives the new
   await waitPaused(page);
   await expect(page.locator("#gen")).toHaveText("gen 8");
   await expect(page.locator("#activity")).toContainText("rotating to generation 8");
-  await expect(page.locator("#notice")).toBeHidden();
+  // The status line carries the sentence of state, not a stale notice (WP7.7).
+  await expect(page.locator("#notice")).toHaveClass(/sentence/);
+  await expect(page.locator("#notice")).toContainText("demo · a scripted cluster inside this page");
   const p = await probe(page);
   expect(p.done).toBe(600);
   expect(p.painted).toBe(599);

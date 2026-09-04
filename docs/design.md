@@ -402,6 +402,8 @@ Every socket message is one JSON text frame with a type field and the generation
 
 **The header's one slot (WP7.1).** The dashboard's header has one slot for Stop / Start / Resume and it always means "what you can do to the machine right now": Resume while an editor tab holds the machine paused; Stop while anything runs, the loop's frame or a person's launch; Start when nothing runs and the loop is held by Stop or has yielded; Stop again when the loop is free, to hold it before its next frame. A separate loop pill names the loop's state (running · held by Stop · yielded to you · paused by the editor). Every control says what it will do in its tooltip and what it did in the activity line, which the issuing page also shows as a notice for a few seconds.
 
+**The status line and the reading tabs (WP7.7).** When no control echo is showing, the status line carries one sentence of state — what the machine is doing and why, in a visitor's words (`machineSentence`); the demo and an observer say what they are first. A control that cannot apply now stays where it is, greyed, with the reason after a dash in its tooltip ("— not connected yet", "— nothing is running", "— an observer lends no cores"). A panel tab drives nothing: the machine's controls leave its header and "← dashboard" leads back with the page's mode kept. The full inventory of screens, states, and controls is `docs/walkthrough.md`, checked by `e2e/walkthrough.e2e.ts`.
+
 ### 8.4 Sizes, limits, codes
 
 | Message | Typical | Cap |
@@ -988,3 +990,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   opens one from the store — source, fields, and inputs kept by hash for the edited copy — and a
   launch uploads the compiled text with the module. A dropped module has no source and opens as a
   module. The source is never a file of the bundle, so a program cannot read its own text.
+
+- **2026-09-04 (WP7.7).** The walkthrough (§8.3): `docs/walkthrough.md` inventories every screen,
+  state, and control against eight rules and `e2e/walkthrough.e2e.ts` asserts it. The status line
+  carries one sentence of state; disabled controls carry their reason instead of disappearing (kill
+  execution included); an observer's spawn controls say why they are off; panel tabs lose the
+  machine's controls and gain a way back; the editor greys a launch after an edit until the next
+  compile, treats a dropped module as sourceless, says the pause ended after a launch, and in the
+  demo compiles without offering to launch. The walkthrough also found a core bug (§8.3): a
+  trapped task's view carried `output: ""`, the schema rejected the snapshot, and no fresh dashboard
+  could subscribe after a trap until the execution was pruned; a failed task now has no output.

@@ -86,7 +86,9 @@ test("demo: legend, flash log, throughput, spawn hint, and the ledger explain th
   await expect(page.locator("#filesNote")).toContainText("named by its hash");
   // No banner: the machine is plainly live.
   await expect(page.locator("#machineBanner")).toBeHidden();
-  await expect(page.locator("#notice")).toBeHidden();
+  // The status line says what the machine does (WP7.7).
+  await expect(page.locator("#notice")).toHaveClass(/sentence/);
+  await expect(page.locator("#notice")).toContainText("demo · a scripted cluster inside this page");
 });
 
 test("demo: the rotation banner counts down to the next generation", async ({ page }) => {

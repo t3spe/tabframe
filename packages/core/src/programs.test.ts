@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { controlPlaneToObserver } from "@tabframe/protocol";
 import { pruneExecutions } from "./executions.ts";
 import { BUNDLE, H, harness } from "./harness.ts";
 
@@ -152,5 +153,33 @@ describe("the snapshot after a launch ends", () => {
     expect(snap.msg.execution?.executionId).toBe(exec.executionId);
     expect(snap.msg.execution?.status).toBe("done");
     expect(snap.msg.tasks.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a trapped task in the snapshot (WP7.7)", () => {
+  test("a failed plan task has no output in the view, and the snapshot after a trap still decodes", () => {
+    const h = harness();
+    h.hello("a", "h1");
+    h.addProgram("tiles");
+    h.launch({ preset: 1 }, true); // e1, a person's; its plan task goes to the node on the next fill
+    h.tick();
+    const exec = h.ledger.executions.get("e1");
+    const task = exec?.planTaskId ? h.ledger.tasks.get(exec.planTaskId) : undefined;
+    const attempt = task?.attempts.find((a) => a.outcome === "running");
+    if (!task || !attempt) throw new Error("no running plan attempt");
+    const node = h.ledger.nodes.get(attempt.nodeId);
+    if (!node) throw new Error("no node");
+    h.resultError(node.connId, task.taskId, attempt.attempt, "abort: this planner refuses to plan");
+    expect(h.ledger.executions.get("e1")?.status).toBe("failed");
+    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
+    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
+    // Before the fix the trapped task carried output "" and no dashboard could decode the snapshot,
+    // so nobody arriving after a trap could subscribe until the execution was pruned.
+    const failed = snap.msg.tasks.find((t) => t.taskId === task.taskId);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.output).toBeNull();
+    expect(controlPlaneToObserver.safeParse(JSON.parse(JSON.stringify(snap.msg))).success).toBe(
+      true,
+    );
   });
 });

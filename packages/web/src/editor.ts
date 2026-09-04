@@ -36,6 +36,8 @@ export interface EditorHost {
   subscribe(listener: (state: ClusterState) => void): () => void;
   /** Where the compiler worker script lives; defaults to `compiler-worker.js` next to this module. */
   workerUrl?: string;
+  /** A demo page: the compile is real, launching needs the live machine (WP7.7). */
+  demo?: boolean;
 }
 
 export interface EditorHandle {
@@ -213,7 +215,8 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     }
     module = bytes;
     moduleFrom = from;
-    els.launch.disabled = false;
+    els.launch.disabled = host.demo === true;
+    if (host.demo) els.launch.title = "demo: the compile is real; launching needs the live machine";
     els.moduleInfo.className = "";
     els.moduleInfo.replaceChildren(
       line(`${from} module · ${fmtBytes(m.size)} (${m.size} bytes)`),
@@ -389,6 +392,11 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
         .replace(/[^A-Za-z0-9._-]/g, "-")
         .slice(0, 64);
       if (stem && els.name.value === shipped.name) els.name.value = stem;
+      // The text in the box is not this module's source (WP7.7): say so, and stop compiling it.
+      els.source.value = `// ${file.name}: a module dropped as a .wasm has no source here.\n// It is loaded below; launch runs it as it is with the params on the right.\n// Pick an example or a program on the machine to edit source again.`;
+      els.compile.disabled = true;
+      compiledSource = null;
+      renderDiagnostics([]);
       status(`${file.name} accepted`, "live");
     } else {
       status(`${file.name} refused`, "off");
@@ -564,6 +572,16 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   };
   // The machine's programs arrive with the first snapshot; subscribe from the start.
   if (!unsubscribe) unsubscribe = host.subscribe(onCluster);
+  // Editing after a compile (WP7.7): the module no longer matches the text, so launch waits for a
+  // fresh compile and the module line says why.
+  els.source.oninput = () => {
+    if (moduleFrom !== "compiled" || compiledSource === null) return;
+    const stale = els.source.value !== compiledSource;
+    els.launch.disabled = stale || host.demo === true;
+    if (stale)
+      info(els.moduleInfo, "the source changed since the compile; compile again to launch it");
+    else if (module) void showModule(module, "compiled");
+  };
   els.source.onkeydown = (e) => {
     // Tab inserts two spaces instead of leaving the field.
     if (e.key === "Tab") {

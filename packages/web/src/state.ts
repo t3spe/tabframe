@@ -269,7 +269,7 @@ export function applyMessage(
         next,
         now,
         "execution",
-        `${msg.entry.programName} queued${msg.entry.human ? " by a person" : ""} (${msg.entry.executionId})`,
+        `${msg.entry.programName} queued${msg.entry.human ? " by a person" : ""} (${msg.entry.executionId})${state.machine?.paused ? " · waits for the editor's pause to end" : ""}`,
       );
     }
     case "executionStarted": {
@@ -1073,6 +1073,52 @@ export function stopTitle(state: ClusterState): string {
   if (exec && isRunningPhase(exec.phase))
     return `Ends ${exec.programName} ${exec.executionId}${exec.human ? " (a person's launch)" : ""} and holds the automatic loop until Start; a launch of yours still runs at once`;
   return "Holds the automatic loop before its next frame; Start lets it run again; a launch of yours still runs at once";
+}
+
+/**
+ * One sentence of state, always (WP7.7, rule R1): what the machine is doing and why, in a
+ * visitor's words. Null while the page is not connected — the connection banner speaks then.
+ */
+export function machineSentence(
+  state: ClusterState,
+  ctx: { live: boolean; demo: boolean; observe: boolean },
+): string | null {
+  if (!ctx.live) return null;
+  const exec = state.execution;
+  const loop = loopState(state);
+  const nodes = `${state.nodes.size} ${state.nodes.size === 1 ? "node" : "nodes"}`;
+  let core: string;
+  if (loop === "paused")
+    core =
+      "paused · the editor tab is open · in-flight tasks finish, nothing new starts · closing it or launching resumes";
+  else if (exec && isRunningPhase(exec.phase)) {
+    const where = exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase;
+    core = exec.human
+      ? `running your ${exec.programName} ${exec.executionId} · ${where} · ${nodes} · the loop waits behind it`
+      : `${exec.view === "tiles" ? "rendering" : "running"} ${exec.programName} ${exec.executionId} · ${where} · ${nodes}`;
+  } else if (loop === "held")
+    core = "stopped by you · nothing runs until Start · a launch of yours still runs at once";
+  else if (loop === "yielded") {
+    const ended =
+      exec?.phase === "done" ? "is done" : exec?.phase === "failed" ? "failed" : "was stopped";
+    core = exec
+      ? `your ${exec.programName} ${exec.executionId} ${ended} · the result stays · the loop waits for Start or ten quiet minutes`
+      : "the loop yielded to you · Start hands it the stage back, or ten quiet minutes do";
+  } else if (exec?.phase === "failed")
+    core = exec.human
+      ? `your ${exec.programName} ${exec.executionId} failed · the loop is free again`
+      : `${exec.programName} ${exec.executionId} failed · the loop tries again in a moment`;
+  else if (exec?.phase === "stopped")
+    core = `${exec.programName} ${exec.executionId} was stopped · the loop is free again`;
+  else if (state.queue.length > 0)
+    core = `${state.queue.length} queued · the next one starts in a moment`;
+  else core = "idle · the loop starts a frame when someone watches";
+  const prefix = ctx.demo
+    ? "demo · a scripted cluster inside this page, nothing is sent anywhere · "
+    : ctx.observe
+      ? "observing · this tab lends no cores · "
+      : "";
+  return prefix + core;
 }
 
 // ---- selectors --------------------------------------------------------------------------------
