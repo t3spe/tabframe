@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { PlaceView } from "@tabframe/protocol";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { sha256Hex } from "@tabframe/store/hash";
-import { applyMessage, type ClusterState, emptyState } from "./state.ts";
+import { applyMessage, type ClusterState, emptyState } from "./cluster-state.ts";
 import {
   type BlobSource,
   storeSource,

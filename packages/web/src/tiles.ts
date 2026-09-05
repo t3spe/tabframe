@@ -2,7 +2,8 @@
 // re-hashed before they are trusted, and painted into an offscreen canvas at the execution's size.
 import type { PlaceView } from "@tabframe/protocol";
 import { sha256Hex } from "@tabframe/store/hash";
-import { type ClusterState, stageTasks, type TaskState } from "./state.ts";
+import type { ClusterState, TaskState } from "./cluster-state.ts";
+import { stageTasks } from "./selectors.ts";
 
 export type TileFlag = "bad-hash" | "bad-size" | "missing";
 

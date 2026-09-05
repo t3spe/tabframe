@@ -3,6 +3,14 @@
 // of settled tasks (hashes and where their bytes live), and failure surfacing. The state comes from `state.ts`; bytes come from the store by hash; controls go back
 // through the observer socket. No framework: each panel is a render function over the state that
 // rebuilds its DOM only when what it shows has changed, so buttons stay put under a finger.
+
+import {
+  type AttemptRecord,
+  type ClusterState,
+  type ExecutionState,
+  isRunningPhase,
+  type ProgramInfo,
+} from "./cluster-state.ts";
 import type { ControlRequest } from "./observer.ts";
 import {
   barRows,
@@ -18,17 +26,7 @@ import {
   readBars,
   TEXT_PREVIEW_BYTES,
 } from "./result.ts";
-import {
-  type AttemptRecord,
-  type ClusterState,
-  type ExecutionState,
-  isRunningPhase,
-  ledgerRows,
-  type ProgramInfo,
-  programList,
-  stageStrip,
-  type TaskState,
-} from "./state.ts";
+import { ledgerRows, programList, stageStrip } from "./selectors.ts";
 import type { BlobSource } from "./tiles.ts";
 
 export interface PanelDeps {
@@ -1177,8 +1175,6 @@ export function gridIndexAt(n: number, width: number, x: number, y: number): num
   const index = line * cols + col;
   return index < n ? index : -1;
 }
-
-export type { TaskState };
 
 /** The `data-<key>` of the focused element inside `root`, so a rebuild can hand focus back (WP8.3). */
 function focusedDatum(root: HTMLElement, key: string): string | null {

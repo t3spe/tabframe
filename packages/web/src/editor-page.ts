@@ -1,10 +1,11 @@
 // The editor in its own tab (WP6.4): its own observer socket, the same editor as before, and a
 // pause on the machine for as long as this tab lives — launching or closing resumes it, and so
 // does the control plane by itself when this socket goes away.
+
+import type { ClusterState } from "./cluster-state.ts";
 import { mountEditor } from "./editor.ts";
 import { type MachineState, ObserverClient } from "./observer.ts";
 import { loadSessionUrl } from "./page-config.ts";
-import type { ClusterState } from "./state.ts";
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);

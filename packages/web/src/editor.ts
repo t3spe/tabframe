@@ -5,6 +5,7 @@
 import { BUNDLE_PATHS, fsManifest, programManifest } from "@tabframe/protocol";
 import { type PresignRequester, StoreClient } from "@tabframe/store/client";
 import { sha256Hex } from "@tabframe/store/hash";
+import type { ClusterState, ProgramInfo } from "./cluster-state.ts";
 import type { WorkerReply, WorkerRequest } from "./compiler-worker.ts";
 import {
   ASC_FLAGS,
@@ -25,7 +26,7 @@ import {
   parseParams,
   shippedManifest,
 } from "./editor-core.ts";
-import { type ClusterState, type ProgramInfo, programList } from "./state.ts";
+import { programList } from "./selectors.ts";
 
 /** What the page gives the editor: the socket's upload and launch paths, and the cluster feed. */
 export interface EditorHost {

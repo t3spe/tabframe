@@ -12,7 +12,7 @@ import {
   PROTOCOL_VERSION,
 } from "@tabframe/protocol";
 import type { PresignedUpload, PresignItem } from "@tabframe/store";
-import { applyMessage, type ClusterState, emptyState, withRedundancy } from "./state.ts";
+import { applyMessage, type ClusterState, emptyState, withRedundancy } from "./cluster-state.ts";
 
 export type MachineState = "connecting" | "starting" | "off" | "live" | "outdated" | "full";
 

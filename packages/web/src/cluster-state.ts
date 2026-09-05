@@ -1,3 +1,5 @@
+// The dashboard's model of the cluster, built from snapshots and events: the wire reducer and the
+// types it produces. Pure and unit-tested; the selectors and the copy live beside it.
 import type {
   ControlPlaneToObserver,
   Counters,
@@ -19,8 +21,8 @@ export const FLASH_MS = 1_500;
 export const CHART_WINDOW_MS = 60_000;
 /** Flash-worthy events kept for the pulse list beside the grid. */
 export const PULSE_CAP = 12;
-/** Notable events kept for the activity list. */
-export const ACTIVITY_CAP = 400; // (WP8.2) the activity tab promises the last few hundred lines
+/** Notable events kept for the activity list; the activity tab promises the last few hundred lines. */
+export const ACTIVITY_CAP = 400;
 /** Attempt records kept per task; a task that churns more than this keeps the latest. */
 export const HISTORY_CAP = 16;
 
@@ -89,20 +91,13 @@ export type TaskColor =
   | "mismatch"
   | "failed";
 
-/** What each colour means, in legend order; the page maps the keys to swatches. */
-export const TASK_COLOR_LABELS: ReadonlyArray<[TaskColor, string]> = [
-  ["pending", "pending"],
-  ["assigned", "assigned"],
-  ["speculated", "speculated twin"],
-  ["released", "taken back, waiting"],
-  ["done", "done"],
-  ["verified", "verified by a twin"],
-  ["mismatch", "mismatch, recomputing"],
-  ["failed", "failed"],
-];
-
-/** `stopped`: ended by a person's Stop (WP6.1) — over, but not a failure. */
+/** `stopped`: ended by a person's Stop — over, but not a failure. */
 export type Phase = "planning" | "running" | "folding" | "done" | "failed" | "stopped";
+
+/** Planning, running, and folding are "running" to a visitor: something is happening on the stage. */
+export function isRunningPhase(phase: Phase): boolean {
+  return phase === "planning" || phase === "running" || phase === "folding";
+}
 
 export type StageStatus = "running" | "folding" | "done" | "failed";
 
@@ -145,7 +140,7 @@ export interface ProgramInfo {
   view: ProgramView["view"] | null;
   description: string | null;
   defaultParams: Record<string, unknown>;
-  /** The program's source text in the store, by hash, when it has one (WP7.6). */
+  /** The program's source text in the store, by hash, when it has one. */
   source: string | null;
 }
 
@@ -166,7 +161,7 @@ export interface Activity {
   text: string;
 }
 
-/** The dashboard's model of the cluster, built from snapshots and events. Pure and unit-tested. */
+/** The dashboard's model of the cluster, built from snapshots and events. */
 export interface ClusterState {
   generation: number | null;
   seq: number;
@@ -379,7 +374,7 @@ export function applyMessage(
             s.status === "running" || s.status === "folding" ? { ...s, status: "failed" } : s,
           ),
         };
-        // A stop is what the person asked for, not a failure to show in red (WP8.2).
+        // A stop is what the person asked for, not a failure to show in red.
         if (!stopped)
           next.lastFailure = {
             executionId: msg.executionId,
@@ -413,7 +408,7 @@ export function applyMessage(
     }
     case "taskAssigned": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
+      const task = ensureTask(next, msg.taskId);
       if (task.status === "pending") bump(next, { pending: -1, assigned: 1 });
       setTask(next, {
         ...task,
@@ -435,7 +430,7 @@ export function applyMessage(
     }
     case "taskSpeculated": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
+      const task = ensureTask(next, msg.taskId);
       if (task.status === "pending") bump(next, { pending: -1, assigned: 1 });
       bump(next, { speculated: 1 });
       setTask(next, {
@@ -461,7 +456,7 @@ export function applyMessage(
     }
     case "taskDone": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
+      const task = ensureTask(next, msg.taskId);
       if (task.status === "assigned") bump(next, { assigned: -1, done: 1 });
       else if (task.status === "pending") bump(next, { pending: -1, done: 1 });
       // The winner's attempt is done; any twin still running is cancelled by the core (§6.5). A
@@ -494,7 +489,7 @@ export function applyMessage(
         log: msg.log ?? task.log,
         history,
       });
-      next.doneAt = [...prune(next.doneAt, now), now];
+      next.doneAt = [...pruneTo(next.doneAt, now, THROUGHPUT_WINDOW_MS), now];
       next.doneLog = [...pruneTo(next.doneLog, now, CHART_WINDOW_MS), now];
       resultFrom(next, msg.nodeId, msg.computeMs);
       if (task.kind === "run") bumpStage(next, task.stage, { done: 1 });
@@ -502,7 +497,7 @@ export function applyMessage(
     }
     case "taskReassigned": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
+      const task = ensureTask(next, msg.taskId);
       const holders = task.holders.filter((h) => h !== msg.fromNode);
       const released = task.status === "assigned" && holders.length === 0;
       if (released) bump(next, { assigned: -1, pending: 1, reassigned: 1 });
@@ -537,9 +532,9 @@ export function applyMessage(
     }
     case "taskMismatch": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
-      // The core ignores results for a failed task, so no mismatch follows one; a page that got
-      // one anyway used to count the task as pending and failed at once (WP8.3).
+      const task = ensureTask(next, msg.taskId);
+      // The core sends no mismatch for a failed task; one that arrives anyway must not count the
+      // task as pending and failed at once.
       if (task.status === "failed") return next;
       bump(next, { mismatched: 1 });
       if (task.status === "done") bump(next, { done: -1, pending: 1 });
@@ -570,7 +565,7 @@ export function applyMessage(
     }
     case "taskFailed": {
       const next = advance(state, msg.seq);
-      const task = ensureTask(next, msg.taskId, now);
+      const task = ensureTask(next, msg.taskId);
       if (task.status === "assigned") bump(next, { assigned: -1, failed: 1 });
       else if (task.status === "pending") bump(next, { pending: -1, failed: 1 });
       setTask(next, {
@@ -589,7 +584,7 @@ export function applyMessage(
       const next = advance(state, msg.seq);
       next.victims = { op: msg.op, nodeIds: msg.nodeIds, at: now };
       if (msg.op === "setRedundancy") next.refresh = true;
-      // Stop and Start carry the machine's new state themselves (WP6.1).
+      // Stop and Start carry the machine's new state themselves.
       if ((msg.op === "stop" || msg.op === "start") && next.machine)
         next.machine = {
           ...next.machine,
@@ -599,7 +594,7 @@ export function applyMessage(
       if ((msg.op === "pause" || msg.op === "resume") && next.machine)
         next.machine = { ...next.machine, paused: msg.op === "pause" };
       const who = msg.nodeIds.length ? `: ${msg.nodeIds.join(" ")}` : "";
-      // The line says what the control did, in the words of the page (WP7.1, rule R2).
+      // The line says what the control did, in the words of the page (rule R2).
       const said =
         msg.op === "stop"
           ? `stop: ${state.execution && isRunningPhase(state.execution.phase) ? `${state.execution.executionId} ended, ` : ""}the loop is held until Start; a launch still runs at once`
@@ -643,8 +638,8 @@ export function applyMessage(
       );
     }
     case "loopYielded": {
-      // The loop yielded to a person's launch, or took the stage back after ten quiet minutes
-      // (WP6.8); snapshots carry the same flag for pages that subscribe later.
+      // The loop yielded to a person's launch, or took the stage back after ten quiet minutes;
+      // snapshots carry the same flag for pages that subscribe later.
       const next = advance(state, msg.seq);
       if (next.machine) next.machine = { ...next.machine, yielded: msg.yielded };
       return note(
@@ -731,12 +726,12 @@ function applySnapshot(state: ClusterState, snap: Snapshot, now: number): Cluste
     gap: false,
     refresh: false,
     execution,
-    // A failure box seeded from the snapshot (WP8.2), so a page that joins after a failure sees why.
+    // Seeded from the snapshot, so a page that joins after a failure sees why.
     lastFailure: first ? seededFailure(snap, now) : state.lastFailure,
     queue: first ? (snap.queue ?? []) : state.queue,
     machine: first ? (snap.machine ?? null) : state.machine,
     tasks,
-    doneAt: prune(state.doneAt, now),
+    doneAt: pruneTo(state.doneAt, now, THROUGHPUT_WINDOW_MS),
     doneLog: pruneTo(state.doneLog, now, CHART_WINDOW_MS),
     rotation: first ? null : state.rotation,
     sleeping: first ? null : state.sleeping,
@@ -770,7 +765,8 @@ function pulse(
   next.pulses = pulses;
 }
 
-function toExecutionState(view: ExecutionView): ExecutionState {
+/** The dashboard's execution from the wire's view: a phase, and what it knows of the stages so far. */
+export function toExecutionState(view: ExecutionView): ExecutionState {
   const phase: Phase =
     view.status === "done"
       ? "done"
@@ -805,7 +801,8 @@ function toExecutionState(view: ExecutionView): ExecutionState {
   return {
     ...view,
     phase,
-    // The wire's reason survives (WP8.2): a page joining after a failure used to read "failed: failed".
+    // A stop carries no failure; any other end keeps the wire's reason, so a page joining after a
+    // failure reads the reason rather than "failed: failed".
     failure: phase === "stopped" ? null : (view.failure ?? null),
     followUp: null,
     budget: null,
@@ -888,7 +885,7 @@ function setTask(next: ClusterState, task: TaskState): void {
  * A task the dashboard has not seen: a row `stageStarted` could not carry, or the planner running
  * before the stage exists. It is placed from its id when the base is known and left unplaced otherwise.
  */
-function ensureTask(next: ClusterState, taskId: string, _now: number): TaskState {
+function ensureTask(next: ClusterState, taskId: string): TaskState {
   const known = next.tasks.get(taskId);
   if (known) return known;
   const exec = next.execution;
@@ -977,12 +974,11 @@ function settle(
   computeMs: number | null,
 ): AttemptRecord[] {
   let found = false;
-  const out = history.map((a) => {
+  return history.map((a) => {
     if (found || a.nodeId !== nodeId || a.outcome !== "running") return a;
     found = true;
     return { ...a, outcome, computeMs: computeMs ?? a.computeMs };
   });
-  return out;
 }
 
 /**
@@ -1019,10 +1015,7 @@ function resultFrom(next: ClusterState, nodeId: string, computeMs: number | null
   });
 }
 
-function prune(times: readonly number[], now: number): number[] {
-  return pruneTo(times, now, THROUGHPUT_WINDOW_MS);
-}
-
+/** Arrival times inside the window, oldest first; the array is shared when nothing fell out. */
 function pruneTo(times: readonly number[], now: number, windowMs: number): number[] {
   const floor = now - windowMs;
   let i = 0;
@@ -1033,285 +1026,4 @@ function pruneTo(times: readonly number[], now: number, windowMs: number): numbe
 /** The page that toggles redundancy knows the value it asked for; the wire's echo carries none. */
 export function withRedundancy(state: ClusterState, on: boolean): ClusterState {
   return state.machine ? { ...state, machine: { ...state.machine, redundancy: on } } : state;
-}
-
-// ---- the header's one slot and the loop pill (WP7.1) -------------------------------------------
-
-/** Planning, running, and folding are "running" to a visitor: something is happening on the stage. */
-export function isRunningPhase(phase: Phase): boolean {
-  return phase === "planning" || phase === "running" || phase === "folding";
-}
-
-/** Whether an execution is on the stage right now. */
-export function isRunning(state: ClusterState): boolean {
-  return state.execution !== null && isRunningPhase(state.execution.phase);
-}
-
-/** The automatic loop's state, in the order a visitor needs to know it. */
-export type LoopState = "paused" | "held" | "yielded" | "running";
-
-export function loopState(state: ClusterState): LoopState {
-  const m = state.machine;
-  if (m?.paused) return "paused";
-  if (m?.stopped) return "held";
-  if (m?.yielded) return "yielded";
-  return "running";
-}
-
-/** The loop pill's words: what the loop is doing and what changes it. */
-export function loopLabel(state: ClusterState): string {
-  switch (loopState(state)) {
-    case "paused":
-      return "loop · paused by the editor";
-    case "held":
-      return "loop · held by Stop";
-    case "yielded":
-      return "loop · yielded to you";
-    default:
-      return "loop · running";
-  }
-}
-
-/**
- * The header's one slot always means "what you can do to the machine right now": Resume while an
- * editor tab holds it, Stop while anything runs (the loop's frame or a person's launch), Start
- * when nothing runs and the loop is held or has yielded, and Stop again when the loop is free —
- * to hold it before its next frame.
- */
-export type HeaderSlot = "stop" | "start" | "resume";
-
-export function headerSlot(state: ClusterState): HeaderSlot {
-  const loop = loopState(state);
-  if (loop === "paused") return "resume";
-  if (isRunning(state)) return "stop";
-  if (loop === "held" || loop === "yielded") return "start";
-  return "stop";
-}
-
-/** Stop's tooltip depends on what it would end. */
-export function stopTitle(state: ClusterState): string {
-  const exec = state.execution;
-  if (exec && isRunningPhase(exec.phase))
-    return `Ends ${exec.programName} ${exec.executionId}${exec.human ? " (a person's launch)" : ""} and holds the automatic loop until Start; a launch of yours still runs at once`;
-  return "Holds the automatic loop before its next frame; Start lets it run again; a launch of yours still runs at once";
-}
-
-/**
- * One sentence of state, always (WP7.7, rule R1): what the machine is doing and why, in a
- * visitor's words. Null while the page is not connected — the connection banner speaks then.
- */
-export function machineSentence(
-  state: ClusterState,
-  ctx: { live: boolean; demo: boolean; observe: boolean },
-): string | null {
-  if (!ctx.live) return null;
-  const exec = state.execution;
-  const loop = loopState(state);
-  const nodes = `${state.nodes.size} ${state.nodes.size === 1 ? "node" : "nodes"}`;
-  let core: string;
-  if (loop === "paused")
-    core =
-      "paused · the editor tab is open · in-flight tasks finish, nothing new starts · closing it or launching resumes";
-  else if (exec && isRunningPhase(exec.phase)) {
-    const where = exec.phase === "running" ? exec.stageName || `stage ${exec.stage}` : exec.phase;
-    core = exec.human
-      ? `running your ${exec.programName} ${exec.executionId} · ${where} · ${nodes} · the loop waits behind it`
-      : `${exec.view === "tiles" ? "rendering" : "running"} ${exec.programName} ${exec.executionId} · ${where} · ${nodes}`;
-  } else if (loop === "held")
-    core = "stopped by you · nothing runs until Start · a launch of yours still runs at once";
-  else if (loop === "yielded") {
-    const ended =
-      exec?.phase === "done" ? "is done" : exec?.phase === "failed" ? "failed" : "was stopped";
-    core = exec
-      ? `your ${exec.programName} ${exec.executionId} ${ended} · the result stays · the loop waits for Start or ten quiet minutes`
-      : "the loop yielded to you · Start hands it the stage back, or ten quiet minutes do";
-  } else if (exec?.phase === "failed")
-    core = exec.human
-      ? `your ${exec.programName} ${exec.executionId} failed · the loop is free again`
-      : `${exec.programName} ${exec.executionId} failed · the loop tries again in a moment`;
-  else if (exec?.phase === "stopped")
-    core = `${exec.programName} ${exec.executionId} was stopped · the loop is free again`;
-  else if (state.queue.length > 0)
-    core = `${state.queue.length} queued · the next one starts in a moment`;
-  else core = "idle · the loop starts a frame when someone watches";
-  const prefix = ctx.demo
-    ? "demo · a scripted cluster inside this page, nothing is sent anywhere · "
-    : ctx.observe
-      ? "observing · this tab lends no cores · "
-      : "";
-  return prefix + core;
-}
-
-// ---- selectors --------------------------------------------------------------------------------
-
-export function hostCount(state: ClusterState): number {
-  return new Set([...state.nodes.values()].map((n) => n.hostId)).size;
-}
-
-/** Run tasks of the current stage in grid order: placed rows by index, unplaced rows after them by id. */
-export function stageTasks(state: ClusterState): TaskState[] {
-  const exec = state.execution;
-  if (!exec) return [];
-  const rows = [...state.tasks.values()].filter((t) => t.stage === exec.stage && t.kind === "run");
-  rows.sort((a, b) => {
-    if (a.index >= 0 && b.index >= 0) return a.index - b.index;
-    if (a.index >= 0) return -1;
-    if (b.index >= 0) return 1;
-    return a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0;
-  });
-  return rows;
-}
-
-/** The planner's task while a stage is being planned, if the dashboard has seen it. */
-export function planTask(state: ClusterState): TaskState | null {
-  for (const t of state.tasks.values()) if (t.kind === "plan" && t.status !== "done") return t;
-  return null;
-}
-
-export function taskColor(task: TaskState): TaskColor {
-  switch (task.status) {
-    case "failed":
-      return "failed";
-    case "done":
-      return task.verified ? "verified" : "done";
-    case "assigned":
-      return task.holders.length > 1 ? "speculated" : "assigned";
-    default:
-      return task.contested ? "mismatch" : task.released ? "released" : "pending";
-  }
-}
-
-export function isFlashing(at: number | null, now: number): boolean {
-  return at !== null && now - at < FLASH_MS;
-}
-
-/** Tasks per second over the window, from arrival times. */
-export function throughput(state: ClusterState, now: number): number {
-  return prune(state.doneAt, now).length / (THROUGHPUT_WINDOW_MS / 1000);
-}
-
-/**
- * Tasks done per second over the chart window, oldest bucket first; the last bucket is the
- * current second. Sixty numbers for the default window.
- */
-export function throughputSeries(
-  state: ClusterState,
-  now: number,
-  seconds = CHART_WINDOW_MS / 1000,
-): number[] {
-  const buckets = new Array<number>(seconds).fill(0);
-  for (const t of state.doneLog) {
-    const i = seconds - 1 - Math.floor((now - t) / 1000);
-    if (i >= 0 && i < seconds) buckets[i] = (buckets[i] as number) + 1;
-  }
-  return buckets;
-}
-
-/** Milliseconds until the reconnect a rotation announced, floored at zero; null when none is on. */
-export function rotationCountdown(rotation: ClusterState["rotation"], now: number): number | null {
-  return rotation ? Math.max(0, rotation.at + rotation.reconnectAfterMs - now) : null;
-}
-
-/** What stands between the visitor and a plainly live machine, or null when nothing does. */
-export type MachineBanner =
-  | { kind: "rotating"; next: number; msLeft: number }
-  | { kind: "sleeping"; reason: string }
-  | { kind: "asleep"; reason: string | null };
-
-export function machineBanner(state: ClusterState, now: number): MachineBanner | null {
-  const msLeft = rotationCountdown(state.rotation, now);
-  if (state.rotation && msLeft !== null)
-    return { kind: "rotating", next: state.rotation.next, msLeft };
-  if (state.sleeping) return { kind: "sleeping", reason: state.sleeping };
-  if (state.machine && !state.machine.awake)
-    return { kind: "asleep", reason: state.machine.reason };
-  return null;
-}
-
-/** A settled task's line in the ledger: what the control plane holds about its output. */
-export interface LedgerRow {
-  taskId: string;
-  index: number;
-  output: string;
-  /** Known for placed tiles (w × h × 4 bytes of RGBA); null until a manifest names the size. */
-  size: number | null;
-  nodeId: string | null;
-  computeMs: number | null;
-  verified: boolean;
-}
-
-/** The most recently settled tasks of the current stage, newest first. */
-export function ledgerRows(state: ClusterState, limit = 8): LedgerRow[] {
-  const rows: Array<LedgerRow & { at: number }> = [];
-  for (const t of state.tasks.values()) {
-    if (t.status !== "done" || !t.output) continue;
-    const winner = [...t.history].reverse().find((a) => a.outcome === "done");
-    rows.push({
-      taskId: t.taskId,
-      index: t.index,
-      output: t.output,
-      size: t.place ? t.place.w * t.place.h * 4 : null,
-      nodeId: winner?.nodeId ?? null,
-      computeMs: t.computeMs,
-      verified: t.verified,
-      at: t.settledAt ?? -1,
-    });
-  }
-  rows.sort((a, b) => b.at - a.at || b.index - a.index);
-  return rows.slice(0, limit).map(({ at: _at, ...row }) => row);
-}
-
-/** Open attempts per node, derived from task holders so it never drifts from the grid. */
-export function inFlightByNode(state: ClusterState): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const t of state.tasks.values()) {
-    if (t.status !== "assigned") continue;
-    for (const h of t.holders) out.set(h, (out.get(h) ?? 0) + 1);
-  }
-  return out;
-}
-
-export function progress(state: ClusterState): { done: number; total: number } {
-  const exec = state.execution;
-  if (!exec) return { done: 0, total: 0 };
-  let done = 0;
-  let seen = 0;
-  for (const t of state.tasks.values()) {
-    if (t.stage !== exec.stage || t.kind !== "run") continue;
-    seen++;
-    if (t.status === "done") done++;
-  }
-  return { done, total: Math.max(exec.taskCount, seen) };
-}
-
-/** Programs sorted by name, for the panel. */
-export function programList(state: ClusterState): ProgramInfo[] {
-  return [...state.programs.values()].sort((a, b) => a.name.localeCompare(b.name, "en"));
-}
-
-/**
- * The stage strip's rows: every stage seen so far, plus the planning step the execution is in
- * when no stage is running (a plan task ahead of the next stage, or the very first one).
- */
-export type StripEntry =
-  | { kind: "stage"; stage: StageState; current: boolean }
-  | { kind: "plan"; stage: number; holders: string[] };
-
-export function stageStrip(state: ClusterState): StripEntry[] {
-  const exec = state.execution;
-  if (!exec) return [];
-  const entries: StripEntry[] = exec.stages.map((s, i) => ({
-    kind: "stage",
-    stage: s,
-    current: i === exec.stage && exec.phase === "running",
-  }));
-  if (exec.phase === "planning" || exec.phase === "folding") {
-    const plan = planTask(state);
-    entries.push({
-      kind: "plan",
-      stage: exec.phase === "folding" ? exec.stage + 1 : exec.stage,
-      holders: plan?.holders ?? [],
-    });
-  }
-  return entries;
 }

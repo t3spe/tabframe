@@ -8,36 +8,46 @@
 import type { HostToWorker, WorkerToHost } from "@tabframe/node/platform/web";
 import type { NodeView, PlaceView } from "@tabframe/protocol";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
-import { connectionCopy, fmtCountdown, machineCopy, ROTATING_DETAIL } from "./banners.ts";
-import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
-import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
-import { loadSessionUrl } from "./page-config.ts";
-import { gridIndexAt, gridLayout, mountPanels, type Panels } from "./panels.ts";
 import {
   applyMessage,
   type ClusterState,
   emptyState,
+  type TaskColor,
+  withRedundancy,
+} from "./cluster-state.ts";
+import {
+  connectionCopy,
+  LEGEND,
+  LOOP_TITLES,
+  loopLabel,
+  machineCopy,
+  machineSentence,
+  PULSE_TEXT,
+  ROTATING_DETAIL,
+  stopTitle,
+} from "./copy.ts";
+import { DEMO_CYCLE, type DemoHandle, type DemoProgram, startDemo } from "./demo.ts";
+import { fmtCountdown } from "./format.ts";
+import { type ControlRequest, type MachineState, ObserverClient } from "./observer.ts";
+import { loadSessionUrl } from "./page-config.ts";
+import { gridIndexAt, gridLayout, mountPanels, type Panels } from "./panels.ts";
+import {
   headerSlot,
   hostCount,
   inFlightByNode,
   isFlashing,
   isRunning,
-  loopLabel,
+  latestControl,
   loopState,
   machineBanner,
-  machineSentence,
-  type Pulse,
   planTask,
   progress,
   stageTasks,
-  stopTitle,
-  TASK_COLOR_LABELS,
-  type TaskColor,
   taskColor,
   throughput,
   throughputSeries,
-  withRedundancy,
-} from "./state.ts";
+  visibleActivity,
+} from "./selectors.ts";
 import {
   type BlobSource,
   storeSource,
@@ -68,19 +78,6 @@ export const COLORS: Record<TaskColor, string> = {
   verified: "#0072b2",
   mismatch: "#f0e442",
   failed: "#d55e00",
-};
-/** The legend: every task colour, then the two overlays the grid draws on top of them. */
-const LEGEND: [TaskColor | "flash" | "contested", string][] = [
-  ...TASK_COLOR_LABELS,
-  ["flash", "flash: just taken back, twinned, verified, or retracted"],
-  ["contested", "contested: results disagreed"],
-];
-/** What a flash says in the pulse list. */
-const PULSE_TEXT: Record<Pulse["kind"], (p: Pulse) => string> = {
-  released: (p) => `${p.taskId} taken back from ${p.nodeId}`,
-  speculated: (p) => `${p.taskId} twin on ${p.nodeId}`,
-  verified: (p) => `${p.taskId} verified by ${p.nodeId}`,
-  mismatch: (p) => `${p.taskId} results disagree, ${p.nodeId} retracted`,
 };
 const FLASH = "#ffffff";
 const SELECTED = "#6ea8ff";
@@ -509,14 +506,7 @@ function render(state: ClusterState): void {
   const loop = loopState(state);
   els.loop.textContent = loopLabel(state);
   els.loop.dataset.loop = loop;
-  els.loop.title =
-    loop === "running"
-      ? "The automatic loop renders frame after frame while someone watches"
-      : loop === "held"
-        ? "A person pressed Stop: the loop launches nothing until Start; a launch of yours still runs at once"
-        : loop === "yielded"
-          ? "Your launch ended: the result stays on the stage until Start or ten quiet minutes"
-          : "An editor tab holds the machine: in-flight tasks finish, nothing new starts; closing it or launching resumes";
+  els.loop.title = LOOP_TITLES[loop];
   // The header's one slot means "what you can do to the machine right now" (WP7.1, rule R3).
   const slot = headerSlot(state);
   $<HTMLButtonElement>("#stop").hidden = slot !== "stop";
@@ -678,7 +668,7 @@ function render(state: ClusterState): void {
   if (activitySig !== activityDrawn) {
     activityDrawn = activitySig;
     els.activity.replaceChildren(
-      ...visibleActivity(state, now)
+      ...visibleActivity(state, now, panelMode === "activity")
         .reverse()
         .map((a) => {
           const li = document.createElement("li");
@@ -1177,28 +1167,3 @@ function expose(): void {
 }
 let spawnedOnce = false;
 void main();
-
-/** The newest control line of the last minute (WP8.4): what a person just did must stay readable. */
-function latestControl(state: ClusterState, now: number) {
-  for (let i = state.activity.length - 1; i >= 0; i--) {
-    const a = state.activity[i];
-    if (!a) break;
-    if (now - a.at > 60_000) return null;
-    if (a.kind === "control") return a;
-  }
-  return null;
-}
-
-/**
- * The activity tab shows everything; the dashboard's snippet shows the last fourteen lines — but a
- * kill half is followed within a second by more than fourteen reassignments and departures, and
- * the line saying what the click did used to vanish before a reader (or the demo script) saw it
- * (WP8.4). The latest control line of the last minute keeps its place at the bottom of the snippet.
- */
-function visibleActivity(state: ClusterState, now: number) {
-  if (panelMode === "activity") return [...state.activity];
-  const recent = state.activity.slice(-14);
-  const control = latestControl(state, now);
-  if (control && !recent.includes(control)) recent[0] = control;
-  return recent;
-}
