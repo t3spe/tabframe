@@ -12,6 +12,8 @@ import {
 } from "@tabframe/protocol";
 import { validateModuleBytes } from "@tabframe/sandbox/validate";
 import { sha256Hex } from "@tabframe/store/hash";
+import type { Diagnostic, VirtualFs } from "./compiler-types.ts";
+import type { Parsed } from "./params.ts";
 import {
   GUIDE_MARKDOWN,
   HELLO_MANIFEST,
@@ -39,11 +41,6 @@ export const MEMORY_PAGES_MAX = 256;
 export const ENTRY = "program/assembly/index.ts";
 export const SDK_ROOT = "node_modules/@tabframe/sdk-as";
 
-export interface VirtualFs {
-  entry: string;
-  files: Record<string, string>;
-}
-
 /**
  * The files a compile sees: the edited source at the entry, the SDK under a node_modules
  * directory so `import ... from "@tabframe/sdk-as/assembly/index"` resolves the way the build's
@@ -58,25 +55,6 @@ export function assembleSources(programSource: string): VirtualFs {
     ascMain: "assembly/index.ts",
   });
   return { entry: ENTRY, files };
-}
-
-export type DiagnosticLevel = "pedantic" | "info" | "warning" | "error";
-
-export interface Diagnostic {
-  level: DiagnosticLevel;
-  code: number;
-  message: string;
-  file: string | null;
-  line: number | null;
-  column: number | null;
-}
-
-export interface CompileResult {
-  ok: boolean;
-  wasm: Uint8Array | null;
-  diagnostics: Diagnostic[];
-  stderr: string;
-  ms: number;
 }
 
 /** One line per diagnostic, the way an editor's problems panel shows them. */
@@ -97,30 +75,12 @@ export function shortPath(file: string): string {
   return clean;
 }
 
-export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
-
-/** Params are a JSON object; arrays and scalars are refused with a plain message. */
-export function parseParams(text: string): Parsed<Record<string, unknown>> {
-  const trimmed = text.trim();
-  if (trimmed === "") return { ok: true, value: {} };
-  let value: unknown;
-  try {
-    value = JSON.parse(trimmed);
-  } catch (err) {
-    return { ok: false, error: `params are not valid JSON: ${(err as Error).message}` };
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ok: false, error: 'params must be a JSON object, like {"preset": 0}' };
-  }
-  return { ok: true, value: value as Record<string, unknown> };
-}
-
 export interface ManifestFields {
   name: string;
   view: string;
   description: string;
   defaultParams: Record<string, unknown>;
-  /** The hash of the source text the module was compiled from, when it was (WP7.6). */
+  /** The hash of the source text the module was compiled from, when it was. */
   source?: string;
 }
 
@@ -157,7 +117,7 @@ export interface BundleInput {
   bytes: Uint8Array;
 }
 
-/** An input kept by hash from the program a copy was opened from: already in the store, never re-uploaded (WP7.6). */
+/** An input kept by hash from the program a copy was opened from: already in the store, never re-uploaded. */
 export interface InputRef {
   /** The bundle path, `/in/<file>`. */
   path: string;
@@ -252,15 +212,6 @@ export function looksLikeWasm(bytes: Uint8Array): boolean {
 
 export const MAX_MODULE_BYTES = LIMITS.maxModuleBytes;
 
-/** Human-readable sizes for the panel. */
-export function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// ---- examples and the guide (WP6.6) ------------------------------------------------------------
-
 /** A program the editor can load: its source, its manifest, and what the reader should know. */
 export interface Example {
   key: "mandelbrot" | "wordcount" | "hello";
@@ -297,15 +248,13 @@ export function examples(): Example[] {
   ];
 }
 
-/** The guide's Markdown (the SDK's README), so a test can check it is the file on disk. */
 /** The numbers this machine holds a program to, as one sentence (shown on the guide page). */
 export function limitsSentence(): string {
   return `Limits on this machine: a module declares a memory maximum of at most ${MEMORY_PAGES_MAX} pages (${(MEMORY_PAGES_MAX * 64) / 1024} MB) and is at most ${MAX_MODULE_BYTES / (1024 * 1024)} MB; a task's inline input is at most 16 KB; an output at most 16 MB, a task's writes at most 256 files and 16 MB, its log 64 KB; a task that runs past its deadline is killed and given to another core. The views: tiles (RGBA bytes placed on a canvas), bars (the bars() payload), text (UTF-8).`;
 }
 
+/** The guide's Markdown: the SDK's README up to its repository-only sections ("Compiling", "Tooling"). */
 export function guideMarkdown(): string {
-  // The README's "Compiling" and "Tooling" sections are about the repository, not the page (WP8.1):
-  // the guide stops where they start.
   const cut = GUIDE_MARKDOWN.indexOf("\n## Compiling");
   return cut === -1 ? GUIDE_MARKDOWN : GUIDE_MARKDOWN.slice(0, cut).trimEnd();
 }

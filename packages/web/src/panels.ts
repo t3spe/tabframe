@@ -4,6 +4,7 @@
 // through the observer socket. No framework: each panel is a render function over the state that
 // rebuilds its DOM only when what it shows has changed, so buttons stay put under a finger.
 
+import { BlobCache } from "./blob-cache.ts";
 import {
   type AttemptRecord,
   type ClusterState,
@@ -11,13 +12,14 @@ import {
   isRunningPhase,
   type ProgramInfo,
 } from "./cluster-state.ts";
+import { $, el, focusedDatum, refocus } from "./dom.ts";
+import { ago, fmtBytes, fmtTime, fmtValue, short } from "./format.ts";
 import type { ControlRequest } from "./observer.ts";
+import { parseParams } from "./params.ts";
 import {
   barRows,
   type FileEntry,
   finalOutput,
-  fmtBytes,
-  fmtValue,
   groupFiles,
   listFiles,
   type Preview,
@@ -57,142 +59,25 @@ export interface Panels {
   readonly browsingRoot: string | null;
 }
 
-const $ = <T extends Element>(root: ParentNode, sel: string): T => {
-  const el = root.querySelector<T>(sel);
-  if (!el) throw new Error(`panels: missing element ${sel}`);
-  return el;
-};
-
-const el = <K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] => {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-};
-
-const short = (hash: string, n = 12): string => `${hash.slice(0, n)}…`;
-const fmtTime = (ms: number): string =>
-  new Date(ms).toLocaleTimeString([], {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-const ago = (from: number, now: number): string => {
-  const s = Math.max(0, Math.round((now - from) / 1000));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`;
-};
-
-type Cached = Uint8Array | null | "pending" | "error";
-
-/** Fetches by hash, once each; a render reads what has landed and a landing asks for a render. */
-/** What the page keeps of fetched blobs (WP8.1): a dashboard open all day must not grow without bound. */
-export const BLOB_CACHE_BYTES = 64 * 1024 * 1024;
-/** How long a blob the store did not have is left alone before it is asked for again (WP8.2). */
-export const MISSING_RETRY_MS = 10_000;
-
-class BlobCache {
-  private readonly got = new Map<string, Cached>();
-  private readonly source: () => BlobSource;
-  private readonly onChange: () => void;
-  private bytes = 0;
-  /** Bumped whenever a fetch settles, so a panel's signature changes with it. */
-  version = 0;
-  constructor(source: () => BlobSource, onChange: () => void) {
-    this.source = source;
-    this.onChange = onChange;
-  }
-  private readonly missingAt = new Map<string, number>();
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  get(hash: string): Cached {
-    const known = this.got.get(hash);
-    const erroredAt = known === "error" ? this.missingAt.get(hash) : undefined;
-    if (erroredAt !== undefined && Date.now() - erroredAt >= MISSING_RETRY_MS) {
-      this.got.delete(hash); // the window closed: ask again below
-    } else if (known !== undefined) {
-      // Touched: it moves to the young end, so the eviction below drops the least recently used.
-      this.got.delete(hash);
-      this.got.set(hash, known);
-      return known;
-    }
-    // A blob the store did not have is asked for again after a while, not on the next frame
-    // (WP8.2: a missing root made every render refetch it and rebuild the panels).
-    const missing = this.missingAt.get(hash);
-    if (missing !== undefined && Date.now() - missing < MISSING_RETRY_MS) return "pending";
-    this.got.set(hash, "pending");
-    void this.source()
-      .get(hash)
-      .then((bytes) => {
-        // A blob that is not there yet may land later; ask again after the retry window.
-        if (bytes === null) {
-          this.got.delete(hash);
-          this.missingAt.set(hash, Date.now());
-          // The retry needs a render to ask again, and a held page renders nothing on its own:
-          // one is scheduled for when the window closes (a file pinned before the demo wrote it).
-          this.scheduleRetry();
-        } else {
-          this.missingAt.delete(hash);
-          this.got.set(hash, bytes);
-          this.bytes += bytes.length;
-          this.evict();
-          // Only a landing bumps the version (WP8.3): a miss changes nothing a panel shows.
-          this.version += 1;
-          this.onChange();
-        }
-      })
-      .catch(() => {
-        // A fetch that threw is shown as an error and asked again after the window (WP8.3): one
-        // CDN hiccup used to read "could not be fetched" until the page was reloaded.
-        this.got.set(hash, "error");
-        this.missingAt.set(hash, Date.now());
-        this.scheduleRetry();
-        this.version += 1;
-        this.onChange();
-      });
-    return "pending";
-  }
-  private scheduleRetry(): void {
-    if (this.retryTimer !== null) return;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      this.version += 1;
-      this.onChange();
-    }, MISSING_RETRY_MS + 50);
-  }
-  /** Drop the least recently used blobs until the cache fits its budget. */
-  private evict(): void {
-    for (const [hash, value] of this.got) {
-      if (this.bytes <= BLOB_CACHE_BYTES) return;
-      if (value === "pending" || value === "error" || value === null) continue;
-      this.got.delete(hash);
-      this.bytes -= value.length;
-    }
-  }
-}
-
 export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
   const els = {
-    programs: $<HTMLDivElement>(root, "#programs"),
-    queue: $<HTMLUListElement>(root, "#queue"),
-    strip: $<HTMLDivElement>(root, "#strip"),
-    failure: $<HTMLDivElement>(root, "#failure"),
-    warnings: $<HTMLUListElement>(root, "#warnings"),
-    result: $<HTMLDivElement>(root, "#result"),
-    files: $<HTMLDivElement>(root, "#files"),
-    filesRoot: $<HTMLSpanElement>(root, "#filesRoot"),
-    filePreview: $<HTMLDivElement>(root, "#filePreview"),
-    ledgerPreview: $<HTMLDivElement>(root, "#ledgerPreview"),
-    taskDetail: $<HTMLDivElement>(root, "#taskDetail"),
-    ledger: $<HTMLTableSectionElement>(root, "#ledger tbody"),
-    ledgerNote: $<HTMLParagraphElement>(root, "#ledgerNote"),
-    ledgerSummary: $<HTMLParagraphElement>(root, "#ledgerSummary"),
-    filesSummary: $<HTMLParagraphElement>(root, "#filesSummary"),
-    followUp: $<HTMLDivElement>(root, "#followUp"),
-    killExecution: $<HTMLButtonElement>(root, "#killExecution"),
+    programs: $<HTMLDivElement>("#programs", root),
+    queue: $<HTMLUListElement>("#queue", root),
+    strip: $<HTMLDivElement>("#strip", root),
+    failure: $<HTMLDivElement>("#failure", root),
+    warnings: $<HTMLUListElement>("#warnings", root),
+    result: $<HTMLDivElement>("#result", root),
+    files: $<HTMLDivElement>("#files", root),
+    filesRoot: $<HTMLSpanElement>("#filesRoot", root),
+    filePreview: $<HTMLDivElement>("#filePreview", root),
+    ledgerPreview: $<HTMLDivElement>("#ledgerPreview", root),
+    taskDetail: $<HTMLDivElement>("#taskDetail", root),
+    ledger: $<HTMLTableSectionElement>("#ledger tbody", root),
+    ledgerNote: $<HTMLParagraphElement>("#ledgerNote", root),
+    ledgerSummary: $<HTMLParagraphElement>("#ledgerSummary", root),
+    filesSummary: $<HTMLParagraphElement>("#filesSummary", root),
+    followUp: $<HTMLDivElement>("#followUp", root),
+    killExecution: $<HTMLButtonElement>("#killExecution", root),
   };
   const cache = new BlobCache(deps.blobs, deps.rerender);
   let selectedTask: string | null = null;
@@ -336,17 +221,14 @@ export function mountPanels(root: ParentNode, deps: PanelDeps): Panels {
     const error = el("div", "bad small");
     error.hidden = true;
     const parse = (): Record<string, unknown> | null => {
-      try {
-        const parsed: unknown = JSON.parse(input.value || "{}");
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-          throw new Error("params must be a JSON object");
-        error.hidden = true;
-        return parsed as Record<string, unknown>;
-      } catch (err) {
-        error.textContent = err instanceof Error ? err.message : String(err);
+      const parsed = parseParams(input.value);
+      if (!parsed.ok) {
+        error.textContent = parsed.error;
         error.hidden = false;
         return null;
       }
+      error.hidden = true;
+      return parsed.value;
     };
     input.onblur = () => void parse();
     input.oninput = () => {
@@ -1174,17 +1056,4 @@ export function gridIndexAt(n: number, width: number, x: number, y: number): num
   if (col < 0 || col >= cols || line < 0) return -1;
   const index = line * cols + col;
   return index < n ? index : -1;
-}
-
-/** The `data-<key>` of the focused element inside `root`, so a rebuild can hand focus back (WP8.3). */
-function focusedDatum(root: HTMLElement, key: string): string | null {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
-  return active.closest<HTMLElement>(`[data-${key}]`)?.dataset[key] ?? null;
-}
-
-/** Give focus back to the row a keyboard user was on before the list was rebuilt (WP8.3). */
-function refocus(root: HTMLElement, key: string, value: string | null): void {
-  if (value === null) return;
-  root.querySelector<HTMLElement>(`[data-${key}="${value}"]`)?.focus();
 }

@@ -6,16 +6,14 @@ import { BUNDLE_PATHS, fsManifest, programManifest } from "@tabframe/protocol";
 import { type PresignRequester, StoreClient } from "@tabframe/store/client";
 import { sha256Hex } from "@tabframe/store/hash";
 import type { ClusterState, ProgramInfo } from "./cluster-state.ts";
-import type { WorkerReply, WorkerRequest } from "./compiler-worker.ts";
+import type { CompileResult, Diagnostic, WorkerReply, WorkerRequest } from "./compiler-types.ts";
+import { $, code, line } from "./dom.ts";
 import {
   ASC_FLAGS,
   assembleSources,
   buildBundle,
   buildManifest,
-  type CompileResult,
-  type Diagnostic,
   examples,
-  fmtBytes,
   formatDiagnostic,
   type InputRef,
   inspectModule,
@@ -23,9 +21,10 @@ import {
   MANDELBROT_SOURCE,
   MAX_MODULE_BYTES,
   type ModuleInfo,
-  parseParams,
   shippedManifest,
 } from "./editor-core.ts";
+import { fmtBytes } from "./format.ts";
+import { parseParams } from "./params.ts";
 import { programList } from "./selectors.ts";
 
 /** What the page gives the editor: the socket's upload and launch paths, and the cluster feed. */
@@ -55,39 +54,33 @@ export interface EditorHandle {
   close(): void;
 }
 
-const $ = <T extends Element>(root: ParentNode, sel: string): T => {
-  const el = root.querySelector<T>(sel);
-  if (!el) throw new Error(`editor: missing element ${sel}`);
-  return el;
-};
-
-/** Mount the editor into its section. Idempotent per section: a second call returns the first handle. */
-/** A compile the worker never answers is failed after this long (WP8.1). */
+/** A compile the worker never answers is failed after this long. */
 export const COMPILE_TIMEOUT_MS = 120_000;
 
+/** Mount the editor into its section. Idempotent per section: a second call returns the first handle. */
 export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   const existing = (root as HTMLElement & { __editor?: EditorHandle }).__editor;
   if (existing) return existing;
 
   const els = {
-    status: $<HTMLSpanElement>(root, "#editorStatus"),
-    source: $<HTMLTextAreaElement>(root, "#source"),
-    compile: $<HTMLButtonElement>(root, "#compile"),
-    launch: $<HTMLButtonElement>(root, "#launch"),
-    reset: $<HTMLButtonElement>(root, "#resetSource"),
+    status: $<HTMLSpanElement>("#editorStatus", root),
+    source: $<HTMLTextAreaElement>("#source", root),
+    compile: $<HTMLButtonElement>("#compile", root),
+    launch: $<HTMLButtonElement>("#launch", root),
+    reset: $<HTMLButtonElement>("#resetSource", root),
     example: root.querySelector<HTMLSelectElement>("#example"),
     exampleNote: root.querySelector<HTMLSpanElement>("#exampleNote"),
-    note: $<HTMLSpanElement>(root, "#compileNote"),
-    diagnostics: $<HTMLUListElement>(root, "#diagnostics"),
-    name: $<HTMLInputElement>(root, "#programName"),
-    view: $<HTMLSelectElement>(root, "#programView"),
-    description: $<HTMLInputElement>(root, "#programDescription"),
-    params: $<HTMLTextAreaElement>(root, "#programParams"),
-    drop: $<HTMLDivElement>(root, "#editorDrop"),
-    file: $<HTMLInputElement>(root, "#wasmFile"),
-    moduleInfo: $<HTMLDivElement>(root, "#moduleInfo"),
-    launchInfo: $<HTMLDivElement>(root, "#launchInfo"),
-    close: $<HTMLButtonElement>(root, "#closeEditor"),
+    note: $<HTMLSpanElement>("#compileNote", root),
+    diagnostics: $<HTMLUListElement>("#diagnostics", root),
+    name: $<HTMLInputElement>("#programName", root),
+    view: $<HTMLSelectElement>("#programView", root),
+    description: $<HTMLInputElement>("#programDescription", root),
+    params: $<HTMLTextAreaElement>("#programParams", root),
+    drop: $<HTMLDivElement>("#editorDrop", root),
+    file: $<HTMLInputElement>("#wasmFile", root),
+    moduleInfo: $<HTMLDivElement>("#moduleInfo", root),
+    launchInfo: $<HTMLDivElement>("#launchInfo", root),
+    close: $<HTMLButtonElement>("#closeEditor", root),
   };
 
   // ---- prefill ---------------------------------------------------------------------------------
@@ -687,18 +680,4 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   };
   (root as HTMLElement & { __editor?: EditorHandle }).__editor = handle;
   return handle;
-}
-
-function line(text: string, ...rest: Node[]): HTMLDivElement {
-  const div = document.createElement("div");
-  div.append(text, ...rest);
-  return div;
-}
-
-function code(text: string, id?: string): HTMLElement {
-  const c = document.createElement("code");
-  c.textContent = text;
-  if (id) c.id = id;
-  c.style.overflowWrap = "anywhere";
-  return c;
 }

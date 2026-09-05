@@ -13,17 +13,16 @@ import {
   buildManifest,
   ENTRY,
   examples,
-  fmtBytes,
   formatDiagnostic,
   guideMarkdown,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
-  parseParams,
   SDK_ROOT,
   shippedManifest,
   shortPath,
 } from "./editor-core.ts";
+import { parseParams } from "./params.ts";
 
 const root = path.resolve(import.meta.dir, "../../..");
 const out = path.join(root, "packages/web/dist-test/mandelbrot.wasm");
@@ -231,11 +230,6 @@ describe("formatting", () => {
     expect(shortPath(`${SDK_ROOT}/assembly/abi.ts`)).toBe("sdk/abi.ts");
     expect(shortPath("program/assembly/index")).toBe("assembly/index.ts");
     expect(shortPath("other/file.ts")).toBe("other/file.ts");
-  });
-  test("byte sizes", () => {
-    expect(fmtBytes(512)).toBe("512 B");
-    expect(fmtBytes(18746)).toBe("18.3 KB");
-    expect(fmtBytes(3 * 1024 * 1024)).toBe("3.0 MB");
   });
 });
 

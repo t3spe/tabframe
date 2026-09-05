@@ -3,15 +3,11 @@
 // does the control plane by itself when this socket goes away.
 
 import type { ClusterState } from "./cluster-state.ts";
+import { $ } from "./dom.ts";
 import { mountEditor } from "./editor.ts";
 import { type MachineState, ObserverClient } from "./observer.ts";
 import { loadSessionUrl } from "./page-config.ts";
 
-const $ = <T extends Element>(sel: string): T => {
-  const el = document.querySelector<T>(sel);
-  if (!el) throw new Error(`missing ${sel}`);
-  return el;
-};
 const machineEl = $<HTMLSpanElement>("#machine");
 const pauseEl = $<HTMLSpanElement>("#pauseState");
 const listeners = new Set<(state: ClusterState) => void>();

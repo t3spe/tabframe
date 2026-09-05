@@ -4,8 +4,7 @@
 // byte-identical to the build's.
 import type { DiagnosticMessage } from "assemblyscript";
 import asc from "assemblyscript/asc";
-// Types only: the worker bundle must not drag the protocol schemas or the sandbox along.
-import type { CompileResult, Diagnostic, DiagnosticLevel, VirtualFs } from "./editor-core.ts";
+import type { CompileResult, Diagnostic, DiagnosticLevel, VirtualFs } from "./compiler-types.ts";
 
 const OUT = "program.wasm";
 
