@@ -4,12 +4,11 @@ import {
   type FsManifest,
   fsManifest,
   LIMITS,
-  PROTOCOL_VERSION,
   RELEASED,
   type Result,
 } from "@tabframe/protocol";
 import type { HostRequest, TaskResult } from "@tabframe/sandbox";
-import type { PresignRequester, StoreClient } from "@tabframe/store";
+import { type StoreClient, StoreError, type Uploaded } from "@tabframe/store";
 
 /** The sandbox as the orchestrator sees it (design §4.2): one call, one deadline, a kill switch. */
 export interface SandboxRunner {
@@ -25,9 +24,15 @@ export interface TaskRunnerDeps {
   log?: ((event: string, fields?: Record<string, unknown>) => void) | undefined;
 }
 
+/** The node's margin over the control plane's deadline; the fetches and the kill both run inside it. */
+export const GRACE_MS = 1_000;
+
 const EMPTY_MANIFEST: FsManifest = { version: 1, files: {} };
 const MAX_CACHED_MODULES = 8;
 const MAX_CACHED_MANIFESTS = 32;
+/** Upload labels; write paths start with a slash, so these cannot collide with one. */
+const OUTPUT = "output";
+const LOG = "log";
 
 export type Outcome =
   | { kind: "result"; msg: Omit<Result, "v" | "gen"> }
@@ -59,30 +64,22 @@ export class TaskRunner {
     this.sandbox = null;
   }
 
-  async run(a: Assign, gen: number): Promise<Outcome> {
+  async run(a: Assign): Promise<Outcome> {
     this.current = a.taskId;
     try {
-      // The deadline covers the fetches too (WP8.3): a module or manifest fetch that hangs used to
-      // hold the attempt for ever — the sandbox kill only ever started after the fetch — and with
-      // one node the control plane had nobody else to give the task to.
+      // The deadline covers the fetches too: a module fetch that hangs would otherwise hold the
+      // attempt for ever, and with one node the control plane has nobody else to give the task to.
+      let overran: ReturnType<typeof setTimeout> | null = null;
       const fetched = await Promise.race([
         Promise.all([this.module(a.program), this.manifest(a.fsRoot)]),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), a.deadlineMs + 1_000)),
+        new Promise<null>((resolve) => {
+          overran = setTimeout(() => resolve(null), a.deadlineMs + GRACE_MS);
+        }),
       ]);
+      if (overran) clearTimeout(overran);
       if (fetched === null) {
         this.deps.log?.("task-fetch-overran", { taskId: a.taskId, deadlineMs: a.deadlineMs });
-        return {
-          kind: "result",
-          msg: {
-            t: "result",
-            taskId: a.taskId,
-            attempt: a.attempt,
-            error: RELEASED,
-            writes: [],
-            log: null,
-            computeMs: 0,
-          },
-        };
+        return failed(a, RELEASED, null, 0);
       }
       const [module, manifest] = fetched;
       const input =
@@ -98,48 +95,29 @@ export class TaskRunner {
       if (!this.sandbox) this.sandbox = this.deps.createSandbox();
       const sandbox = this.sandbox;
       const started = this.deps.now();
-      const result = await sandbox.run(module, request, a.deadlineMs + 1_000);
+      const result = await sandbox.run(module, request, a.deadlineMs + GRACE_MS);
       // The wire wants whole milliseconds; the sandbox measures with a high-resolution clock.
       const computeMs = Math.max(0, Math.round(this.deps.now() - started));
       if (!result.ok) {
         if (result.error === "disposed") return { kind: "dropped", reason: "cancelled" };
-        // A deadline kill is the node giving up, not a program fault; the control plane releases
-        // it. So is a host that could not even instantiate the module — a CI runner with ten
-        // workers failed `WebAssembly.Instance(): Out of memory` once and took a whole frame down
-        // with it (WP4.4): the program did nothing wrong, another node will run the task.
+        // A deadline kill, or a host that could not even instantiate the module, is the node
+        // giving up, not a program fault: the control plane releases the task to another node.
         const error =
           result.error === "deadline" || hostFailure(result.error)
             ? RELEASED
             : result.error.slice(0, 1024);
-        return {
-          kind: "result",
-          msg: {
-            t: "result",
-            taskId: a.taskId,
-            attempt: a.attempt,
-            error,
-            writes: [],
-            log: inlineLog(result.log),
-            computeMs,
-          },
-        };
+        return failed(a, error, inlineLog(result.log), computeMs);
       }
-      const uploads = await this.deps.store.putMany([
-        result.output,
-        ...result.writes.values(),
-        ...(result.log.length > LIMITS.maxInlineLogBytes
-          ? [new TextEncoder().encode(result.log)]
-          : []),
-      ]);
-      const output = uploads[0] as { hash: string; size: number };
-      const writes = [...result.writes.keys()].map((path, i) => {
-        const up = uploads[i + 1] as { hash: string; size: number };
-        return { path, hash: up.hash, size: up.size };
-      });
-      const log =
-        result.log.length > LIMITS.maxInlineLogBytes
-          ? { hash: (uploads[uploads.length - 1] as { hash: string }).hash }
-          : inlineLog(result.log);
+      const bigLog = result.log.length > LIMITS.maxInlineLogBytes;
+      const blobs = new Map<string, Uint8Array>([[OUTPUT, result.output], ...result.writes]);
+      if (bigLog) blobs.set(LOG, new TextEncoder().encode(result.log));
+      const uploaded = await this.deps.store.putNamed(blobs);
+      const output = uploadOf(uploaded, OUTPUT);
+      const writes = [...result.writes.keys()].map((path) => ({
+        path,
+        ...uploadOf(uploaded, path),
+      }));
+      const log = bigLog ? { hash: uploadOf(uploaded, LOG).hash } : inlineLog(result.log);
       return {
         kind: "result",
         msg: {
@@ -156,21 +134,11 @@ export class TaskRunner {
     } catch (err) {
       const text = String(err);
       this.deps.log?.("task-failed", { taskId: a.taskId, error: text });
-      return {
-        kind: "result",
-        msg: {
-          t: "result",
-          taskId: a.taskId,
-          attempt: a.attempt,
-          error: hostFailure(text) ? RELEASED : `node: ${text.slice(0, 200)}`,
-          writes: [],
-          log: null,
-          computeMs: 0,
-        },
-      };
+      // The store failing is the host's problem, whatever the message says; so is memory.
+      const released = err instanceof StoreError || hostFailure(text);
+      return failed(a, released ? RELEASED : `node: ${text.slice(0, 200)}`, null, 0);
     } finally {
       this.current = null;
-      void gen;
     }
   }
 
@@ -206,99 +174,38 @@ export class TaskRunner {
   }
 }
 
-/** An error from the host, not from the program: the module never ran (memory, instantiation). */
+/**
+ * A sandbox failure that is the host's, not the program's: memory the host could not give. What
+ * a program says about itself is a program fault whatever words it uses, or an abort saying
+ * "out of memory" would be re-run on every node for ever.
+ */
 export function hostFailure(error: string): boolean {
-  // A program fault is never the host's (WP8.2): an abort whose message says "out of memory" or a
-  // trap naming "network error" would otherwise be released and re-run on every node for ever.
   if (/^(abort|trap|link): /.test(error)) return false;
-  // The host, not the program: memory the host could not give, and the store or the network the
-  // host could not reach (WP8.1) — a fetch that 5xx'd, an upload that failed, a presign that timed
-  // out. Another node will run the task; the program did nothing wrong.
-  return /out of memory|cannot allocate|WebAssembly\.(Instance|Memory)\(\)|RangeError: WebAssembly|fetch of \S+ failed|upload of \S+ failed|no presign for|presign timed out|socket closed|failed to fetch|NetworkError|network error|ECONNRESET|ETIMEDOUT|HTTP 5\d\d|HTTP 429/i.test(
+  return /out of memory|cannot allocate|WebAssembly\.(Instance|Memory)\(\)|RangeError: WebAssembly/i.test(
     error,
   );
 }
 
-function inlineLog(text: string): { text: string } | null {
-  return text.length === 0 ? null : { text: text.slice(0, LIMITS.maxInlineLogBytes) };
+function failed(
+  a: Assign,
+  error: string,
+  log: { text: string } | null,
+  computeMs: number,
+): Outcome {
+  return {
+    kind: "result",
+    msg: { t: "result", taskId: a.taskId, attempt: a.attempt, error, writes: [], log, computeMs },
+  };
 }
 
-/** Presign over the node socket (D18): one outstanding request at a time, matched by hash set. */
-/** How long a node waits for a presign answer before releasing the task (WP8.1). */
-export const PRESIGN_TIMEOUT_MS = 30_000;
+function uploadOf(uploaded: Map<string, Uploaded>, name: string): Uploaded {
+  const u = uploaded.get(name);
+  if (!u) throw new Error(`no upload for ${name}`);
+  return u;
+}
 
-export class SocketPresigner implements PresignRequester {
-  private readonly send: (text: string) => void;
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
-  private waiting: {
-    hashes: Set<string>;
-    resolve: (
-      v: Array<{ hash: string; url: string | null; headers: Record<string, string> }>,
-    ) => void;
-    reject: (e: Error) => void;
-  } | null = null;
-  private gen = 0;
-
-  private readonly timeoutMs: number;
-
-  constructor(send: (text: string) => void, timeoutMs = PRESIGN_TIMEOUT_MS) {
-    this.send = send;
-    this.timeoutMs = timeoutMs;
-  }
-
-  setGeneration(gen: number): void {
-    this.gen = gen;
-  }
-
-  presign(
-    items: Array<{ hash: string; size: number }>,
-  ): Promise<Array<{ hash: string; url: string | null; headers: Record<string, string> }>> {
-    return new Promise((resolve, reject) => {
-      if (this.waiting) {
-        reject(new Error("a presign is already outstanding"));
-        return;
-      }
-      const w = { hashes: new Set(items.map((i) => i.hash)), resolve, reject };
-      this.waiting = w;
-      // A presign the control plane never answers (a store hiccup it only logged) must not hold
-      // the node for ever (WP8.1): the task is released and the node moves on.
-      const timer = setTimeout(() => {
-        if (this.waiting !== w) return;
-        this.waiting = null;
-        reject(new Error("presign timed out"));
-      }, this.timeoutMs);
-      this.timers.add(timer);
-      const done = () => this.timers.delete(timer) && clearTimeout(timer);
-      w.resolve = (v) => {
-        done();
-        resolve(v);
-      };
-      w.reject = (e) => {
-        done();
-        reject(e);
-      };
-      this.send(JSON.stringify({ t: "presign", v: PROTOCOL_VERSION, gen: this.gen, items }));
-    });
-  }
-
-  /** Feed the `presigned` message; returns true when it satisfied the outstanding request. */
-  deliver(
-    urls: Array<{ hash: string; url: string | null; headers: Record<string, string> }>,
-  ): boolean {
-    const w = this.waiting;
-    if (!w) return false;
-    if (!urls.every((u) => w.hashes.has(u.hash))) return false;
-    this.waiting = null;
-    w.resolve(urls);
-    return true;
-  }
-
-  /** The socket died: fail the outstanding request. */
-  reset(): void {
-    const w = this.waiting;
-    this.waiting = null;
-    w?.reject(new Error("socket closed"));
-  }
+function inlineLog(text: string): { text: string } | null {
+  return text.length === 0 ? null : { text: text.slice(0, LIMITS.maxInlineLogBytes) };
 }
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

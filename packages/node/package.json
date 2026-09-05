@@ -8,6 +8,7 @@
     ".": "./src/orchestrator.ts",
     "./platform/web": "./src/platform/web.ts",
     "./platform/node": "./src/platform/node.ts",
+    "./platform/node-deps": "./src/platform/node-deps.ts",
     "./backoff": "./src/backoff.ts",
     "./session": "./src/session.ts"
   },
