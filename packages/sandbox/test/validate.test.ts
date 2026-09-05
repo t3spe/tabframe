@@ -18,7 +18,7 @@ const wasm = (...tail: number[]) => new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0
 
 describe("compileValidated", () => {
   test("a well-formed program with a declared memory maximum passes and is compiled", async () => {
-    const bytes = await compileFixture("echo", { maximumMemory: 256 });
+    const bytes = await compileFixture("echo");
     const v = compileValidated(bytes, limits);
     expect(v.ok).toBe(true);
     if (v.ok) {
@@ -34,15 +34,15 @@ describe("compileValidated", () => {
   });
 
   test("a forbidden import is named in the rejection", async () => {
-    const bytes = await compileFixture("time", { maximumMemory: 256 });
+    const bytes = await compileFixture("time");
     const v = compileValidated(bytes, limits);
     expect(!v.ok && v.reason).toBe("forbidden import env.Date.now (function)");
   });
 
   test("the allowed imports are accepted", async () => {
-    const fs = await compileFixture("fs", { maximumMemory: 256 });
+    const fs = await compileFixture("fs");
     expect(compileValidated(fs, limits).ok).toBe(true);
-    const trap = await compileFixture("trap", { maximumMemory: 256 });
+    const trap = await compileFixture("trap");
     const v = compileValidated(trap, limits);
     expect(v.ok).toBe(true);
     if (v.ok) {
@@ -52,11 +52,11 @@ describe("compileValidated", () => {
   });
 
   test("missing exports, missing or oversized memory maximum, size cap, garbage", async () => {
-    const noplan = await compileFixture("noplan", { maximumMemory: 256 });
+    const noplan = await compileFixture("noplan");
     const v1 = compileValidated(noplan, limits);
     expect(!v1.ok && v1.reason).toBe("missing export plan (function)");
 
-    const noMax = await compileFixture("echo");
+    const noMax = await compileFixture("echo", { maximumMemory: null });
     const v2 = compileValidated(noMax, limits);
     expect(!v2.ok && v2.reason).toMatch(/memory maximum is required/);
 
@@ -74,10 +74,10 @@ describe("compileValidated", () => {
 
 describe("inspectModuleBytes", () => {
   test("says what compileValidated says, without a module", async () => {
-    const good = inspectModuleBytes(await compileFixture("echo", { maximumMemory: 256 }), limits);
+    const good = inspectModuleBytes(await compileFixture("echo"), limits);
     expect(good).toMatchObject({ ok: true, memory: { max: 256, shared: false, memory64: false } });
     expect("module" in good).toBe(false);
-    const bad = inspectModuleBytes(await compileFixture("time", { maximumMemory: 256 }), limits);
+    const bad = inspectModuleBytes(await compileFixture("time"), limits);
     expect(!bad.ok && bad.reason).toContain("forbidden import");
   });
 
@@ -91,28 +91,24 @@ describe("inspectModuleBytes", () => {
 
 describe("validateModuleBytes keeps its older shape", () => {
   test("compiles by default and returns module: null with compile: false", async () => {
-    const bytes = await compileFixture("echo", { maximumMemory: 256 });
+    const bytes = await compileFixture("echo");
     const compiled = validateModuleBytes(bytes, limits);
     expect(compiled.ok && compiled.module).toBeInstanceOf(WebAssembly.Module);
     const inspected = validateModuleBytes(bytes, limits, { compile: false });
     expect(inspected.ok && inspected.module).toBeNull();
-    const rejected = validateModuleBytes(
-      await compileFixture("time", { maximumMemory: 256 }),
-      limits,
-      {
-        compile: false,
-      },
-    );
+    const rejected = validateModuleBytes(await compileFixture("time"), limits, {
+      compile: false,
+    });
     expect(!rejected.ok && rejected.reason).toBe("forbidden import env.Date.now (function)");
   });
 });
 
 describe("readMemoryLimits", () => {
   test("reads min and max from the memory section", async () => {
-    const withMax = readMemoryLimits(await compileFixture("echo", { maximumMemory: 256 }));
+    const withMax = readMemoryLimits(await compileFixture("echo"));
     expect(withMax?.max).toBe(256);
     expect(withMax?.min).toBeGreaterThanOrEqual(0);
-    const without = readMemoryLimits(await compileFixture("echo"));
+    const without = readMemoryLimits(await compileFixture("echo", { maximumMemory: null }));
     expect(without?.max).toBeNull();
   });
   test("returns null for junk, a short buffer, or a module without a memory section", () => {
@@ -127,9 +123,9 @@ describe("readMemoryLimits", () => {
 
 describe("validateCompiled", () => {
   test("accepts a compiled program and rejects one without the required exports", async () => {
-    const ok = new WebAssembly.Module(await compileFixture("echo", { maximumMemory: 256 }));
+    const ok = new WebAssembly.Module(await compileFixture("echo"));
     expect(validateCompiled(ok).ok).toBe(true);
-    const bad = new WebAssembly.Module(await compileFixture("noplan", { maximumMemory: 256 }));
+    const bad = new WebAssembly.Module(await compileFixture("noplan"));
     expect(validateCompiled(bad).ok).toBe(false);
   });
 });
@@ -162,7 +158,7 @@ describe("a second memory is refused", () => {
 
 describe("readModuleSections", () => {
   test("reads the imports and exports from the binary and agrees with the compiled module", async () => {
-    const bytes = await compileFixture("fs", { maximumMemory: 256 });
+    const bytes = await compileFixture("fs");
     const shape = readModuleShape(bytes);
     expect(shape).not.toBeNull();
     const compiled = new WebAssembly.Module(bytes as unknown as BufferSource);

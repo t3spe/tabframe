@@ -52,7 +52,7 @@ const request = (input: string): HostRequest => ({
 
 describe("createSandboxHost", () => {
   test("runs tasks through the worker, serialized, reusing one worker", async () => {
-    const m = new WebAssembly.Module(await compileFixture("echo", { maximumMemory: 256 }));
+    const m = new WebAssembly.Module(await compileFixture("echo"));
     FakeWorker.spawned = 0;
     const host = createSandboxHost(() => new FakeWorker("run"));
     const [a, b] = await Promise.all([
@@ -66,7 +66,7 @@ describe("createSandboxHost", () => {
   });
 
   test("a deadline terminates the worker and the next task gets a fresh one", async () => {
-    const m = new WebAssembly.Module(await compileFixture("echo", { maximumMemory: 256 }));
+    const m = new WebAssembly.Module(await compileFixture("echo"));
     const workers: FakeWorker[] = [];
     let behavior: "run" | "hang" = "hang";
     const host = createSandboxHost(() => {
@@ -84,7 +84,7 @@ describe("createSandboxHost", () => {
   });
 
   test("a worker crash fails the task and is replaced; other messages reach onOther", async () => {
-    const m = new WebAssembly.Module(await compileFixture("echo", { maximumMemory: 256 }));
+    const m = new WebAssembly.Module(await compileFixture("echo"));
     const others: unknown[] = [];
     let behavior: "crash" | "chatty" = "crash";
     const host = createSandboxHost(
@@ -100,7 +100,7 @@ describe("createSandboxHost", () => {
   });
 
   test("dispose settles a pending task", async () => {
-    const m = new WebAssembly.Module(await compileFixture("echo", { maximumMemory: 256 }));
+    const m = new WebAssembly.Module(await compileFixture("echo"));
     const host = createSandboxHost(() => new FakeWorker("hang"));
     const p = host.run(m, request("x"), 10_000);
     host.dispose();

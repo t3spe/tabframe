@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import {
   AbiError,
-  BARS_LIMITS,
   type Bar,
   decodeBars,
   decodePlanInput,
@@ -12,10 +11,10 @@ import {
   encodePlanInput,
   encodeRunInput,
   encodeStageSpec,
-  SPEC_LIMITS,
   type StageSpec,
   type TaskSpec,
 } from "./abi.ts";
+import { BARS_LIMITS, SPEC_LIMITS } from "./limits.ts";
 
 const bytes = (...b: number[]) => new Uint8Array(b);
 

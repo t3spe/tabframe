@@ -14,6 +14,8 @@
  *   str         : u32 len | utf8[len]
  */
 
+import { BARS_LIMITS, type BarsLimits, SPEC_LIMITS, type SpecLimits } from "./limits.ts";
+
 export const ABI_VERSION = 1;
 const MAGIC_RUN = 0x4e524654; // "TFRN" little-endian
 const MAGIC_PLAN = 0x4c504654; // "TFPL"
@@ -52,26 +54,11 @@ export type StageSpec =
   | { kind: "stage"; name: string; canvas?: { w: number; h: number }; tasks: TaskSpec[] }
   | { kind: "done"; next: ParamTable | null };
 
-/** Structural caps on a stage spec (design §5.2). */
-export const SPEC_LIMITS = {
-  maxTasks: 4096,
-  maxBytes: 1024 * 1024,
-  maxInlineInput: 16 * 1024,
-  maxNameBytes: 64,
-} as const;
-
 /** One bar of the `bars` view: a label and a finite value. */
 export interface Bar {
   label: string;
   value: number;
 }
-
-/** Structural caps on a bars payload: enough for a top-K, small enough to draw. */
-export const BARS_LIMITS = {
-  maxBars: 4096,
-  maxLabelBytes: 256,
-  maxBytes: 1024 * 1024,
-} as const;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -176,7 +163,7 @@ class Reader {
   }
   table(): ParamTable {
     const count = this.u32();
-    if (count > 4096) throw new AbiError("table too large");
+    if (count > SPEC_LIMITS.maxTableEntries) throw new AbiError("table too large");
     const out: ParamTable = {};
     for (let i = 0; i < count; i++) {
       const key = this.str();
@@ -194,8 +181,9 @@ class Reader {
   }
 }
 
-export const MAX_CANVAS_SIDE = 4096;
-export const MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+/** `SPEC_LIMITS.maxCanvasSide` and `.maxCanvasPixels` under their older names. */
+export const MAX_CANVAS_SIDE = SPEC_LIMITS.maxCanvasSide;
+export const MAX_CANVAS_PIXELS = SPEC_LIMITS.maxCanvasPixels;
 
 export class AbiError extends Error {}
 
@@ -266,7 +254,7 @@ export function encodeStageSpec(s: StageSpec): Uint8Array {
 }
 
 /** Decode and validate a stage spec against the structural caps; throws AbiError on anything off. */
-export function decodeStageSpec(b: Uint8Array, limits = SPEC_LIMITS): StageSpec {
+export function decodeStageSpec(b: Uint8Array, limits: SpecLimits = SPEC_LIMITS): StageSpec {
   if (b.length > limits.maxBytes)
     throw new AbiError(`stage spec is ${b.length} bytes, cap ${limits.maxBytes}`);
   const r = new Reader(b);
@@ -287,14 +275,12 @@ export function decodeStageSpec(b: Uint8Array, limits = SPEC_LIMITS): StageSpec 
   if (r.u8()) {
     const w = r.u32();
     const h = r.u32();
-    // At most 4096 a side and four megapixels (WP8.3): a 16384² canvas is a gigabyte of RGBA that
-    // every dashboard would allocate on a stranger's say-so.
     if (
       w === 0 ||
       h === 0 ||
-      w > MAX_CANVAS_SIDE ||
-      h > MAX_CANVAS_SIDE ||
-      w * h > MAX_CANVAS_PIXELS
+      w > limits.maxCanvasSide ||
+      h > limits.maxCanvasSide ||
+      w * h > limits.maxCanvasPixels
     )
       throw new AbiError("bad canvas");
     spec.canvas = { w, h };
@@ -309,7 +295,12 @@ export function decodeStageSpec(b: Uint8Array, limits = SPEC_LIMITS): StageSpec 
     const task: TaskSpec = { input };
     if (r.u8()) {
       const place = { x: r.i32(), y: r.i32(), w: r.i32(), h: r.i32() };
-      if (place.w <= 0 || place.h <= 0 || place.w > 4096 || place.h > 4096)
+      if (
+        place.w <= 0 ||
+        place.h <= 0 ||
+        place.w > limits.maxPlaceSide ||
+        place.h > limits.maxPlaceSide
+      )
         throw new AbiError(`task ${i} has a bad placement`);
       task.place = place;
     }
@@ -335,10 +326,7 @@ export function encodeBars(bars: Bar[]): Uint8Array {
  * Decode and validate a `bars` payload: the caps above, and every value finite — NaN payload bits
  * differ between engines, so a NaN would make identical programs disagree (design §5.5).
  */
-export function decodeBars(
-  b: Uint8Array,
-  limits: { maxBars: number; maxLabelBytes: number; maxBytes: number } = BARS_LIMITS,
-): Bar[] {
+export function decodeBars(b: Uint8Array, limits: BarsLimits = BARS_LIMITS): Bar[] {
   if (b.length > limits.maxBytes)
     throw new AbiError(`bars payload is ${b.length} bytes, cap ${limits.maxBytes}`);
   const r = new Reader(b);

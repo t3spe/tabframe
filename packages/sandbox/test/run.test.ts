@@ -6,7 +6,7 @@ import { compileFixture } from "./compile.ts";
 import { dec, enc, limits, MapReader, manifest, modeInput } from "./helpers.ts";
 
 async function mod(name: string): Promise<WebAssembly.Module> {
-  return new WebAssembly.Module(await compileFixture(name, { maximumMemory: 256 }));
+  return new WebAssembly.Module(await compileFixture(name));
 }
 
 function run(
@@ -52,7 +52,7 @@ describe("runTask", () => {
   });
 
   test("a module missing the entry point fails cleanly", async () => {
-    const m = new WebAssembly.Module(await compileFixture("noplan", { maximumMemory: 256 }));
+    const m = new WebAssembly.Module(await compileFixture("noplan"));
     expect(text(run(m, new Uint8Array(0), "plan"))).toBe("ERR missing export plan");
   });
 });

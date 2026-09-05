@@ -62,7 +62,7 @@ async function drive(
 
 describe("node adapter under a real Node process", () => {
   test("reads flow through the Atomics bridge in chunks, and the result comes back whole", async () => {
-    const wasm = await compileFixture("fs", { maximumMemory: 256 });
+    const wasm = await compileFixture("fs");
     const [line] = await drive(wasm, [{ kind: "run", input: modeInput(0), deadlineMs: 5_000 }], 8);
     expect(line?.ok).toBe(true);
     expect(dec.decode(Buffer.from(line?.output ?? "", "base64"))).toBe(
@@ -77,7 +77,7 @@ describe("node adapter under a real Node process", () => {
   }, 30_000);
 
   test("a spinning loop is killed at the deadline and the host recovers with a fresh worker", async () => {
-    const loop = await compileFixture("loop", { maximumMemory: 256 });
+    const loop = await compileFixture("loop");
     const lines = await drive(loop, [
       { kind: "run", input: new Uint8Array(0), deadlineMs: 400 },
       { kind: "plan", input: new Uint8Array(0), deadlineMs: 400 },
@@ -89,7 +89,7 @@ describe("node adapter under a real Node process", () => {
   test("after a deadline kill the same host runs a normal task", async () => {
     // Two programs in one driver run is not supported; prove recovery with the fs program:
     // mode 0 twice, the second after a worker replacement forced by an absurdly short deadline.
-    const wasm = await compileFixture("fs", { maximumMemory: 256 });
+    const wasm = await compileFixture("fs");
     const lines = await drive(wasm, [
       { kind: "run", input: modeInput(0), deadlineMs: 0 },
       { kind: "run", input: modeInput(0), deadlineMs: 5_000 },
