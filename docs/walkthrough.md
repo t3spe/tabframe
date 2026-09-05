@@ -6,7 +6,7 @@ document is the inventory that makes that testable — for each screen, every st
 the page must say, what can be clicked and what happens, and what must not be on the screen. It is
 the page's contract; `e2e/walkthrough.e2e.ts` drives the machine through the states below and
 asserts the sentence, the header's slot, and the exact set of enabled controls, with a screenshot
-per state in the test's output. Written for WP7.7 (2026-09-04), from Mircea's third review.
+per state in the test's output. Written 2026-09-04; the test keeps it honest.
 
 ## The rules the inventory is checked against
 
@@ -45,7 +45,7 @@ per state in the test's output. Written for WP7.7 (2026-09-04), from Mircea's th
 
 ## Screen A · the dashboard (`/`, `/?observe`, `/?demo=1`)
 
-Always on screen: the header (machine pill, generation, next rotation, nodes · hosts, sequence,
+Always on screen: the header (machine pill, generation, next rotation, nodes · hosts — the cloud cores count as one host, "fleet" — sequence,
 the execution pill, the loop pill, the rate, the Stop / Start / Resume slot, editor ↗), the status
 line, the execution row, the picture, the task map and legend, the flash line, the counters, the
 cluster controls, the redundancy toggle, the nodes table, and the aside (your nodes, programs,

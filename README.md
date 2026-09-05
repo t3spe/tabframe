@@ -1,17 +1,23 @@
 # Tabframe
 
-A fault-tolerant distributed computer whose cores are browser tabs and Firecracker microVMs,
+A fault-tolerant distributed computer whose cores are browser tabs and Lambda MicroVMs (Firecracker),
 programmed with WebAssembly. Every worker is a core — a thread in someone's tab, or one of the two
-MicroVMs in AWS, the *cloud cores*. Open the page and your tab is a core. Close it and the machine keeps
+MicroVMs, the *cloud cores*. Open the page and your tab is a core. Close it and the machine keeps
 computing, correctly. The control plane that schedules the work is itself replaced every hour, with
 the work in flight.
 
 Deployed: **https://d2w9z8juw4oo76.cloudfront.net** — the page lends one core when it opens, and
 shows the machine rendering a Mandelbrot frame with whoever else is there.
 
-**Try it, in five clicks.** **spawn N** (N is one fewer than your machine's cores so the tab keeps a thread; the counters follow), kill half (tiles are taken back and finish
-elsewhere), redundancy on (the verified counter moves), editor ↗ (change `CYCLE`, compile, launch:
-your program goes ahead of the loop), the ledger tab (hashes, not bytes). `?observe` lends no cores,
+**Try it, in five clicks.**
+
+1. **spawn N** — N is one fewer than your machine's CPU threads, so the tab keeps one; the counters follow.
+2. **kill half** — tiles are taken back and finish elsewhere.
+3. **redundancy on** — the verified counter moves: two cores agree byte for byte before a tile counts.
+4. **editor ↗** — change `CYCLE`, compile, launch; your program goes ahead of the loop.
+5. **the ledger tab** — hashes, not bytes.
+
+`?observe` lends no cores,
 `?demo=1` runs a scripted cluster inside the page, and a rotation banner every hour is expected.
 
 ## What it is
@@ -72,9 +78,9 @@ rotation.
   fleet: session (vends endpoint + token) · rotate (hourly, also the deploy path) · SSM pointer
 ```
 
-- **Node** (`packages/node`): one Web Worker owns the socket and the heartbeat; a disposable
-  sandbox worker executes program code and is terminated at the deadline. The same orchestrator
-  runs in a tab and inside a MicroVM.
+- **Orchestrator** (`packages/node`, what a core runs): one Web Worker owns the socket and the
+  heartbeat; a disposable sandbox worker executes program code and is terminated at the deadline.
+  The same orchestrator runs in a tab and inside a MicroVM.
 - **Core** (`packages/core`): the pure scheduler — `apply(ledger, event) → effects`, no I/O.
   Three-tier fill (released work, pending work, speculative twins for overdue attempts), deadlines
   at three times the median compute with a two-second floor, verification, execution lifecycle,
@@ -98,19 +104,19 @@ while building and why.
 
 ## What is measured
 
-Every milestone was verified against the deployed machine; the records are in `docs/`.
+Each claim below was checked against the deployed machine; the tables behind the numbers are in the implementation notes.
 
 | Claim | Evidence |
 |---|---|
-| Kill half the cluster mid-frame and the frame still completes, bit for bit | 6 nodes from tabs, 3 killed at tile 128: **640 of 640 tiles match the goldens** produced by a single Node process on another machine ([`m1-verification.md`](docs/m1-verification.md)). The browser suite repeats it with ten nodes in one tab. |
-| A program edited and compiled in the page runs on the cluster | compiled in the browser in ~3 s, byte-identical to the build's module; the edited frame's tiles differ from the unedited goldens ([`m2-verification.md`](docs/m2-verification.md)) |
+| Kill half the cluster mid-frame and the frame still completes, bit for bit | 6 nodes from tabs, 3 killed at tile 128: **640 of 640 tiles match the goldens** produced by a single Node process on another machine ([`wp-1.10-deploy-m1.md`](docs/implementation/wp-1.10-deploy-m1.md)). The browser suite repeats it with ten nodes in one tab. |
+| A program edited and compiled in the page runs on the cluster | compiled in the browser in ~3 s, byte-identical to the build's module; the edited frame's tiles differ from the unedited goldens ([`wp-2.7-deploy-m2.md`](docs/implementation/wp-2.7-deploy-m2.md)) |
 | Word count is exact | the top-25 over *Moby-Dick* equals the JavaScript reference **hash for hash** |
 | A program fault is visible, not fatal | a planner that traps fails its execution with its own abort message and the machine returns to its loop |
-| The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`m3-verification.md`](docs/m3-verification.md)) |
+| The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`wp-3.5-deploy-m3.md`](docs/implementation/wp-3.5-deploy-m3.md)) |
 | Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
 
-560 unit and integration tests (85 % line-coverage threshold on the core packages; counted 2026-09-04), 31 browser
-tests in Playwright, and CI on every push with no AWS credentials.
+The unit and integration suites (an 85 % line-coverage threshold on the core packages) and the browser suites
+run in CI on every push, with no AWS credentials.
 
 ## Limits, stated plainly
 
@@ -118,13 +124,12 @@ tests in Playwright, and CI on every push with no AWS credentials.
   adjustable, the same at every VM size we can launch — measured, then found in the account's
   Service Quotas ([design §9.7](docs/design.md)).
   One control plane therefore serves about seven browser tabs that each lend a node (fourteen that only watch), and the ledger's 256-node cap is
-  a property of the scheduler, not of the deployment. Scaling the client edge is an architecture
-  decision recorded in the plan (WP4.6): document it for now, evaluate an EC2 host for the control
-  plane after packaging.
+  a property of the scheduler, not of the deployment. Scaling the client edge is deferred: the
+  ceiling is documented, and an EC2 host for the control plane is the candidate (design §9.7).
 - **One active control plane at a time.** Authority is a generation stamp and a pointer, not
   consensus. A control plane that dies without handing over is replaced from its last snapshot,
   at most five seconds stale, and idempotent tasks make that safe; a consensus control plane is
-  an extension, not a feature (the second in the rationale's list; the client edge comes first).
+  an extension, not a feature; the client edge comes first.
 - **Programs are trusted to the extent the sandbox allows.** Five host imports, no clock, no
   randomness, no network, a memory maximum, a deadline, and byte caps on writes and logs. No
   capability model beyond that, and no K-way voting beyond two-way verification with a majority
@@ -135,7 +140,7 @@ tests in Playwright, and CI on every push with no AWS credentials.
 
 ## Running it locally
 
-Tooling is managed by [mise](https://mise.jdx.dev): Node 22 is the runtime, Bun is the developer
+Tooling is managed by [mise](https://mise.jdx.dev): Node.js 22 is the runtime, Bun is the developer
 toolchain, and every task lives in [`mise.toml`](mise.toml).
 
 ```sh
@@ -151,56 +156,35 @@ bunx playwright test            # the browser suites alone
 ```
 
 The local topology runs the same code as the cloud: a control plane process serving blobs from
-memory, two Node processes as stand-ins for the cloud cores, and the page from `packages/web/dist`.
+memory, two Node.js processes as stand-ins for the cloud cores, and the page from `packages/web/dist`.
 
 ## Deploying it
 
-Needs an AWS account with a profile named `tabframe` (the operator identity, used for `cdk`
-only; every application component runs under a least-privilege role CDK creates) and a gitignored
-`.env.local` holding `TABFRAME_ACCOUNT_ID` and `TABFRAME_BUDGET_EMAIL` (the address the $100/month
-notification-only budget alerts).
+Needs an AWS account with a profile named `tabframe` (the operator identity, used for `cdk` only;
+every application component runs under a least-privilege role CDK creates), a gitignored `.env.local`
+holding `TABFRAME_ACCOUNT_ID` and `TABFRAME_BUDGET_EMAIL` (the address the $100/month
+notification-only budget alerts), and an authenticated `gh` (`gh auth login` once): the deploy guard
+asks GitHub whether CI passed on the commit being deployed, so Actions must run on your remote.
 
 ```sh
-mise run whoami                 # asserts the identity is the Tabframe account; every AWS task depends on it
-AWS_PROFILE=tabframe cdk bootstrap   # once; the profile no longer rides on every task (WP8.2)
-mise run deploy                 # build → test → cdk deploy (four stacks) → up: a rotation onto the new image
-mise run verify:m1              # browser tabs render a frame on the deployed machine; kill half; golden hashes
-mise run verify:m2              # edit and compile in the page; word count; a program fault
-mise run verify:m3              # a rotation under load: churn seconds, drain jitter, session concurrency
-mise run demo -- --repeat 3     # the demo script, unattended, against the deployed machine (--video records)
-mise run health -- --cores      # /health and /diag of the control plane, and each cloud core's own /health
-mise run down                   # off: disable the schedule, terminate every MicroVM, write the off state
-mise run up                     # back on
-mise run logs                   # tail the MicroVM log group
+mise run whoami                      # asserts the identity is the Tabframe account; every AWS task depends on it
+AWS_PROFILE=tabframe cdk bootstrap   # once
+mise run deploy                      # guard → build → test → security diff gate → cdk deploy (four stacks) → up
+mise run down                        # off: disable the schedule, terminate every MicroVM, write the off state
+mise run up                          # back on
 ```
 
 A deploy is a rotation: the new image version is published, the rotate function launches the next
 generation, hands the ledger over, flips the pointer, and drains the old one. Rollback is the same
-path onto the previous image version.
-
-What it costs is in the design's §9.5: about $0.13 for an hour with a visitor and idle cores, about $3 if
-left running all day, near zero suspended. The machine sleeps ten minutes after the last observer
-leaves — cores terminated, automatic continuation paused — and wakes on the next visitor.
-
-**During the review period the machine stays up.** The public URL answers; while nobody
-watches, the cores are terminated after ten minutes and the control plane suspends after fifteen.
-The hourly rotation leaves a suspended control plane alone (since WP8.1; before, it booted a fresh
-generation every hour of an idle night), so an untouched machine converges to one suspended
-MicroVM, which the platform terminates after seven suspended hours. The first visitor sees
-"starting" for the few seconds of a boot, the cores follow, the next hour rotates it, and the loop
-resumes while the page is open. `mise run down` turns it off for good; `mise run up` brings it back.
+path onto an earlier image version. Everything else an operator does — verification runs, the
+unattended demo, `/health`, logs, what it costs, what an untouched machine converges to — is in
+[`docs/runbook.md`](docs/runbook.md).
 
 ## Reading the repository
 
-| Where | What |
-|---|---|
-| [`docs/design.md`](docs/design.md) | the design record: decisions D1–D20, the system, the wire, hosting, security, tooling, and the drift log |
-| [`docs/runbook.md`](docs/runbook.md) | operating it: the mise tasks, what `/health` says, incidents and what they meant |
-| [`docs/walkthrough.md`](docs/walkthrough.md) | the page's contract: every screen, state, and control, checked by `e2e/walkthrough.e2e.ts` |
-| [`docs/feasibility-transformer.md`](docs/feasibility-transformer.md) | the small transformer on the cores: the assessment with measured numbers |
-| [`docs/implementation/`](docs/implementation/README.md) | how it was built, one note per work package — what, how, why, evidence, drift |
-| [`packages/sdk-as/README.md`](packages/sdk-as/README.md) | how to write a program (the in-page guide is cut from it) |
-| [`programs/`](programs/) | the three programs that ship, each with its README |
+[`docs/README.md`](docs/README.md) lists the documents in reading order: the design record, the
+page's contract, how to write a program, the three programs, the transformer feasibility note, the
+runbook, and the implementation notes.
 
 ## License and attribution
 

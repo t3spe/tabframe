@@ -14,7 +14,7 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 | Rotate function | Lambda, hourly EventBridge rule | launches the successor, hands over, flips the pointer, drains, terminates |
 | Store | S3 behind CloudFront (`/blob/*`) | content-addressed, one-year lifecycle |
 | Snapshots | S3, `g<generation>/<time>.json.gz` and `latest.json.gz` | the `g*/` history expires after a day; `latest.json.gz` is kept |
-| Alarms | SNS topic `tabframe-alarms` | rotate and session errors, rotate throttles, and the canary's page and session checks (WP8.1, WP8.2); mailed to the budget address when configured. The subscription must be confirmed from that mailbox once: `aws sns list-subscriptions-by-topic` shows `PendingConfirmation` until then |
+| Alarms | SNS topic `tabframe-alarms` | rotate and session errors, rotate throttles, and the canary's page and session checks; mailed to the budget address when configured. The subscription must be confirmed from that mailbox once: `aws sns list-subscriptions-by-topic` shows `PendingConfirmation` until then |
 | Canary | Lambda, five-minute EventBridge rule | fetches the page's `config.json` and the session URL, never the MicroVM endpoint; metrics under `Tabframe/Canary` |
 | Page | S3 behind the same CloudFront distribution | `https://d2w9z8juw4oo76.cloudfront.net` |
 
@@ -34,11 +34,12 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 ## Deploy, step by step
 
 1. `main` is green in CI (`mise exec -- gh run list --branch main --limit 1`). This is a rule, not a
-   preference (plan §0).
-2. `mise run deploy`. The image build takes three to five minutes; the first build after a long
+   preference.
+2. `mise run deploy` (with `gh` logged in: the guard asks GitHub whether CI passed on the commit, and
+   refuses a dirty tree or a HEAD that is not `origin/main`). The image build takes three to five minutes; the first build after a long
    gap has taken fifty. If CloudFormation reports the image "did not stabilize", check the build
    history — the platform has retried and succeeded on its own once while CloudFormation gave up;
-   `mise run deploy:stacks` then completes it (the staged image, then `up`; WP8.2).
+   `mise run deploy:stacks` then completes it (the staged image, then `up`).
 3. `up` at the end of the deploy rotates: the old control plane hands its ledger to the new one,
    the clients are drained with a jittered reconnect delay, and the render continues on the new
    generation. Expect about eight seconds of churn.
@@ -47,11 +48,11 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
    for the fleet.
 
 **Rollback.** The image keeps every version; `/health` names the one running (asked of the
-platform, WP8.3) and `mise run health` prints the pointer's. `mise run rollback -- <version>` writes
+platform) and `mise run health` prints the pointer's. `mise run rollback -- <version>` writes
 the pin into the pointer (`pinnedImageVersion`, read by every rotation, hourly ones included) and
 rotates once; the successor boots from the pinned version, adopts the current ledger, and launches
 its cores at the version it runs itself. `mise run rollback -- --clear` removes the pin, and so does
-`up`, which ends every deploy (WP8.3: the pin used to be a hand-edited function environment that a
+`up`, which ends every deploy (the pin used to be a hand-edited function environment that a
 control-plane-only deploy left in place). A rollback of the page is a
 re-deploy of the Web stack from the previous commit.
 
@@ -67,19 +68,18 @@ The rotate function is idempotent and safe to invoke at any time. It reads the p
 
 A run that dies half-way leaves a `pending` record in the pointer. The next run promotes that
 successor only if nothing else serves; if the old control plane still does, the stale successor is
-terminated and the rotation starts afresh (WP6.7); if it is gone, the record is forgotten. A run
+terminated and the rotation starts afresh; if it is gone, the record is forgotten. A run
 that died after the flip leaves a `retiring` record instead, and the next run drains and terminates
-that predecessor before anything else (WP8.2). A `/handover` that fails costs nothing
+that predecessor before anything else. A `/handover` that fails costs nothing
 but the last five seconds of work: the successor booted from the snapshot, and every task is
 idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 
 ## Observability
 
-- **`/health`** (private port, fleet secret): role, phase, generation, awake and why not, nodes by
+- **`/health`** (private port, no fleet secret): role, phase, generation, awake and why not, nodes by
   kind, cores with their age and whether their node is connected, programs, running execution,
-  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and since WP8.1 the
-  `build` stamp (`sha` with `-dirty` when the tree was, `branch`, `ungated`, `at`; served whole since
-  WP8.3) and the `imageVersion` it runs.
+  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and the
+  `build` stamp (`sha` with `-dirty` when the tree was, `branch`, `ungated`, `at`) and the `imageVersion` it runs.
 - **`/diag`** (private port, fleet secret): DNS, a store put-and-get round trip with its latency,
   which store driver, snapshotter status, memory, the environment facts that matter
   (`TABFRAME_SANDBOX_WORKER`, cloud cores enabled).
@@ -101,11 +101,11 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 - What costs money while the machine is up: the control plane MicroVM (always, until `down`), two
   cores while anyone is watching, snapshot writes every five seconds while the ledger changes,
   CloudFront and S3 for the page and blobs. Idle, it is one suspended MicroVM's snapshot storage
-  until the platform's eight-hour ceiling ends it; after that nothing runs until a visitor's
-  session call heals (WP8.3: the scheduled rule and the canary leave that heal to a visitor, so an
+  until the platform's eight-hour ceiling ends it (an untouched machine converges to one suspended
+  MicroVM: the cores go ten minutes after the last observer, the control plane suspends after
+  fifteen); after that nothing runs until a visitor's session call heals (the scheduled rule and the canary leave that heal to a visitor, so an
   idle night no longer boots a generation an hour).
-- Cost Explorer lags a day; `aws ce get-cost-and-usage` is the query, and the plan's WP4.7 keeps
-  the first real number.
+- Cost Explorer lags a day; `aws ce get-cost-and-usage` is the query.
 
 ## Incidents seen so far, and what to do
 
@@ -116,13 +116,13 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 | Every task fails with `Cannot find module '/app/node-worker.ts'` | the bundled image cannot spawn its own file as a worker | the image stages `node-worker.js` beside `main.js`; a build without it is broken — rebuild |
 | Executions fail every few seconds and the loop relaunches | a program fault or an upload failure | the default loop backs off (5 s doubling to 5 min); read the failure reason on the dashboard or in `/snapshot`; `killExecution` from the page stops the current one |
 | `did not stabilize` on the image update | CloudFormation gave up before the platform's retry succeeded | re-run `mise run deploy:stacks`; check `latestActiveImageVersion` |
-| A program shipped in the image is not on the machine | the ledger was adopted from a snapshot seeded before the program existed | fixed since WP2.7 (seeding by bundle hash); if it recurs, `mise run rotate` |
+| A program shipped in the image is not on the machine | the ledger was adopted from a snapshot seeded before the program existed | fixed (seeding by bundle hash); if it recurs, `mise run rotate` |
 | The session function returns `starting` for minutes | no control plane and the heal did not complete | `mise run logs:fleet`; `mise run up` |
 | The machine is up but nothing renders | asleep (ten minutes without an observer) or no nodes | open the page; the first visitor wakes it, cores follow within seconds |
-| After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed in WP4.9: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
-| Right after a rotation every core is a few seconds old | before WP4.4's fix the successor terminated every adopted core on its first tick; fixed — an adopted core keeps its grace from the adoption | `mise run health -- --cores`; if it recurs, check `unlinkedAt` handling in `adoptLedger` |
-| The dashboard shows "The machine is asleep" for a few seconds at the start of a rotation | a pending successor left by an interrupted or racing rotation was promoted without a handover, old snapshot and all (fixed in WP6.7: it is terminated while the current control plane serves; the hourly rule skips a rotation younger than five minutes) | `node packages/infra/scripts/rotation-probe-busy.ts` watches a rotation on a busy machine the way a browser does; `rotation-probe.ts` for a quiet one |
-| A person's launch finished and the loop's frame replaced it at once | since WP6.8 the loop yields to a person's launch until Start or ten quiet minutes (`YIELD_IDLE_MS`, `meta.loopYielded`); if it takes the stage back sooner, check `meta.loopYielded` in a snapshot | — |
-| `/health` shows a core with `linked: false` for minutes | its node closed (a kill half picked it) or never connected | since WP4.4 the control plane terminates a killed or frozen core at once and replaces any core unlinked for two minutes; `mise run health -- --cores` asks each core's own `/health` |
+| After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
+| Right after a rotation every core is a few seconds old | before the fix the successor terminated every adopted core on its first tick; fixed — an adopted core keeps its grace from the adoption | `mise run health -- --cores`; if it recurs, check `unlinkedAt` handling in `adoptLedger` |
+| The dashboard shows "The machine is asleep" for a few seconds at the start of a rotation | a pending successor left by an interrupted or racing rotation was promoted without a handover, old snapshot and all (fixed: it is terminated while the current control plane serves; the hourly rule skips a rotation younger than five minutes) | `node packages/infra/scripts/rotation-probe-busy.ts` watches a rotation on a busy machine the way a browser does; `rotation-probe.ts` for a quiet one |
+| A person's launch finished and the loop's frame replaced it at once | the loop yields to a person's launch until Start or ten quiet minutes (`YIELD_IDLE_MS`, `meta.loopYielded`); if it takes the stage back sooner, check `meta.loopYielded` in a snapshot | — |
+| `/health` shows a core with `linked: false` for minutes | its node closed (a kill half picked it) or never connected | the control plane terminates a killed or frozen core at once and replaces any core unlinked for two minutes; `mise run health -- --cores` asks each core's own `/health` |
 | RSS climbs in the first half hour after a launch | heap growth to the working set, not a leak: 312 → 370 → 372 MiB over 7 → 33 min on a 1 GB control plane, flat after | `mise run health` shows `memoryMiB`; worry above ~700 MiB |
-| An alarm email arrived (`tabframe-alarms`) | the rotate or session function failed, or rotate was throttled (WP8.1: a failed rotation is an error now) | `mise run health`; the rotate function's log names the reason; a heal runs on the next visitor or `mise run rotate` |
+| An alarm email arrived (`tabframe-alarms`) | the rotate or session function failed, or rotate was throttled (a failed rotation is an error now) | `mise run health`; the rotate function's log names the reason; a heal runs on the next visitor or `mise run rotate` |
