@@ -133,8 +133,13 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
       await client.adopt({ microvmId: next.microvmId, endpoint: next.endpoint ?? "" }, ledger);
       return true;
     } catch (error) {
+      // The predecessor's platform state names the usual cause: suspended by the idle policy, its
+      // resume failed and the platform terminated it. The suspend hook had written the snapshot.
+      const vm = await microvms.get(old.microvmId).catch(() => null);
       log.warn("rotate: handover failed; the successor keeps its snapshot state", {
         reason: String(error),
+        state: vm?.state ?? "not-found",
+        stateReason: vm?.stateReason ?? null,
       });
       return false;
     }
