@@ -1,7 +1,7 @@
 # Feasibility: a small transformer in WASM, predicting the next token on the cores
 
-**WP6.5** · 2026-09-03 · the question: can a Tabframe program be a small transformer that predicts
-the next token, and is it worth building?
+2026-09-03 · the question: can a Tabframe program be a small transformer that predicts the next
+token, and is it worth building? It was, and it is: `programs/tinygpt` is the result.
 
 ## Short answer
 
@@ -9,16 +9,16 @@ Yes, for a *small* one: a character-level GPT of one to two million parameters f
 runs a token in a few milliseconds on a core, and gives identical bytes on a browser tab and a
 MicroVM, so the redundancy toggle verifies it like any other task. What parallelises is the
 prompts, not the sequence. GPT-2 small does not fit the sandbox's memory cap. Training is out of
-scope: weights are an input file. A prototype is a day: train a tiny model offline on the
-Moby-Dick corpus the repository already carries, ship int8 weights as a bundle input, write the
-forward pass in AssemblyScript, and let a stage of tasks generate continuations for a list of
-prompts into the text view.
+scope: weights are an input file. The prototype took a day: a tiny model trained offline on the
+Moby-Dick corpus the repository already carries, int8 weights shipped as a bundle input, the forward
+pass written in AssemblyScript, and a stage of tasks generating continuations for a list of prompts
+into the text view.
 
 ## What a program is allowed
 
 | Constraint (design §5, §8.4) | Value | What it means for a transformer |
 |---|---|---|
-| Memory maximum a module may declare | 256 pages = **16 MB** | weights, activations, and the KV cache all live here; f32 weights of *N* parameters need 4 *N* bytes |
+| Memory maximum a module may declare | 256 pages (**16 MiB**) is what the build flag and the editor declare; the control plane refuses a module above 1024 pages (64 MiB) | weights, activations, and the KV cache all live here; f32 weights of *N* parameters need 4 *N* bytes |
 | Module size | 8 MB | the code; irrelevant, a forward pass is a few KB |
 | Bundle inputs | files under `/in/`, any size within the 256 MB filesystem cap | the weights file; read once per task with `fs.read` (one round trip per read, so read it whole) |
 | Task inline input | 16 KB | a prompt and a token count fit; more goes through the filesystem |
@@ -89,20 +89,12 @@ What it says, greedily, after twelve minutes of training: *"Call me Ishmael the 
 of"* — Melville-shaped, repetitive the way greedy decoding of a small model is. Sampling with a
 seed from the params is the obvious next step and stays deterministic.
 
-## The prototype, as planned
+## What was planned, and what differed
 
-1. **Train offline** (Python, on this laptop): a character-level GPT — vocabulary of ~90 bytes,
-   context 128, 4 layers, 4 heads, width 128 (about 0.8 M parameters) — on `programs/wordcount/in/
-   corpus.txt`, a few minutes on CPU for text that is recognisably Melville-shaped. Export weights
-   as int8 with per-tensor scales, plus the vocabulary, into `/in/weights.bin`.
-2. **The program** (`programs/tinygpt`, AssemblyScript): `plan` reads the prompts from the params
-   and emits one task per prompt × seed with `(prompt, seed, tokens)` as the input; `run` loads the
-   weights, runs the prompt through the model with a KV cache, samples *n* tokens with a
-   counter-based PRNG seeded from the task's seed, and returns UTF-8 text. View `text`. A follow-up
-   could chain "continue the best continuation".
-3. **Measure on the machine**: tokens per second on a tab and on a core, the task's compute time
-   against the deadline, redundancy on to prove identical bytes, and the stage's wall time for a
-   dozen prompts.
-
-Effort: about a day. Risks: AssemblyScript's lack of SIMD keeps it small; the 16 KB inline input
-bounds the prompt; the weights read per task is the cost to watch.
+The plan was a character-level GPT of about 0.8 M parameters trained offline on the word-count corpus,
+int8 weights with per-tensor scales as a bundle input, one task per prompt, and a measurement pass on
+the machine — and that is what was built, with two differences. Decoding is greedy rather than
+sampled with a counter-based PRNG (sampling with a seed from the params stays deterministic and is
+the obvious next step), and the vocabulary is the corpus's 97 symbols rather than the ~90 guessed.
+The risks named in advance held: AssemblyScript's lack of SIMD keeps the model small, the 16 KB
+inline input bounds the prompt, and the weights read per task is the cost to watch.

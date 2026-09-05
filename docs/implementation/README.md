@@ -2,6 +2,8 @@
 
 One document per work package, written on the WP's branch and merged with it. Each covers what was
 delivered, how it works, why it is built that way, the evidence, any design drift, and open items.
+These notes are history — how the machine got here, in order — and are not kept current; the
+present is `docs/design.md`.
 Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 
 | WP | Document | Merged | Summary |
@@ -67,3 +69,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP8.3 | [wp-8.3-review-loop-3.md](wp-8.3-review-loop-3.md) | 2026-09-04 | Review loop 3: five fresh personas on the tree after loop 2, 57 findings in 46 rows aggregated and critiqued (counts derived from the table in the note); once-per-attempt charging and growing deadlines, the standby control plane, a pointer that round-trips `retiring` and carries the rollback pin, machine-wide budgets, heartbeat and health bounds, a fail-closed deploy guard, a canary that probes without healing, kept controls and a "machine full" state on the page. |
 | WP8.4 | [wp-8.4-m8-close.md](wp-8.4-m8-close.md) | 2026-09-04 | M8 close: the deploy after the loops (a CloudFront rule the first attempt tripped on, fixed with a synth test; generation 129 on image version 26 after the compiler worker's data URL and the activity snippet were fixed too), three unattended demo passes green, the records brought up to date. |
 | WP9.1 | [wp-9.1-extraction.md](wp-9.1-extraction.md) | 2026-09-04 | The homework's tracking (plan, time log, rationale, submission checklist, verification runs, transcripts and their exporter) moved to a repository of its own; the README and the design record read for a stranger. |
+| WP9.2 | [wp-9.2-documents.md](wp-9.2-documents.md) | 2026-09-04 | The documents read for a stranger: README reshaped, `docs/README.md` index, design/runbook/walkthrough/feasibility corrections, a README for each program (WP9.4), a link test. |

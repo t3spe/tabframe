@@ -25,7 +25,7 @@ and which stays correct while cores — and the control plane itself — come an
 11. Tooling and repo
 12. Tests and dev loop
 13. Deploy and operations
-14. Milestones
+14. History
 15. Rationale hooks
 16. Glossary
 17. Drift log
@@ -36,7 +36,7 @@ and which stays correct while cores — and the control plane itself — come an
 
 | # | Decision | Notes |
 |---|----------|-------|
-| D1 | **Scope:** everything in the original handoff, plus straggler speculation, duplicate-result verification with a built-in redundancy toggle, a program ABI, and MapReduce word count. Time is not a design constraint. | The handoff's 8-hour line did not drive any choice here; §15 says how the rationale owns that. |
+| D1 | **Scope:** everything in the original handoff, plus straggler speculation, duplicate-result verification with a built-in redundancy toggle, a program ABI, and MapReduce word count. Time is not a design constraint. | Time was not a design constraint. |
 | D2 | **General-purpose programs, minimal but complete.** A program is one WASM module (`plan` + `run`) plus a manifest, content-addressed, sandboxed, uploadable, with in-browser AssemblyScript compilation and an execution queue. | Mandelbrot and word count are real programs shipped through the same path; the node bundle contains no application code. |
 | D3 | **Node = one orchestrator worker owning its own socket + one disposable sandbox worker.** The host page is an observer and a spawner only. | Heartbeats originate in the orchestrator; program compute never delays them. No iframes. |
 | D4 | **One global machine.** Everyone joins one cluster. One execution runs at a time, FIFO, user-submitted ahead of automatic continuations. | Frames auto-advance while someone is watching. Zero nodes → tasks wait as pending. |
@@ -133,7 +133,7 @@ and which stays correct while cores — and the control plane itself — come an
 8. **Controls.** Spawn is local: the host starts more workers. Kill, freeze, throttle, restart, skip, launch, and the redundancy toggle go over the observer socket; the control plane picks victims across the whole cluster, including other people's tabs and the cloud cores, and commands them on their own sockets.
 9. **Tab close.** Every worker in the tab dies at once, sockets drop, the control plane marks them gone, and their unfinished work returns to the front of the queue. Nothing is sent on the way out and nothing needs to be.
 
-**Fixed properties:** a node is one orchestrator, one sandbox, one socket; a tab hosts one by default and as many as you spawn. Two socket kinds: observers watch and control, nodes work. `?observe` gives a pure dashboard with no node. In-app spawn is bounded by the visitor's cores; the dashboard shows the core count, defaults spawn to cores minus one, and the rationale says so plainly.
+**Fixed properties:** a node is one orchestrator, one sandbox, one socket; a tab hosts one by default and as many as you spawn. Two socket kinds: observers watch and control, nodes work. `?observe` gives a pure dashboard with no node. In-app spawn is bounded by the visitor's cores; the dashboard shows the core count, defaults spawn to cores minus one.
 
 ---
 
@@ -510,7 +510,7 @@ seam. **Decided 2026-09-02 (Mircea):** document the ceiling for now and scope th
 M5, evaluate hosting the control plane on an **EC2 instance** instead of a MicroVM — no per-VM
 connection quota, thousands of sockets on one host, the same process and protocol — at the cost of
 the MicroVM story (snapshot boot, hooks, suspend/resume) and a different rotation mechanism. The
-plan's WP4.6 keeps the alternatives. Since WP8.2 the control plane refuses the fifteenth client upgrade with 503, keeping two of the sixteen connections for the fleet's handover and drain calls; a full house of tabs cannot turn a rotation into a snapshot handover.
+the fifteenth client's socket is closed with the machine-full code the page reads (fourteen seats; two of sixteen kept for the fleet's handover and drain calls); a full house of tabs cannot turn a rotation into a snapshot handover.
 
 
 ## 10. Security and credentials
@@ -580,7 +580,7 @@ tabframe/
   programs/
     mandelbrot/      assembly/index.ts, manifest.json, goldens.json
     wordcount/       assembly/index.ts, manifest.json, in/corpus.txt, goldens.json
-    tinygpt/         assembly/index.ts, manifest.json, the trained weights, goldens.json (M6)
+    tinygpt/         assembly/index.ts, manifest.json, the trained weights, train/ (the training script and its reference)
   docs/              this record, the runbook, the walkthrough, the feasibility note, the implementation notes
 ```
 
@@ -595,11 +595,11 @@ Lambda builds the image on ARM64 itself; Docker is optional locally. Bundling to
 
 ### 11.4 CDK
 
-Three stacks in dependency order — **Core** (buckets for artifacts, blobs, snapshots, and web, with a one-year lifecycle on blobs; one CloudFront distribution with two origins and an error-caching TTL of zero on the blob behavior; blob-bucket CORS allowing PUT with the checksum header from the page's origin; the SSM pointer with its off state; the budget), **Image** (`CfnMicrovmImage` with the base image version looked up by a script, hooks on port 8081, an environment holding only bucket names and the pointer name, and the build, control-plane, and core roles), **Fleet** (session with a public function URL, CORS for GET from the page's origin, and a modest reserved concurrency; rotate on an hourly EventBridge rule created disabled until M3, reserved concurrency 1; their roles). Outputs feed the web config (the session URL only) at deploy. Image publishing goes through CloudFormation so the operator needs no extra rights.
+Four stacks in dependency order — **Core** (buckets for artifacts, blobs, snapshots, and web, with a one-year lifecycle on blobs; one CloudFront distribution with two origins and an error-caching TTL of zero on the blob behavior; blob-bucket CORS allowing PUT with the checksum header from the page's origin; the SSM pointer with its off state; the budget), **Image** (`CfnMicrovmImage` with the base image version looked up by a script, hooks on port 8081, an environment holding only bucket names and the pointer name, and the build, control-plane, and core roles), **Fleet** (session with a public function URL, CORS for GET from the page's origin, and a modest reserved concurrency; rotate on an hourly EventBridge rule created disabled until M3, reserved concurrency 1; their roles). Outputs feed the web config (the session URL only) at deploy. Image publishing goes through CloudFormation so the operator needs no extra rights.
 
 ### 11.5 Repo policy
 
-Hosted at `github.com/t3spe/tabframe`. License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the plan, the time log, architecture, rationale, and transcripts — export mechanism to be decided later). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
+Hosted at `github.com/t3spe/tabframe`. License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the runbook, the walkthrough, the feasibility note, and one note per work package under `implementation/`). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
 
 ---
 
