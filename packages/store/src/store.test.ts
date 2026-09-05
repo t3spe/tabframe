@@ -79,10 +79,10 @@ describe("S3Store", () => {
     expect(p?.url).toContain("X-Amz-Signature=");
     expect(p?.headers["x-amz-checksum-sha256"]).toBe(hexToBase64(h));
     // The pin must be a *signed header*: hoisted into the query string S3 ignores it, so a
-    // tampered body would be accepted (found against the real bucket, WP1.10).
+    // tampered body would be accepted.
     const signed = new URL(p?.url as string).searchParams.get("X-Amz-SignedHeaders") ?? "";
     expect(signed.split(";")).toContain("x-amz-checksum-sha256");
-    // And the declared size (WP8.2): S3 rejects a body of another length.
+    // And the declared size: S3 rejects a body of another length.
     expect(signed.split(";")).toContain("content-length");
     expect(p?.headers["content-length"]).toBeUndefined();
     expect(new URL(p?.url as string).searchParams.has("x-amz-checksum-sha256")).toBe(false);

@@ -1,6 +1,6 @@
 // The whole M1 pipeline on a laptop: the control-plane process seeds Mandelbrot, an observer
 // watches, two local cores (the Node platform) compute, and the frame's 640 tiles hash to the
-// goldens; then the default loop continues on its own (design §12, plan WP1.7).
+// goldens; then the default loop continues on its own (design §12).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";

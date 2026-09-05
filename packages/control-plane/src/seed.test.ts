@@ -95,7 +95,7 @@ describe("seedPrograms", () => {
     expect(w?.module).toBe(m.module);
     expect(w?.bundle).not.toBe(m.bundle);
   });
-  test("a program's source goes into the store and the manifest names it; one without a source has none (WP7.6)", async () => {
+  test("a program's source goes into the store and the manifest names it; one without a source has none", async () => {
     const store = new LocalStore("http://s/blob");
     const found = [
       ...discoverPrograms(dir),

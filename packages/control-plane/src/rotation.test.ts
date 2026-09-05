@@ -183,7 +183,7 @@ describe("rotation", () => {
   }, 30_000);
 });
 
-describe("lease expiry (WP8.2)", () => {
+describe("lease expiry", () => {
   test("a control plane whose lease ran out drains and terminates itself when the pointer names a newer generation", async () => {
     let t = 1_000_000;
     const clock = { now: () => t };
@@ -246,7 +246,7 @@ describe("lease expiry (WP8.2)", () => {
   });
 });
 
-describe("standby (WP8.3)", () => {
+describe("standby until named", () => {
   test("a control plane the pointer does not name is not authoritative until it is", async () => {
     let named = "vm-9";
     const cp = await createControlPlane({ ...imageConfig, generation: 6 }, undefined, {
