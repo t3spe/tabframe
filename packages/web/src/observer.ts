@@ -1,8 +1,10 @@
+// The observer socket: session → subscribe → snapshot and events, pinging every two seconds,
+// reconnecting for a fresh snapshot on a sequence gap, and reconnecting through a fresh session
+// after any close. Controls go out spaced under the observer rate limit.
 import { Backoff } from "@tabframe/node/backoff";
 import { fetchSession, type Session, socketProtocols } from "@tabframe/node/session";
 import {
   CLOSE,
-  type Control,
   type ControlPlaneToObserver,
   controlPlaneToObserver,
   decode,
@@ -13,26 +15,44 @@ import {
 } from "@tabframe/protocol";
 import type { PresignedUpload, PresignItem } from "@tabframe/store";
 import { applyMessage, type ClusterState, emptyState, withRedundancy } from "./cluster-state.ts";
+import type { ControlRequest } from "./controls.ts";
 
 export type MachineState = "connecting" | "starting" | "off" | "live" | "outdated" | "full";
 
-/** A control as the page issues it; the client stamps the version and generation. */
-export type ControlRequest = Control extends infer C
-  ? C extends { v: number; gen: number }
-    ? Omit<C, "v" | "gen">
-    : never
-  : never;
-
 export interface ObserverHandlers {
-  /** Controls held across a reconnect that were too old to send (WP8.1). */
+  /** Controls held across a reconnect that were too old to send. */
   onDropped?: (count: number) => void;
   onState(machine: MachineState, detail?: string): void;
   onCluster(state: ClusterState): void;
   onSession(session: Session & { kind: "on" }): void;
 }
 
+/** The part of a `WebSocket` the client uses; a test passes a fake. */
+export interface WebSocketLike {
+  readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  onopen: ((ev: Event) => void) | null;
+  onmessage: ((ev: MessageEvent) => void) | null;
+  onclose: ((ev: CloseEvent) => void) | null;
+}
+
+/** What the client reaches the world through; every default is the browser's. */
+export interface ObserverDeps {
+  random?: () => number;
+  now?: () => number;
+  fetch?: (
+    url: string,
+    init?: { cache: RequestCache },
+  ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+  socket?: (url: string, protocols?: string[]) => WebSocketLike;
+}
+
 /** Anything the page sends besides subscribe and ping, before the version and generation are stamped. */
 type Outgoing = ControlRequest | { t: "presign"; items: PresignItem[] };
+
+/** `WebSocket.OPEN`. */
+const OPEN = 1;
 
 /** How long a presign may stay unanswered before the upload gives up. */
 export const PRESIGN_TIMEOUT_MS = 30_000;
@@ -44,23 +64,18 @@ export const CONTROL_SPACING_MS = Math.ceil(1000 / (LIMITS.observerMessagesPerSe
  * A control issued while the socket is between subscribes — a silent resubscribe after a
  * sequence gap or a refresh, or the seconds of a rotation — is held for the next live socket this
  * long, then dropped: the machine a person clicked at a moment ago is the one they meant, a
- * machine that has been gone for longer is not (WP4.4: a demo run lost "kill half" this way).
+ * machine that has been gone for longer is not.
  */
 export const CONTROL_HOLD_MS = 10_000;
-/** How long a page waits before asking a full machine again (WP8.3). */
+/** How long a page waits before asking a full machine again. */
 export const MACHINE_FULL_RETRY_MS = 10_000;
-/** How often a page facing an off machine asks the session again (WP8.1). */
+/** How often a page facing an off machine asks the session again; the banner promises it. */
 export const OFF_POLL_MS = 15_000;
 /** A quiet refresh spreads the reconnects of many observers over this many milliseconds. */
 export const REFRESH_JITTER_MS = 4_000;
 
-/**
- * The observer socket: session → subscribe → snapshot and events, pinging every two seconds,
- * reconnecting for a fresh snapshot on a sequence gap, and reconnecting through a fresh session
- * after any close. Controls go out spaced under the observer rate limit.
- */
 export class ObserverClient {
-  private socket: WebSocket | null = null;
+  private socket: WebSocketLike | null = null;
   private session: (Session & { kind: "on" }) | null = null;
   private state: ClusterState = emptyState();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -84,11 +99,17 @@ export class ObserverClient {
   private readonly sessionUrl: string;
   private readonly handlers: ObserverHandlers;
   private readonly random: () => number;
+  private readonly now: () => number;
+  private readonly fetch: NonNullable<ObserverDeps["fetch"]>;
+  private readonly connectSocket: NonNullable<ObserverDeps["socket"]>;
 
-  constructor(sessionUrl: string, handlers: ObserverHandlers, random: () => number = Math.random) {
+  constructor(sessionUrl: string, handlers: ObserverHandlers, deps: ObserverDeps = {}) {
     this.sessionUrl = sessionUrl;
     this.handlers = handlers;
-    this.random = random;
+    this.random = deps.random ?? Math.random;
+    this.now = deps.now ?? Date.now;
+    this.fetch = deps.fetch ?? ((url, init) => fetch(url, init));
+    this.connectSocket = deps.socket ?? ((url, protocols) => new WebSocket(url, protocols));
   }
 
   get cluster(): ClusterState {
@@ -96,7 +117,7 @@ export class ObserverClient {
   }
 
   get connected(): boolean {
-    return this.socket?.readyState === WebSocket.OPEN;
+    return this.socket?.readyState === OPEN;
   }
 
   async start(): Promise<void> {
@@ -122,12 +143,12 @@ export class ObserverClient {
     return this.sendStatus(control) !== "refused";
   }
 
-  /** Like `send`, but says whether the control went out now or waits for the next socket (WP8.2). */
+  /** Like `send`, but says whether the control went out now or waits for the next socket. */
   sendStatus(control: ControlRequest): "sent" | "held" | "refused" {
     if (this.stopped || this.off) return "refused";
     this.anticipate(control);
     if (!this.connected) {
-      this.held.push({ control, at: Date.now() });
+      this.held.push({ control, at: this.now() });
       return "held";
     }
     this.outbox.push(control);
@@ -149,11 +170,11 @@ export class ObserverClient {
    * toggle is anticipated again (the echo count was already taken at the click).
    */
   private releaseHeld(): void {
-    const now = Date.now();
+    const now = this.now();
     const fresh = this.held.filter((h) => now - h.at <= CONTROL_HOLD_MS);
     const dropped = this.held.length - fresh.length;
     this.held = [];
-    // A click that waited longer than the hold is dropped, and said so (WP8.1, rule R2).
+    // A click that waited longer than the hold is dropped, and said so (rule R2).
     if (dropped > 0) this.handlers.onDropped?.(dropped);
     for (const h of fresh) {
       if (h.control.t === "setRedundancy") {
@@ -162,8 +183,8 @@ export class ObserverClient {
       }
       this.outbox.push(h.control);
     }
-    // Drained whatever is queued (WP8.3): a control that waited behind the spacing timer when the
-    // socket was swapped sits in the outbox, not in `held`.
+    // A control that waited behind the spacing timer when the socket was swapped sits in the
+    // outbox, not in `held`: drain that too.
     this.drain();
   }
 
@@ -198,7 +219,7 @@ export class ObserverClient {
 
   private drain(): void {
     if (this.sendTimer || this.outbox.length === 0) return;
-    const wait = this.lastSentAt + CONTROL_SPACING_MS - Date.now();
+    const wait = this.lastSentAt + CONTROL_SPACING_MS - this.now();
     if (wait > 0) {
       this.sendTimer = setTimeout(() => {
         this.sendTimer = null;
@@ -211,7 +232,7 @@ export class ObserverClient {
     if (!this.connected || !session) {
       // The socket went between the click and the send: controls wait for the next subscribe,
       // a presign does not (its upload would have to start over anyway).
-      const now = Date.now();
+      const now = this.now();
       for (const o of [control, ...this.outbox]) {
         if (o.t !== "presign") this.held.push({ control: o, at: now });
       }
@@ -225,7 +246,7 @@ export class ObserverClient {
       gen: session.generation,
     };
     this.socket?.send(encode(msg));
-    this.lastSentAt = Date.now();
+    this.lastSentAt = this.now();
     this.drain();
   }
 
@@ -234,10 +255,12 @@ export class ObserverClient {
     if (!this.resubscribing) this.handlers.onState("connecting");
     let session: Session;
     try {
-      session = await fetchSession(this.sessionUrl, (url) => fetch(url, { cache: "no-store" }));
+      session = await fetchSession(this.sessionUrl, (url) =>
+        this.fetch(url, { cache: "no-store" }),
+      );
     } catch {
-      // A session that cannot be fetched is not a silent resubscribe any more (WP8.1): the page
-      // shows "connecting" instead of a live pill over stale numbers.
+      // A session that cannot be fetched ends a silent resubscribe: the page must show
+      // "connecting", not a live pill over stale numbers.
       if (this.resubscribing) {
         this.resubscribing = false;
         this.handlers.onState("connecting");
@@ -249,7 +272,6 @@ export class ObserverClient {
       this.off = true;
       this.held = [];
       this.handlers.onState("off");
-      // The banner says the page asks again on its own (WP8.1): it does, every fifteen seconds.
       return this.later(OFF_POLL_MS);
     }
     this.off = false;
@@ -259,7 +281,7 @@ export class ObserverClient {
     }
     this.session = session;
     this.handlers.onSession(session);
-    const ws = new WebSocket(
+    const ws = this.connectSocket(
       `${session.endpoint.replace(/\/$/, "")}/observer`,
       socketProtocols(session.token),
     );
@@ -276,9 +298,9 @@ export class ObserverClient {
           ...(since > 0 && session.generation === this.state.generation ? { since } : {}),
         }),
       );
-      this.lastSentAt = Date.now();
+      this.lastSentAt = this.now();
       this.pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN)
+        if (ws.readyState === OPEN)
           ws.send(encode({ t: "ping", v: PROTOCOL_VERSION, gen: session.generation }));
       }, LIMITS.observerPingMs);
     };
@@ -286,7 +308,7 @@ export class ObserverClient {
     ws.onclose = (ev) => this.onClose(ws, ev.code, ev.reason);
   }
 
-  private onMessage(ws: WebSocket, session: Session & { kind: "on" }, data: unknown): void {
+  private onMessage(ws: WebSocketLike, session: Session & { kind: "on" }, data: unknown): void {
     const d = decode(controlPlaneToObserver, data, { expectGen: session.generation });
     if (!d.ok) {
       ws.close(d.closeCode, d.reason.slice(0, 120));
@@ -315,8 +337,8 @@ export class ObserverClient {
     }
     if (msg.t === "snapshot" && this.state.pagesPending === 0) {
       this.resubscribing = false;
-      // A healthy session resets the reconnect backoff (WP8.3): a dashboard open all day used to
-      // wait half a minute after any drop because every hourly rotation had counted against it.
+      // A healthy session resets the reconnect backoff, or every hourly rotation would count
+      // against a dashboard open all day.
       this.backoff.reset();
       this.handlers.onState("live");
       this.releaseHeld();
@@ -324,14 +346,14 @@ export class ObserverClient {
     this.handlers.onCluster(this.state);
   }
 
-  /** Controls still in the outbox wait for the next live socket instead of vanishing (WP8.3). */
+  /** Controls still in the outbox wait for the next live socket instead of vanishing. */
   private holdOutbox(): void {
-    const now = Date.now();
+    const now = this.now();
     for (const o of this.outbox) if (o.t !== "presign") this.held.push({ control: o, at: now });
     this.outbox = [];
   }
 
-  private resubscribe(ws: WebSocket, delayMs: number): void {
+  private resubscribe(ws: WebSocketLike, delayMs: number): void {
     if (this.resubscribing) return;
     this.resubscribing = true;
     this.clearTimers();
@@ -345,7 +367,7 @@ export class ObserverClient {
     }, delayMs);
   }
 
-  private onClose(ws: WebSocket, code: number, reason: string): void {
+  private onClose(ws: WebSocketLike, code: number, reason: string): void {
     if (this.socket !== ws) return;
     this.clearTimers();
     this.socket = null;
@@ -358,7 +380,7 @@ export class ObserverClient {
     }
     let delay: number | null = null;
     if (code === CLOSE.machineFull) {
-      // Every client seat is taken (WP8.3): say so, and try again when the server suggested.
+      // Every client seat is taken: say so, and try again when the server suggested.
       this.handlers.onState("full", reason);
       delay = MACHINE_FULL_RETRY_MS;
     }
@@ -376,7 +398,7 @@ export class ObserverClient {
     this.later(delay ?? this.backoff.next());
   }
 
-  /** For tests (WP8.3): the delay the last reconnect chose. */
+  /** The delay the last reconnect chose; tests read it. */
   lastDelayMs = 0;
 
   private later(ms: number): void {

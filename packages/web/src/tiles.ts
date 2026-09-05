@@ -37,10 +37,10 @@ interface Painted {
 }
 
 /**
- * Fetches from `<storeBase>/<hash>`. The browser's default cache mode (WP8.3): the CDN's
- * `immutable` header keeps a 200 for a year, while `force-cache` would have replayed a stored 404
- * for a tile asked for a moment before its upload landed. A 5xx or a network error is retried
- * three times before it is reported.
+ * Fetches from `<storeBase>/<hash>` in the browser's default cache mode: the CDN's `immutable`
+ * header keeps a 200 for a year, while `force-cache` would replay a stored 404 for a tile asked for
+ * a moment before its upload landed. A 5xx or a network error is retried three times before it is
+ * reported.
  */
 export function storeSource(storeBase: string, fetchImpl: typeof fetch = fetch): BlobSource {
   const base = storeBase.replace(/\/$/, "");
@@ -188,22 +188,26 @@ export class TileView {
     this.inFlight.delete(task.taskId);
     this.stats.inFlight = this.inFlight.size;
     this.stats.fetched += 1;
-    if (outcome instanceof Uint8Array) {
-      this.painter.put(
-        place,
-        new Uint8ClampedArray(outcome.buffer, outcome.byteOffset, outcome.byteLength),
-      );
-      this.painted.set(task.taskId, { hash, place, flag: null });
-      this.missingAt.delete(task.taskId);
-      this.stats.painted += 1;
-    } else {
-      this.painter.flag(place, outcome);
-      this.painted.set(task.taskId, { hash, place, flag: outcome });
-      if (outcome === "missing") this.missingAt.set(task.taskId, this.now());
-      this.stats.flagged += 1;
+    // A painter that throws must not stall the queue: the pump runs whatever happened.
+    try {
+      if (outcome instanceof Uint8Array) {
+        this.painter.put(
+          place,
+          new Uint8ClampedArray(outcome.buffer, outcome.byteOffset, outcome.byteLength),
+        );
+        this.painted.set(task.taskId, { hash, place, flag: null });
+        this.missingAt.delete(task.taskId);
+        this.stats.painted += 1;
+      } else {
+        this.painter.flag(place, outcome);
+        this.painted.set(task.taskId, { hash, place, flag: outcome });
+        if (outcome === "missing") this.missingAt.set(task.taskId, this.now());
+        this.stats.flagged += 1;
+      }
+    } finally {
+      this.onChange?.();
+      this.pump();
     }
-    this.onChange?.();
-    this.pump();
   }
 
   /** Tiles the surface currently shows, for tests and the page's counters. */

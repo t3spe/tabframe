@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PlaceView } from "@tabframe/protocol";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { sha256Hex } from "@tabframe/store/hash";
 import { applyMessage, type ClusterState, emptyState } from "./cluster-state.ts";
+import { env, executionView, snapshot, taskView } from "./fixtures.ts";
 import {
   type BlobSource,
   storeSource,
@@ -10,8 +10,6 @@ import {
   type TilePainter,
   TileView,
 } from "./tiles.ts";
-
-const env = { v: PROTOCOL_VERSION, gen: 1 } as const;
 
 class Recorder implements TilePainter {
   calls: string[] = [];
@@ -52,54 +50,20 @@ async function frame(tiles: { id: string; index: number; bytes: Uint8Array; plac
     hashes.set(t.id, h);
     src.blobs.set(h, t.bytes);
   }
-  let state = applyMessage(emptyState(), {
-    t: "snapshot",
-    ...env,
-    seq: 1,
-    page: 0,
-    pages: 1,
-    nodes: [],
-    execution: {
-      executionId: "e1",
-      program: "b".repeat(64),
-      programName: "mandelbrot",
-      status: "running",
-      human: false,
-      view: "tiles",
-      params: {},
-      stage: 0,
-      stageName: "render",
-      taskCount: tiles.length,
-      canvas: { w: 128, h: 64 },
-      root: null,
-      counters: {
-        pending: tiles.length,
-        assigned: 0,
-        done: 0,
-        failed: 0,
-        reassigned: 0,
-        speculated: 0,
-        verified: 0,
-        mismatched: 0,
-      },
-      startedAt: 0,
-    },
-    queue: [],
-    tasks: tiles.map((t) => ({
-      taskId: t.id,
-      executionId: "e1",
-      stage: 0,
-      index: t.index,
-      kind: "run" as const,
-      status: "pending" as const,
-      holders: [],
-      attempts: 0,
-      output: null,
-      place: t.place,
-      contested: false,
-    })),
-    at: 0,
-  });
+  let state = applyMessage(
+    emptyState(),
+    snapshot(1, {
+      programs: undefined,
+      machine: undefined,
+      execution: executionView({
+        stageName: "render",
+        taskCount: tiles.length,
+        canvas: { w: 128, h: 64 },
+      }),
+      tasks: tiles.map((t) => taskView(t.id, t.index, { place: t.place })),
+      at: 0,
+    }),
+  );
   let seq = 1;
   const done = (id: string, hash = hashes.get(id) as string) => {
     seq += 1;
@@ -251,17 +215,10 @@ describe("tile view", () => {
     view.sync(f.state);
     view.sync(f.done("t1"));
     expect(view.stats.inFlight).toBe(1);
-    const other = applyMessage(emptyState(), {
-      t: "snapshot",
-      ...env,
-      seq: 50,
-      page: 0,
-      pages: 1,
-      nodes: [],
-      execution: null,
-      tasks: [],
-      at: 0,
-    });
+    const other = applyMessage(
+      emptyState(),
+      snapshot(50, { programs: undefined, queue: undefined, machine: undefined, at: 0 }),
+    );
     view.sync(other);
     (release as unknown as () => void)();
     await settle(view, () => view.stats.fetched === 1, 50);

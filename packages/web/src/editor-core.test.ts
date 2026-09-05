@@ -113,7 +113,7 @@ describe("params and manifest", () => {
   });
 });
 
-describe("buildBundle with a source and input references (WP7.6)", () => {
+describe("buildBundle with a source and input references", () => {
   test("the source is uploaded but not a file; referenced inputs are files but not uploaded", async () => {
     const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
     const source = new TextEncoder().encode("export function plan(): void {}");
@@ -233,7 +233,7 @@ describe("formatting", () => {
   });
 });
 
-describe("examples and the guide (WP6.6)", () => {
+describe("examples and the guide", () => {
   test("three examples, each with a parsed manifest, a note, and distinct sources", () => {
     const all = examples();
     expect(all.map((e) => e.key)).toEqual(["mandelbrot", "hello", "wordcount"]);
@@ -253,7 +253,7 @@ describe("examples and the guide (WP6.6)", () => {
     expect(md).toContain("# @tabframe/sdk-as");
     expect(md).toContain("## Writing a program");
     expect(md).toContain("fs.read");
-    // The repository-only sections stay out of the page (WP8.1).
+    // The repository-only sections stay out of the page.
     expect(md).not.toContain("## Compiling");
     expect(md).not.toContain("## Tooling");
   });
