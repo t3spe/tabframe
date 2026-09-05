@@ -1,7 +1,7 @@
 // M0 verification runbook (design §9.6, plan WP0.11): retires the MicroVM unknowns against the real
 // account. Launches a throwaway MicroVM from the deployed image with a short idle policy, exercises
 // the endpoint through the real proxy, and prints one line per check. Account ids and tokens never
-// reach stdout. Results are copied by hand into docs/m0-verification.md.
+// reach stdout. Results are printed for the operator.
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { GetAccountSettingsCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {

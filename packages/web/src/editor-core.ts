@@ -1,5 +1,5 @@
 // The editor's pure parts (design §5.6): the virtual filesystem a compile sees, what a compile
-// reports, the manifest and params the reviewer edits, the bundle a launch uploads, and the
+// reports, the manifest and params the person edits, the bundle a launch uploads, and the
 // checks on a dropped module. No DOM, no sockets, no compiler: the UI (editor.ts) and the worker
 // (compiler-worker.ts) are thin around this, and the tests run it under Bun.
 import {

@@ -2,7 +2,7 @@
 // browser tabs only, survives "kill half" mid-frame, and every tile hashes to the golden. Also
 // checks that tab uploads reached the bucket (a tile reads back through CloudFront with the right
 // hash) and that the control plane wrote its snapshot to S3. Prints one line per check; tokens
-// and account ids never reach stdout. Results are copied into docs/m1-verification.md.
+// and account ids never reach stdout. Results are printed for the operator.
 //   node packages/infra/scripts/verify-m1.ts [--tabs 3] [--kill-at 120] [--timeout 600]
 
 import { createHash } from "node:crypto";
