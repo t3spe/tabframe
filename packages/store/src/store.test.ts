@@ -6,8 +6,9 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
-import { StoreClient } from "./client.ts";
+import { type PresignRequester, StoreClient } from "./client.ts";
 import { BlobTooLarge } from "./driver.ts";
+import { StoreError } from "./errors.ts";
 import { HASH_RE, hex, hexToBase64, hexToBytes, sha256Hex } from "./hash.ts";
 import { LocalStore, parseRange } from "./local.ts";
 import { IMMUTABLE, S3Store, signedHeaders } from "./s3.ts";
@@ -46,8 +47,12 @@ describe("LocalStore", () => {
   test("parseRange", () => {
     expect(parseRange(undefined, 10)).toBeUndefined();
     expect(parseRange("bytes=0-3", 10)).toEqual({ start: 0, end: 3 });
+    expect(parseRange("bytes=5-", 10)).toEqual({ start: 5, end: 9 });
     expect(parseRange("bytes=-3", 10)).toEqual({ start: 7, end: 9 });
+    expect(parseRange("bytes=2-100", 10)).toEqual({ start: 2, end: 9 });
     expect(parseRange("bytes=12-", 10)).toBeNull();
+    expect(parseRange("bytes=-", 10)).toBeNull();
+    expect(parseRange("items=1-2", 10)).toBeNull();
   });
 });
 
@@ -180,34 +185,124 @@ describe("StoreClient", () => {
     expect(puts[0]?.size).toBe(3);
     expect(client.urlFor("h")).toBe("https://cdn/blob/h");
   });
-  test("get returns bytes, null on 404, throws on other failures, and sends Range", async () => {
+  test("get returns bytes, null on 404, throws a StoreError on other failures, and sends Range", async () => {
     const seen: string[] = [];
-    const client = new StoreClient(
-      "https://cdn/blob",
-      { presign: async () => [] },
-      async (url, init) => {
+    const client = new StoreClient({
+      base: "https://cdn/blob",
+      presign: async () => [],
+      fetch: async (url, init) => {
         seen.push(String((init?.headers as Record<string, string> | undefined)?.range ?? ""));
         if (url.endsWith("/missing")) return new Response(null, { status: 404 });
         if (url.endsWith("/broken")) return new Response(null, { status: 500 });
+        if (url.endsWith("/odd")) return new Response(null, { status: 400 });
         return new Response(bytes("tile"), { status: 206 });
       },
-    );
+      retry: { sleep: async () => {} },
+    });
     expect(await client.get("ok", { offset: 2, length: 4 })).toEqual(bytes("tile"));
     expect(seen[0]).toBe("bytes=2-5");
     expect(await client.get("missing")).toBeNull();
     await expect(client.get("broken")).rejects.toThrow(/500/);
+    await expect(client.get("broken")).rejects.toBeInstanceOf(StoreError);
+    await expect(client.get("odd")).rejects.toMatchObject({ kind: "http", status: 400 });
   });
-  test("a failed PUT throws", async () => {
+  test("a failed PUT throws a StoreError with the status; a 4xx is not retried", async () => {
+    let calls = 0;
     const client = new StoreClient(
       "b",
       { presign: async (items) => items.map((it) => ({ hash: it.hash, url: "u", headers: {} })) },
-      async () => new Response(null, { status: 403 }),
+      async () => {
+        calls++;
+        return new Response(null, { status: 403 });
+      },
     );
     await expect(client.put(bytes("x"))).rejects.toThrow(/failed: 403/);
+    await expect(client.put(bytes("x"))).rejects.toMatchObject({ kind: "http", status: 403 });
+    expect(calls).toBe(2);
+  });
+  test("5xx and 429 answers are retried with a doubling wait, then thrown", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const client = new StoreClient({
+      base: "https://cdn/blob",
+      presign: async () => [],
+      fetch: async () => {
+        calls++;
+        return new Response(null, { status: calls === 1 ? 429 : 503 });
+      },
+      retry: {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    });
+    await expect(client.get("h")).rejects.toMatchObject({ kind: "http", status: 503 });
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([250, 500]);
+  });
+  test("a fetch that throws is a network failure; one that never answers is a timeout", async () => {
+    const network = new StoreClient({
+      base: "b",
+      presign: async () => [],
+      fetch: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+      retry: { tries: 1 },
+    });
+    const err = await network.get("h").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StoreError);
+    expect(err).toMatchObject({ kind: "network", message: "Failed to fetch" });
+    expect((err as StoreError).cause).toBeInstanceOf(TypeError);
+    const hung = new StoreClient({
+      base: "b",
+      presign: async () => [],
+      fetch: (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
+      retry: { tries: 1, timeoutMs: 5 },
+    });
+    await expect(hung.get("h")).rejects.toMatchObject({ kind: "timeout" });
+  });
+  test("a presign that names no URL for a blob is a presign failure", async () => {
+    const client = new StoreClient({
+      base: "b",
+      presign: async () => [],
+      fetch: async () => new Response(null, { status: 200 }),
+    });
+    await expect(client.put(bytes("x"))).rejects.toMatchObject({ kind: "presign" });
+  });
+  test("putNamed answers under the caller's names, with one presign pass", async () => {
+    const asked: number[] = [];
+    const puts: string[] = [];
+    const presign: PresignRequester = {
+      presign: async (items) => {
+        asked.push(items.length);
+        return items.map((it) => ({ hash: it.hash, url: `https://s3/${it.hash}`, headers: {} }));
+      },
+    };
+    const client = new StoreClient({
+      base: "https://cdn/blob",
+      presign,
+      fetch: async (url) => {
+        puts.push(url);
+        return new Response(null, { status: 200 });
+      },
+    });
+    const out = await client.putNamed(
+      new Map([
+        ["output", bytes("a")],
+        ["/out/x", bytes("bb")],
+      ]),
+    );
+    expect(out.get("output")).toEqual({ hash: await sha256Hex(bytes("a")), size: 1 });
+    expect(out.get("/out/x")).toEqual({ hash: await sha256Hex(bytes("bb")), size: 2 });
+    expect(asked).toEqual([2]);
+    expect(puts.length).toBe(2);
   });
 });
 
-describe("a size-capped get (WP8.1)", () => {
+describe("a size-capped get", () => {
   test("a blob over the caller's cap is refused before it is handed over", async () => {
     const store = new LocalStore("http://s/blob");
     const hash = await store.put(new Uint8Array(2048));

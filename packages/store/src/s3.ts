@@ -2,12 +2,13 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
-  S3Client,
+  type S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { PresignedUpload, PresignItem, StoreDriver } from "./driver.ts";
 import { BlobTooLarge } from "./driver.ts";
 import { hexToBase64, sha256Hex } from "./hash.ts";
+import { isNotFound, s3Client } from "./s3-common.ts";
 
 export const IMMUTABLE = "public, max-age=31536000, immutable";
 
@@ -30,7 +31,7 @@ export class S3Store implements StoreDriver {
   }) {
     this.bucket = opts.bucket;
     this.base = opts.base.replace(/\/$/, "");
-    this.s3 = opts.client ?? new S3Client(opts.region ? { region: opts.region } : {});
+    this.s3 = s3Client(opts);
     this.expiresIn = opts.expiresInSeconds ?? 300;
   }
 
@@ -55,9 +56,8 @@ export class S3Store implements StoreDriver {
   async presign(items: PresignItem[]): Promise<PresignedUpload[]> {
     return Promise.all(
       items.map(async (it) => {
-        // A HeadObject that errors for any reason but "not found" (a throttle, a hiccup) must not
-        // fail the whole presign (WP8.1): the node would hang on it for ever. Sign instead; the
-        // upload is idempotent by hash.
+        // A HeadObject that fails for any reason but "not found" must not fail the presign, or the
+        // node hangs on it; signing anyway is safe because the upload is idempotent by hash.
         if (await this.exists(it.hash).catch(() => false))
           return { hash: it.hash, url: null, headers: {} };
         const input = {
@@ -68,16 +68,13 @@ export class S3Store implements StoreDriver {
           ContentLength: it.size,
           ChecksumSHA256: hexToBase64(it.hash),
         };
-        // The checksum must be a *signed header*, not a query parameter: S3 enforces the pin
-        // only when the header is part of the signature (a tampered body is refused with a
-        // checksum mismatch). Hoisted into the query it is accepted and ignored — verified
-        // against the real bucket (WP1.10).
+        // The checksum must be a *signed header*: S3 enforces the pin only then, and accepts but
+        // ignores it when hoisted into the query. The size is signed too, so a presign for one
+        // byte cannot accept a 5 GB object; browsers and undici send Content-Length themselves,
+        // which is why signedHeaders() leaves it out.
         const url = await getSignedUrl(this.s3, new PutObjectCommand(input), {
           expiresIn: this.expiresIn,
           unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
-          // The size is signed too (WP8.2): a presign for "1 byte" must not accept a 5 GB object
-          // whose key happens to be its own hash. Browsers and undici send Content-Length
-          // themselves, so the client never sets it — signedHeaders() leaves it out on purpose.
           signableHeaders: new Set(["x-amz-checksum-sha256", "content-length"]),
         });
         const headers = signedHeaders(url, input);
@@ -94,8 +91,8 @@ export class S3Store implements StoreDriver {
   async get(hash: string, maxBytes?: number): Promise<Uint8Array | null> {
     try {
       if (maxBytes !== undefined) {
-        // Ask the size first (WP8.1): a hash an untrusted party named must not pull a gigabyte
-        // into a one-gigabyte MicroVM.
+        // The size first: a hash an untrusted party named must not pull a gigabyte into a
+        // one-gigabyte MicroVM.
         const head = await this.s3.send(
           new HeadObjectCommand({ Bucket: this.bucket, Key: S3Store.key(hash) }),
         );
@@ -131,8 +128,9 @@ export class S3Store implements StoreDriver {
 }
 
 /**
- * The headers a client must send with a presigned PUT: exactly the ones the signature covers.
- * They are listed in the URL's X-Amz-SignedHeaders; the values come from the command input.
+ * The headers a client must send with a presigned PUT: exactly the ones the signature covers,
+ * read off the URL's X-Amz-SignedHeaders. S3 refuses a request carrying an unsigned x-amz-*
+ * header, so nothing beyond the signed set may be added.
  */
 export function signedHeaders(
   url: string,
@@ -156,14 +154,5 @@ export function signedHeaders(
     const v = known[name];
     if (v !== undefined && name !== "host" && name !== "content-length") out[name] = v;
   }
-  // Exactly the signed set and nothing more: S3 refuses a request carrying an unsigned
-  // x-amz-* header ("headers present in the request which were not signed"). With the current
-  // signer the checksum pin travels in the signed query string instead, and S3 enforces it
-  // there (verified against the real bucket, WP1.10).
   return out;
-}
-
-function isNotFound(err: unknown): boolean {
-  const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-  return e?.name === "NotFound" || e?.name === "NoSuchKey" || e?.$metadata?.httpStatusCode === 404;
 }
