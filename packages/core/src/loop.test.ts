@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
-import { pruneExecutions } from "./executions.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
 import {
   KEEP_ENDED_EXECUTIONS,
@@ -10,6 +9,7 @@ import {
   LOOP_BACKOFF_MIN_MS,
   YIELD_IDLE_MS,
 } from "./policy.ts";
+import { pruneExecutions } from "./retention.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "./snapshot.ts";
 
 /** The machine's default loop after failures: back off, doubling; success resets (D4, D19). */

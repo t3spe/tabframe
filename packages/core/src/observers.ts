@@ -11,8 +11,8 @@ export type EventBody = DistributiveOmit<Event, "v" | "gen" | "seq">;
 
 /** Stamp an event with the next sequence number and address it to every observer. */
 export function broadcast(ledger: Ledger, body: EventBody): Effect[] {
-  // The sequence advances whether or not anyone listens (WP8.3): the snapshot page memo keys on
-  // it, and a change nobody saw must still invalidate the pages the next subscriber gets.
+  // The sequence advances whether or not anyone listens: the snapshot page memo keys on it, and a
+  // change nobody saw must still invalidate the pages the next subscriber gets.
   const seq = ++ledger.meta.seq;
   if (ledger.observers.size === 0) return [];
   const msg = {
@@ -22,4 +22,9 @@ export function broadcast(ledger: Ledger, body: EventBody): Effect[] {
     ...body,
   } as ControlPlaneToObserver;
   return [...ledger.observers.keys()].map((connId) => ({ kind: "send", connId, msg }));
+}
+
+/** An error frame for one observer: a refusal with a code the dashboard can act on. */
+export function errorMsg(ledger: Ledger, code: string, message: string): ControlPlaneToObserver {
+  return { t: "error", v: PROTOCOL_VERSION, gen: ledger.meta.generation, code, message };
 }

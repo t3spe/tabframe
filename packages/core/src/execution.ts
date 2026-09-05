@@ -1,3 +1,6 @@
+// The execution state machine (design §5.4, §6.6, §6.7): queued, running through plan and stage
+// tasks with the store answering in between, ended. Nothing here kicks the scheduler or the loop;
+// `advance` does that once, after the event.
 import {
   AbiError,
   byteLength,
@@ -6,11 +9,8 @@ import {
   encodePlanInput,
   type FsManifest,
   fsManifest,
-  PROTOCOL_VERSION,
-  type ProgramManifest,
 } from "@tabframe/protocol";
 import type { Effect, FetchResult } from "./events.ts";
-import { forgetCloudCore } from "./fleet.ts";
 import {
   type BlobPurpose,
   type ExecutionRecord,
@@ -19,89 +19,45 @@ import {
   type FetchPurpose,
   type LaunchRequest,
   type Ledger,
-  type NodeRecord,
   type PutPurpose,
   queueEntry,
   type TaskRecord,
   taskView,
 } from "./ledger.ts";
+import { loopContinuation, loopEnded, loopMayRun, unyieldLoop, yieldLoop } from "./loop.ts";
 import { broadcast } from "./observers.ts";
-import {
-  KEEP_ENDED_EXECUTIONS,
-  KEEP_ENDED_TASKS,
-  LOOP_BACKOFF_MAX_MS,
-  LOOP_BACKOFF_MIN_MS,
-  PARAMS_MAX_BYTES,
-  PROGRAMS_CAP,
-  QUEUE_CAP,
-  STORE_ERRORS_MAX,
-  STORE_RETRY_MS,
-  YIELD_IDLE_MS,
-} from "./policy.ts";
-import { fill } from "./scheduler.ts";
+import { PARAMS_MAX_BYTES, QUEUE_CAP, STORE_ERRORS_MAX, STORE_RETRY_MS } from "./policy.ts";
 import { cancelOthers, newTask, setStatus, stageTasks } from "./tasks.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export function addProgram(
+/** The running execution, if any. */
+export function runningExecution(ledger: Ledger): ExecutionRecord | undefined {
+  return ledger.running ? ledger.executions.get(ledger.running) : undefined;
+}
+
+/** The execution matching `pred` that ended last; ties go to the earlier record. */
+export function latestExecution(
   ledger: Ledger,
-  bundle: string,
-  module: string,
-  manifest: ProgramManifest,
-  files: FsManifest["files"],
-  now: number,
-): Effect[] {
-  ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
-  const effects = broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
-  // Every program rides page 0 of every snapshot: past the cap the oldest ones nobody runs, refers
-  // to, or loops on are retired.
-  const live = [...ledger.programs.values()].filter((p) => !p.retired);
-  if (live.length > PROGRAMS_CAP) {
-    const referenced = new Set([...ledger.executions.values()].map((e) => e.bundle));
-    if (ledger.config.defaultLoop) referenced.add(ledger.config.defaultLoop.bundle);
-    const spare = live
-      .filter((p) => p.bundle !== bundle && !referenced.has(p.bundle))
-      .sort((a, b) => a.addedAt - b.addedAt);
-    for (const p of spare.slice(0, live.length - PROGRAMS_CAP))
-      effects.push(...retireProgram(ledger, p.bundle));
+  pred: (e: ExecutionRecord) => boolean,
+): ExecutionRecord | undefined {
+  let latest: ExecutionRecord | undefined;
+  for (const e of ledger.executions.values()) {
+    if (!pred(e)) continue;
+    if (!latest || (e.endedAt ?? 0) > (latest.endedAt ?? 0)) latest = e;
   }
-  return effects;
+  return latest;
 }
 
-/**
- * A newer bundle ships under this program's name: the record is hidden and refuses launches, so
- * the follow-up chain of the old frame ends, and it is dropped once no execution refers to it —
- * `fill` and inheritance still need the module and files of one that does.
- */
-export function retireProgram(ledger: Ledger, bundle: string): Effect[] {
-  const program = ledger.programs.get(bundle);
-  if (!program || program.retired) return [];
-  program.retired = true;
-  const effects = broadcast(ledger, {
-    t: "programRetired",
-    program: bundle,
-    name: program.manifest.name,
-  });
-  dropUnreferencedRetired(ledger);
-  return effects;
+/** Every task of an execution, all stages, in stage and index order (for snapshots). */
+export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[] {
+  return [...ledger.tasks.values()]
+    .filter((t) => t.executionId === executionId)
+    .sort((a, b) => a.stage - b.stage || a.index - b.index || (a.kind === "plan" ? -1 : 1));
 }
 
-function dropUnreferencedRetired(ledger: Ledger): void {
-  for (const program of ledger.programs.values()) {
-    if (!program.retired) continue;
-    let referenced = false;
-    for (const e of ledger.executions.values()) {
-      if (e.bundle === program.bundle) {
-        referenced = true;
-        break;
-      }
-    }
-    if (!referenced) ledger.programs.delete(program.bundle);
-  }
-}
-
-/** Queue an execution: human launches go ahead of automatic continuations (design §6.7). */
+/** Queue an execution and start it if the machine is idle; human launches go ahead of automatic continuations (design §6.7). */
 export function enqueue(
   ledger: Ledger,
   req: LaunchRequest,
@@ -116,7 +72,7 @@ export function enqueue(
     return { effects: [], executionId: null, error: `queue full (${QUEUE_CAP})` };
   // A `persist` program inherits the latest finished run of itself unless told otherwise (D5).
   const inherit = req.inherit ?? (program.manifest.persist ? "latest" : null);
-  const inherited = resolveInherit(ledger, { ...req, inherit });
+  const inherited = resolveInherit(ledger, req.bundle, inherit);
   if (req.inherit && !inherited)
     return { effects: [], executionId: null, error: "nothing to inherit" };
   const executionId = `e${++ledger.meta.executionCounter}`;
@@ -167,22 +123,17 @@ export function enqueue(
   return { effects, executionId };
 }
 
-function resolveInherit(ledger: Ledger, req: LaunchRequest): ExecutionRecord | null {
-  if (!req.inherit) return null;
-  if (req.inherit !== "latest") {
-    const e = ledger.executions.get(req.inherit);
+function resolveInherit(
+  ledger: Ledger,
+  bundle: string,
+  inherit: string | "latest" | null,
+): ExecutionRecord | null {
+  if (!inherit) return null;
+  if (inherit !== "latest") {
+    const e = ledger.executions.get(inherit);
     return e && e.status === "done" ? e : null;
   }
-  let latest: ExecutionRecord | null = null;
-  for (const e of ledger.executions.values()) {
-    if (
-      e.bundle === req.bundle &&
-      e.status === "done" &&
-      (!latest || (e.endedAt ?? 0) > (latest.endedAt ?? 0))
-    )
-      latest = e;
-  }
-  return latest;
+  return latestExecution(ledger, (e) => e.bundle === bundle && e.status === "done") ?? null;
 }
 
 /** Start the next queued execution when nothing is running; the first act is a plan task. */
@@ -195,7 +146,7 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
     ledger.queue.shift();
     return maybeStart(ledger, now);
   }
-  // The loop's pause holds its queued continuations too, not only new launches: after a person's
+  // The loop's gate holds its queued continuations too, not only new launches: after a person's
   // launch ends, the follow-up the previous frame left in the queue would otherwise take the
   // stage at once. A person's own launch never waits.
   if (!queued.human && (!loopMayRun(ledger, now) || now < (ledger.meta.loopPausedUntil ?? 0)))
@@ -215,8 +166,7 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
     );
     return effects;
   }
-  effects.push(...createPlanTask(ledger, exec, 0, now));
-  effects.push(...fill(ledger, now));
+  createPlanTask(ledger, exec, 0, now);
   return effects;
 }
 
@@ -322,8 +272,7 @@ function inheritFrom(
       code: "expired-root",
       message: `the filesystem inherited from ${exec.inheritedFrom} is ${why}; starting from the bundle`,
     });
-    effects.push(...createPlanTask(ledger, exec, 0, now));
-    effects.push(...fill(ledger, now));
+    createPlanTask(ledger, exec, 0, now);
     return effects;
   }
   exec.files = { ...inherited, ...(program?.files ?? {}) };
@@ -341,12 +290,7 @@ function parseManifest(bytes: Uint8Array): FsManifest["files"] | null {
 }
 
 /** The planner runs on a core like any task (D6); its input is frozen here. */
-function createPlanTask(
-  ledger: Ledger,
-  exec: ExecutionRecord,
-  stage: number,
-  now: number,
-): Effect[] {
+function createPlanTask(ledger: Ledger, exec: ExecutionRecord, stage: number, now: number): void {
   const input = encodePlanInput({
     stage,
     params: exec.params,
@@ -356,13 +300,8 @@ function createPlanTask(
       stageCount: Math.max(0, exec.stage + 1),
     },
   });
-  exec.planTaskId = newTask(
-    ledger,
-    exec,
-    { stage, index: 0, kind: "plan", input, place: null },
-    now,
-  ).taskId;
-  return [];
+  const task = newTask(ledger, exec, { stage, index: 0, kind: "plan", input, place: null }, now);
+  exec.planTaskId = task.taskId;
 }
 
 /** A settled task may advance its execution: a plan spec to fetch, a stage to fold, a failure to raise. */
@@ -447,7 +386,7 @@ function onStageSpec(
     exec.stageTaskIds.push(task.taskId);
     views.push(taskView(task));
   }
-  const effects = broadcast(ledger, {
+  return broadcast(ledger, {
     t: "stageStarted",
     executionId: exec.executionId,
     stage,
@@ -456,8 +395,6 @@ function onStageSpec(
     canvas: exec.canvas,
     tasks: views.slice(0, 256),
   });
-  effects.push(...fill(ledger, now));
-  return effects;
 }
 
 /**
@@ -523,7 +460,8 @@ export function onManifestStored(
   if (purpose.stage === -1) {
     // The initial filesystem of an execution that inherited one: planning can start now.
     exec.root = hash;
-    return [...createPlanTask(ledger, exec, 0, now), ...fill(ledger, now)];
+    createPlanTask(ledger, exec, 0, now);
+    return [];
   }
   exec.files = stageFiles(ledger, exec).files;
   exec.root = hash;
@@ -533,8 +471,7 @@ export function onManifestStored(
     stage: purpose.stage,
     root: hash,
   });
-  effects.push(...createPlanTask(ledger, exec, purpose.stage + 1, now));
-  effects.push(...fill(ledger, now));
+  createPlanTask(ledger, exec, purpose.stage + 1, now);
   return effects;
 }
 
@@ -559,7 +496,7 @@ function storeError(ledger: Ledger, exec: ExecutionRecord, reason: string, now: 
  * on every tick once `STORE_RETRY_MS` have passed.
  */
 export function resumePending(ledger: Ledger, now: number, force = false): Effect[] {
-  const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+  const exec = runningExecution(ledger);
   if (exec?.status !== "running" || !exec.awaiting) return [];
   if (!force && now - exec.awaiting.since < STORE_RETRY_MS) return [];
   return issue(ledger, exec, exec.awaiting.purpose, now);
@@ -586,274 +523,73 @@ export function pendingPurpose(ledger: Ledger, exec: ExecutionRecord): BlobPurpo
   return null;
 }
 
-function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
-  return !exec.human && ledger.config.defaultLoop?.bundle === exec.bundle;
+type End = { status: "done" } | { status: "failed" | "cancelled"; reason: string };
+
+/**
+ * The one way an execution ends: open tasks settled so nothing dangles (design §6.10), the loop
+ * told so it can back off or reset, the yield to a person, and the announcement. Who runs next is
+ * `advance`'s business.
+ */
+function endExecution(ledger: Ledger, exec: ExecutionRecord, end: End, now: number): Effect[] {
+  const effects: Effect[] = [];
+  if (exec.status === "queued") ledger.queue = ledger.queue.filter((id) => id !== exec.executionId);
+  if (exec.status === "running") {
+    const reason = end.status === "done" ? "execution finished" : end.reason;
+    for (const task of stageTasks(ledger, exec)) {
+      effects.push(...cancelOthers(ledger, task, null));
+      if (task.status === "pending" || task.status === "assigned") {
+        setStatus(exec, task, "failed");
+        task.failure = reason;
+        task.doneAt = now;
+      }
+    }
+    if (end.status !== "done") exec.failure = end.reason;
+  }
+  exec.status = end.status;
+  exec.endedAt = now;
+  exec.awaiting = null;
+  if (ledger.running === exec.executionId) ledger.running = null;
+  loopEnded(ledger, exec, end.status, now);
+  effects.push(...yieldLoop(ledger, exec));
+  effects.push(
+    ...broadcast(
+      ledger,
+      end.status === "done"
+        ? {
+            t: "executionDone",
+            executionId: exec.executionId,
+            root: exec.root,
+            followUp: exec.followUp,
+          }
+        : { t: "executionFailed", executionId: exec.executionId, reason: end.reason },
+    ),
+  );
+  return effects;
 }
 
 function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
-  const effects: Effect[] = [];
-  // Nothing should be open by now; whatever is gets cancelled so no node holds finished work.
-  for (const task of stageTasks(ledger, exec)) effects.push(...cancelOthers(ledger, task, null));
-  exec.status = "done";
-  exec.endedAt = now;
-  ledger.running = null;
-  if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
-  effects.push(...yieldLoop(ledger, exec));
-  effects.push(
-    ...broadcast(ledger, {
-      t: "executionDone",
-      executionId: exec.executionId,
-      root: exec.root,
-      followUp: exec.followUp,
-    }),
-  );
-  // Only the machine's default loop continues on its own (D19), and not after a Stop or while it
-  // has yielded to a person.
-  if (
-    !exec.human &&
-    !ledger.meta.loopStopped &&
-    !ledger.meta.loopYielded &&
-    exec.followUp &&
-    ledger.config.defaultLoop &&
-    exec.bundle === ledger.config.defaultLoop.bundle &&
-    ledger.observers.size > 0
-  ) {
-    effects.push(
-      ...enqueue(
-        ledger,
-        { bundle: exec.bundle, params: exec.followUp, human: false, inherit: exec.executionId },
-        now,
-      ).effects,
-    );
-  }
-  effects.push(...maybeStart(ledger, now));
+  const effects = endExecution(ledger, exec, { status: "done" }, now);
+  const next = loopContinuation(ledger, exec);
+  if (next) effects.push(...enqueue(ledger, next, now).effects);
   return effects;
 }
 
-/** Open tasks of an ending execution are settled as failed so nothing dangles (design §6.10). */
-function settleOpenTasks(
+function failExecution(
   ledger: Ledger,
   exec: ExecutionRecord,
   reason: string,
   now: number,
 ): Effect[] {
-  const effects: Effect[] = [];
-  for (const task of stageTasks(ledger, exec)) {
-    effects.push(...cancelOthers(ledger, task, null));
-    if (task.status === "pending" || task.status === "assigned") {
-      setStatus(exec, task, "failed");
-      task.failure = reason;
-      task.doneAt = now;
-    }
-  }
-  return effects;
+  return endExecution(ledger, exec, { status: "failed", reason }, now);
 }
 
-export function failExecution(
-  ledger: Ledger,
-  exec: ExecutionRecord,
-  reason: string,
-  now: number,
-): Effect[] {
-  const effects: Effect[] = [];
-  effects.push(...settleOpenTasks(ledger, exec, reason, now));
-  exec.status = "failed";
-  exec.failure = reason;
-  exec.endedAt = now;
-  effects.push(...yieldLoop(ledger, exec));
-  if (ledger.running === exec.executionId) ledger.running = null;
-  if (isDefaultLoop(ledger, exec)) {
-    // A failing loop must not spin: back off, doubling, before the next automatic launch.
-    const delay = Math.min(
-      Math.max(ledger.meta.loopBackoffMs * 2, LOOP_BACKOFF_MIN_MS),
-      LOOP_BACKOFF_MAX_MS,
-    );
-    ledger.meta.loopBackoffMs = delay;
-    ledger.meta.loopPausedUntil = now + delay;
-  }
-  effects.push(
-    ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
-  );
-  effects.push(...maybeStart(ledger, now));
-  return effects;
-}
-
+/** A person or a control ended it; nothing happens to one that has already ended. */
 export function cancelExecution(
   ledger: Ledger,
   exec: ExecutionRecord,
   reason: string,
   now: number,
 ): Effect[] {
-  const effects: Effect[] = [];
-  if (exec.status === "queued") {
-    ledger.queue = ledger.queue.filter((id) => id !== exec.executionId);
-    exec.status = "cancelled";
-    exec.endedAt = now;
-    effects.push(...yieldLoop(ledger, exec));
-    effects.push(
-      ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
-    );
-    return effects;
-  }
-  if (exec.status !== "running") return effects;
-  effects.push(...settleOpenTasks(ledger, exec, reason, now));
-  exec.status = "cancelled";
-  exec.failure = reason;
-  exec.endedAt = now;
-  ledger.running = null;
-  effects.push(...yieldLoop(ledger, exec));
-  effects.push(
-    ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
-  );
-  return effects;
-}
-
-/** Every task of an execution, all stages, in stage and index order (for snapshots). */
-export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[] {
-  return [...ledger.tasks.values()]
-    .filter((t) => t.executionId === executionId)
-    .sort((a, b) => a.stage - b.stage || a.index - b.index || (a.kind === "plan" ? -1 : 1));
-}
-
-/**
- * The loop yields to people (design §6.7): once a person's launch has ended — done, failed, or
- * killed — the loop launches nothing, neither a new frame nor a queued continuation, until Start
- * is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the stage
- * for as long as the person is around.
- */
-function yieldLoop(ledger: Ledger, exec: ExecutionRecord): Effect[] {
-  if (!exec.human || ledger.meta.loopYielded) return [];
-  ledger.meta.loopYielded = true;
-  return broadcast(ledger, { t: "loopYielded", yielded: true });
-}
-
-/** The loop takes the stage back — ten quiet minutes have passed — and says so. */
-function unyieldLoop(ledger: Ledger): Effect[] {
-  if (!ledger.meta.loopYielded) return [];
-  ledger.meta.loopYielded = false;
-  return broadcast(ledger, { t: "loopYielded", yielded: false });
-}
-
-/** The loop's gate for automatic work: stopped, yielded and someone still around, or paused. */
-export function loopMayRun(ledger: Ledger, now: number): boolean {
-  if (ledger.meta.loopStopped || ledger.session.pausedBy !== null) return false;
-  // Nobody has touched the page for a while: the loop may come back (`unyieldLoop` when it does).
-  return !ledger.meta.loopYielded || now - ledger.meta.lastInteractionAt >= YIELD_IDLE_MS;
-}
-
-/** The default loop keeps the machine busy while someone is watching (D4, §6.8). */
-export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
-  const loop = ledger.config.defaultLoop;
-  if (!loop || ledger.running || ledger.queue.length > 0 || ledger.observers.size === 0) return [];
-  if (!loopMayRun(ledger, now)) return []; // stopped, yielded to a person, or paused
-  if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
-  if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
-  if (!ledger.programs.has(loop.bundle)) return [];
-  const released = unyieldLoop(ledger);
-  return [
-    ...released,
-    ...enqueue(
-      ledger,
-      { bundle: loop.bundle, params: loop.params, human: false, inherit: null },
-      now,
-    ).effects,
-  ];
-}
-
-/** Demo controls (design §6.7): pick victims across the whole cluster and command them. */
-export function commandHalf(
-  ledger: Ledger,
-  op: "close" | "freeze" | "throttle",
-  rng: () => number,
-): { effects: Effect[]; victims: string[] } {
-  const nodes = [...ledger.nodes.values()];
-  for (let i = nodes.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    const a = nodes[i] as NodeRecord;
-    nodes[i] = nodes[j] as NodeRecord;
-    nodes[j] = a;
-  }
-  const victims = nodes.slice(0, Math.ceil(nodes.length / 2));
-  const effects: Effect[] = [];
-  for (const v of victims) {
-    // Freeze is terminal (design §4, §6.7): a frozen worker computes nothing and is declared gone
-    // within the silence window. Downgrading its record to `throttle` would make `fill` hand it
-    // work it can never do, so a later throttle leaves a frozen node frozen.
-    if (op === "throttle" && v.commanded !== "freeze") v.commanded = "throttle";
-    if (op === "freeze") v.commanded = "freeze";
-    effects.push({
-      kind: "send",
-      connId: v.connId,
-      msg: { t: "command", v: PROTOCOL_VERSION, gen: ledger.meta.generation, op },
-    });
-    // A killed or frozen cloud core is a MicroVM with nothing left to do: a closed node never
-    // reconnects and a frozen one computes nothing, so the VM goes with the command and the fleet
-    // policy launches a fresh one (design §6.8).
-    if (op !== "throttle" && v.kind === "core") {
-      for (const core of [...ledger.cores.values()]) {
-        if (core.nodeId === v.nodeId) effects.push(forgetCloudCore(ledger, core.microvmId));
-      }
-    }
-  }
-  return { effects, victims: victims.map((v) => v.nodeId) };
-}
-
-export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[] } {
-  const effects: Effect[] = [];
-  const victims: string[] = [];
-  for (const n of ledger.nodes.values()) {
-    if (n.commanded !== "throttle") continue;
-    n.commanded = null;
-    victims.push(n.nodeId);
-    effects.push({
-      kind: "send",
-      connId: n.connId,
-      msg: { t: "command", v: PROTOCOL_VERSION, gen: ledger.meta.generation, op: "resume" },
-    });
-  }
-  return { effects, victims };
-}
-
-/**
- * Keep the ledger small (design §9.4): ended executions beyond the most recent `keep` are dropped
- * outright, and the tasks of ended executions beyond the most recent `keepTasks` are dropped while
- * the record stays — a record is a few hundred bytes, a frame's tasks are hundreds of kilobytes.
- * Results live in the store by hash and a continuation copies what it inherits at enqueue, so
- * nothing live points at what is pruned.
- */
-export function pruneExecutions(
-  ledger: Ledger,
-  keep = KEEP_ENDED_EXECUTIONS,
-  keepTasks = KEEP_ENDED_TASKS,
-): string[] {
-  const ended = [...ledger.executions.values()]
-    .filter((e) => e.status === "done" || e.status === "failed" || e.status === "cancelled")
-    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
-  const dropRecords = ended.slice(keep).map((e) => e.executionId);
-  // Whose tasks still exist? The first task tells; once it is gone the rest went with it, so an
-  // already-pruned execution costs nothing on later ticks.
-  const dropTasks = new Set(
-    ended
-      .slice(keepTasks)
-      .filter((e) => {
-        const probe = e.planTaskId ?? e.stageTaskIds[0];
-        return probe !== undefined && ledger.tasks.has(probe);
-      })
-      .map((e) => e.executionId),
-  );
-  if (dropTasks.size > 0) {
-    for (const [taskId, task] of ledger.tasks) {
-      if (dropTasks.has(task.executionId)) ledger.tasks.delete(taskId);
-    }
-  }
-  // The file map goes with the tasks: a frame's entries of hash and size, 32 frames deep, were
-  // most of the deployed snapshot. The root hash stays, and inheritance reads the map back from
-  // the root's manifest blob. Judged on its own, not with the task probe: an adopted ledger whose
-  // tasks went before this rule existed still has the maps to lose.
-  for (const e of ended.slice(keepTasks)) {
-    if (Object.keys(e.files).length > 0) e.files = {};
-  }
-  for (const id of dropRecords) ledger.executions.delete(id);
-  dropUnreferencedRetired(ledger);
-  return dropRecords;
+  if (exec.status !== "queued" && exec.status !== "running") return [];
+  return endExecution(ledger, exec, { status: "cancelled", reason }, now);
 }

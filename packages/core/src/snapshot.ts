@@ -2,7 +2,7 @@
 // successor. The format stays at version 1: a field added later takes its default on the way in.
 import { fromBase64, toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
-import { pendingPurpose, resumePending } from "./executions.ts";
+import { pendingPurpose, resumePending } from "./execution.ts";
 import {
   type CloudCoreRecord,
   type ExecutionRecord,

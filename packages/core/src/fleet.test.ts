@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ensureDefaultLoop } from "./executions.ts";
+import { advance } from "./advance.ts";
 import { cloudCoreGone, cloudCoreLaunched, microvmIdOfHost, sleepReason } from "./fleet.ts";
 import { BUNDLE, harness } from "./harness.ts";
 import {
@@ -243,12 +243,10 @@ describe("the sleep policy", () => {
     expect(h.ledger.running).not.toBeNull();
     h.ledger.running = null; // the frame ended
     h.ledger.meta.awake = false;
-    expect(ensureDefaultLoop(h.ledger, h.now)).toEqual([]);
+    expect(advance(h.ledger, h.now)).toEqual([]);
     h.ledger.meta.awake = true;
     expect(
-      ensureDefaultLoop(h.ledger, h.now).some(
-        (e) => e.kind === "send" && e.msg.t === "executionQueued",
-      ),
+      advance(h.ledger, h.now).some((e) => e.kind === "send" && e.msg.t === "executionQueued"),
     ).toBe(true);
   });
 

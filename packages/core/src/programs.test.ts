@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { controlPlaneToObserver } from "@tabframe/protocol";
-import { pruneExecutions } from "./executions.ts";
 import { BUNDLE, H, harness } from "./harness.ts";
+import { pruneExecutions } from "./retention.ts";
 
 /** A late observer learns the programs from the snapshot, not only from programAdded. */
 describe("programs in the snapshot", () => {
