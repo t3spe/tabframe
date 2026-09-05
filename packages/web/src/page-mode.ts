@@ -1,7 +1,7 @@
 // What the page's query says about this tab: demo or live, observer or lender, the dashboard or one
 // panel full-width, and what the demo should do. Pure, so the links between tabs are unit-tested.
 import { HASH_RE } from "@tabframe/store/hash";
-import { DEMO_CYCLE, type DemoProgram } from "./demo.ts";
+import { DEMO_CYCLE, type DemoProgram } from "./demo/content.ts";
 import type { FileEntry } from "./result.ts";
 
 /** The panels a tab can show alone, by query name → section id. */
