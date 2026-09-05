@@ -62,6 +62,8 @@ export interface DemoOptions {
   /** Pause once the first execution has ended (done or failed), so its result stays on screen. */
   holdAfterFirst?: boolean;
   timers?: DemoTimers;
+  /** Content hashing; a test passes a synchronous one so a frame settles in microtasks. */
+  hash?: (bytes: Uint8Array) => Promise<string>;
 }
 
 export interface DemoHandle {
@@ -119,6 +121,7 @@ export class DemoMachine {
   readonly pauseAtDone: number;
   readonly clock: DemoClock;
   readonly timers: DemoTimers;
+  readonly hash: (bytes: Uint8Array) => Promise<string>;
   readonly rng = mulberry32(7);
   story: Story = {
     beat: () => {},
@@ -157,6 +160,7 @@ export class DemoMachine {
     this.pauseAtDone = opts.pauseAtDone ?? 0;
     this.clock = opts.clock ?? { now: () => Date.now(), set: () => {} };
     this.timers = opts.timers ?? realTimers;
+    this.hash = opts.hash ?? sha256Hex;
     this.vnow = this.clock.now();
     this.cycleAt = Math.max(0, DEMO_CYCLE.indexOf(opts.startWith ?? "mandelbrot"));
   }
@@ -206,7 +210,7 @@ export class DemoMachine {
 
   /** Put bytes in the store under their true hash; the dashboard fetches and re-hashes them. */
   async put(bytes: Uint8Array): Promise<string> {
-    const hash = await sha256Hex(bytes);
+    const hash = await this.hash(bytes);
     this.opts.store.set(hash, bytes);
     return hash;
   }
@@ -426,7 +430,7 @@ export class DemoMachine {
   complete(task: DemoTask, n: DemoNode, attempt: number): void {
     if (task.running.get(n.nodeId) !== attempt) return;
     const bytes = this.bytesFor(task, false);
-    sha256Hex(bytes)
+    this.hash(bytes)
       .then(async (hash) => {
         if (this.paused || task.running.get(n.nodeId) !== attempt) return;
         task.running.delete(n.nodeId);

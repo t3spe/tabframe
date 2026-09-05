@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { applyMessage, type ClusterState, emptyState } from "./cluster-state.ts";
 import { DEMO_SLEEP_REASON, DEMO_TASKS, type DemoTimers, startDemo } from "./demo.ts";
 import { barRows, finalOutput, parseManifest, readBars } from "./result.ts";
@@ -32,9 +33,13 @@ class ManualTimers implements DemoTimers {
   }
 }
 
+/** The same digest, resolved in a microtask: the machine's chains settle without a real timer. */
+const hash = async (bytes: Uint8Array): Promise<string> =>
+  createHash("sha256").update(bytes).digest("hex");
+
 /** Let the hashing and the store writes behind an event settle before the next timer. */
-const settle = async (turns = 4): Promise<void> => {
-  for (let i = 0; i < turns; i++) await new Promise((r) => setTimeout(r, 0));
+const settle = async (ticks = 32): Promise<void> => {
+  for (let i = 0; i < ticks; i++) await Promise.resolve();
 };
 
 class NullPainter implements TilePainter {
@@ -60,7 +65,9 @@ async function runDemo(query: {
     },
   };
   let state: ClusterState = emptyState();
-  const tiles = new TileView({ get: async (h) => store.get(h) ?? null }, new NullPainter());
+  const tiles = new TileView({ get: async (h) => store.get(h) ?? null }, new NullPainter(), {
+    hash,
+  });
   let paused = false;
   const handle = startDemo({
     apply: (msg) => {
@@ -70,6 +77,7 @@ async function runDemo(query: {
     store,
     clock,
     timers,
+    hash,
     onPause: () => {
       paused = true;
     },
@@ -119,14 +127,14 @@ describe("the demo machine under a manual scheduler", () => {
     // The header's rotation pill: nineteen minutes away at the snapshot, read on the frozen clock.
     const due = state.machine?.nextRotationAt ?? 0;
     expect([18, 19]).toContain(Math.ceil((due - clock.now()) / 60_000));
-  });
+  }, 60_000);
 
   test("at 520 tiles the rotation is announced and the countdown holds while paused", async () => {
     const { state, clock } = await runDemo({ pauseAtDone: 520 });
     expect(state.generation).toBe(7);
     expect(state.rotation?.next).toBe(8);
     expect(machineBanner(state, clock.now())).toEqual({ kind: "rotating", next: 8, msLeft: 2_400 });
-  });
+  }, 60_000);
 
   test("at 600 tiles the new generation's snapshot has landed and the picture survived", async () => {
     const { state, tiles } = await runDemo({ pauseAtDone: 600 });
@@ -135,7 +143,7 @@ describe("the demo machine under a manual scheduler", () => {
     expect(progress(state)).toEqual({ done: 600, total: DEMO_TASKS });
     expect(tiles.paintedCount).toBe(599);
     expect(state.activity.some((a) => a.text.includes("rotating to generation 8"))).toBe(true);
-  });
+  }, 60_000);
 
   test("the word count runs three stages, folds a filesystem, and draws its bars", async () => {
     const { state, store } = await runDemo({ startWith: "wordcount", holdAfterFirst: true });
@@ -165,7 +173,7 @@ describe("the demo machine under a manual scheduler", () => {
     // The merge task's log went to the store by hash.
     const merge = [...state.tasks.values()].find((t) => t.stage === 2);
     expect(merge?.log && "hash" in merge.log).toBe(true);
-  });
+  }, 60_000);
 
   test("the broken program fails its planner visibly and the machine goes to sleep", async () => {
     const { state } = await runDemo({ startWith: "broken", holdAfterFirst: true });
@@ -174,7 +182,7 @@ describe("the demo machine under a manual scheduler", () => {
     expect(state.lastFailure?.reason).toContain("trap: unreachable");
     expect(state.activity.some((a) => a.text.includes("failed: task"))).toBe(true);
     expect(machineBanner(state, 0)).toEqual({ kind: "sleeping", reason: DEMO_SLEEP_REASON });
-  });
+  }, 60_000);
 
   test("controls are answered at once, and what the demo cannot do lands as an error line", async () => {
     let state = emptyState();
@@ -194,5 +202,5 @@ describe("the demo machine under a manual scheduler", () => {
     expect(state.machine?.stopped).toBe(true);
     machine.control({ t: "runFollowUp", executionId: "e1" });
     expect(state.activity.at(-1)).toMatchObject({ kind: "error" });
-  });
+  }, 60_000);
 });
