@@ -58,25 +58,7 @@ rotation.
 
 ## Architecture
 
-```
-  browser tabs                        cloud cores (Lambda MicroVMs, same image)
-  ┌─────────────────┐                 ┌─────────────────┐
-  │ orchestrator ─┐ │  ...            │ orchestrator ─┐ │  ...
-  │ sandbox worker│ │                 │ sandbox worker│ │
-  └───────┬───────┘ │                 └───────┬───────┘ │
-          │ WebSocket (hello, assign, result-by-hash, presign)
-          ▼                                   ▼
-  ┌──────────────────────────────────────────────────────┐   hourly rotation:
-  │ control plane  ·  one Lambda MicroVM, generation g   │   launch g+1 → handover →
-  │   ledger: nodes, executions, tasks, hashes           │   adopt → flip pointer →
-  │   scheduler: fill, deadlines, twins, verification    │   drain g (jittered)
-  └───────┬────────────────────────────┬─────────────────┘
-          │ snapshot every 5 s          │ presigned PUT / GET by hash
-          ▼                             ▼
-     S3 snapshots                  S3 blobs behind CloudFront  ◄── page, blobs, uploads
-                                        ▲
-  fleet: session (vends endpoint + token) · rotate (hourly, also the deploy path) · SSM pointer
-```
+![Architecture: browser tabs and cloud cores run the same orchestrator and talk WebSocket to one control plane on a Lambda MicroVM; its ledger is snapshotted to S3 every five seconds and handed to the successor at the hourly rotation; results and the page live in S3 behind CloudFront; the fleet's session and rotate functions and an SSM pointer stand beside it.](docs/diagrams/architecture.svg)
 
 - **Orchestrator** (`packages/node`, what a core runs): one Web Worker owns the socket and the
   heartbeat; a disposable sandbox worker executes program code and is terminated at the deadline.
