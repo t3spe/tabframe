@@ -46,9 +46,6 @@ export function createHookHost(deps: HookHostDeps): HookHost {
         fleetSecret: payload.fleetSecret,
         sessionUrl: payload.sessionUrl ?? state.sessionUrl,
       });
-      // Cores follow the version this process runs: a rolled-back control plane must not launch
-      // cores at the image's latest.
-      if (microvmId) lifecycle.learnImageVersion(microvmId);
       log("run", {
         microvmId,
         role: payload.role,
@@ -71,6 +68,9 @@ export function createHookHost(deps: HookHostDeps): HookHost {
         // An adopt may have landed while the snapshot was read; its ledger stands.
         if (state.ledger) return refuse("role already assumed", { role: state.role });
         lifecycle.becomeControlPlane(payload.storeBase ?? deps.storeBase, adopted);
+        // Asked once the fleet exists: cores follow the version this process runs, so a rolled-back
+        // control plane does not launch cores at the image's latest.
+        if (microvmId) lifecycle.learnImageVersion(microvmId);
         deps.authority.awaitNaming();
         return { ok: true, role: "control-plane" };
       }

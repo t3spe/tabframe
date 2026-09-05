@@ -42,7 +42,7 @@ describe("parsePointer", () => {
         generation: 13,
         at: 1_700_000_000_000,
       },
-      // Both must survive SSM (WP8.3): `retiring` was written and never read back before.
+      // Both must survive SSM: a field the parser drops is a rotation step that never runs.
       retiring: { microvmId: "mvm-0", endpoint: "mvm-0.on.aws" },
       pinnedImageVersion: "2",
     };

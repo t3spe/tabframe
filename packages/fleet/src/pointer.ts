@@ -17,13 +17,13 @@ export interface Pointer {
    */
   pending: { microvmId: string; endpoint: string | null; generation: number; at?: number } | null;
   /**
-   * The predecessor a rotation promoted over and has not yet drained and terminated (WP8.2). A
+   * The predecessor a rotation promoted over and has not yet drained and terminated. A
    * rotation that dies between the pointer flip and the retire leaves this behind; the next run
    * finishes the retire instead of leaving a second active generation running for hours.
    */
   retiring?: { microvmId: string; endpoint: string | null } | null;
   /**
-   * An image version the operator pinned with `mise run rollback` (WP8.3): every launch until
+   * An image version the operator pinned with `mise run rollback`: every launch until
    * `up` clears it boots this version, hourly rotations included. Null means the image's latest.
    */
   pinnedImageVersion?: string | null;
@@ -73,8 +73,7 @@ export function parsePointer(raw: string | undefined | null): Pointer {
     imageVersion: asString(o.imageVersion),
     updatedAt: asString(o.updatedAt) ?? "",
     pending: parsePending(o.pending),
-    // Both survive a round trip through SSM (WP8.3: `retiring` used to be written and never read
-    // back, so the retire a dead run left behind was never finished in production).
+    // Both survive a round trip through SSM: a field the parser drops is a rotation step that never runs.
     retiring: parseRetiring(o.retiring),
     pinnedImageVersion: asString(o.pinnedImageVersion),
   };

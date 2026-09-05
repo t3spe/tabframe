@@ -344,6 +344,10 @@ describe("rotation", () => {
     expect(cp.calls[0]).toBe("drain:mvm-old");
     expect(microvms.terminated[0]).toBe("mvm-old");
     expect(pointer.writes[0]).toMatchObject({ microvmId: "mvm-cur", retiring: null });
+    // No later write brings the cleared record back from the stale read (the rotation's own promote
+    // names mvm-cur as the next predecessor, which is right), and the run ends with none.
+    for (const w of pointer.writes) expect(w.retiring?.microvmId ?? null).not.toBe("mvm-old");
+    expect(pointer.writes.at(-1)?.retiring ?? null).toBeNull();
   });
 
   test("a run that resolves to a terminated replay is retried with a fresh token", async () => {
