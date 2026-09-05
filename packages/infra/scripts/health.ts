@@ -3,7 +3,7 @@
 // Output is masked; nothing here reaches a browser.
 import { HttpControlPlaneClient, PRIVATE_PORT } from "../../fleet/src/cp-client.ts";
 import { maskMicrovmIds, maskSecrets } from "../../fleet/src/mask.ts";
-import { operatorClients, stackResourceId } from "../../fleet/src/operator.ts";
+import { operatorClients, stackOutputs } from "../../fleet/src/operator.ts";
 import { normalizeEndpoint } from "../../fleet/src/types.ts";
 
 const { pointer, microvms, secrets } = operatorClients();
@@ -15,8 +15,9 @@ if (p.state !== "on" || !p.microvmId || !p.endpoint) {
   console.log(`pointer: ${p.state} — nothing to ask`);
   process.exit(0);
 }
-// The secret's ARN is not a stack output; the Core stack's FleetSecret resource names it.
-const secret = await secrets.read(await stackResourceId("TabframeCore", "FleetSecret"));
+const secretArn = (await stackOutputs("TabframeCore")).FleetSecretArn;
+if (!secretArn) throw new Error("TabframeCore has no FleetSecretArn output; deploy first");
+const secret = await secrets.read(secretArn);
 const cp = new HttpControlPlaneClient({ microvms, secret });
 const target = { microvmId: p.microvmId, endpoint: normalizeEndpoint(p.endpoint) };
 const mask = (text: string) => maskMicrovmIds(maskSecrets(text));

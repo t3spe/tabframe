@@ -61,6 +61,13 @@ describe("Foundation stack (TabframeCore)", () => {
     });
   });
 
+  test("outputs what the operator scripts read: the pointer parameter and the fleet secret's ARN", () => {
+    core.hasOutput("PointerParameter", {});
+    core.hasOutput("FleetSecretArn", {
+      Value: Match.objectLike({ Ref: Match.stringLikeRegexp("^FleetSecret") }),
+    });
+  });
+
   test("one distribution with a blob behavior and zero error caching", () => {
     core.resourceCountIs("AWS::CloudFront::Distribution", 1);
     core.hasResourceProperties("AWS::CloudFront::Distribution", {
