@@ -3,7 +3,10 @@
 // sandbox against the fake store, and takes virtual time to do so: its compute time is drawn from
 // the seed, never measured, so a run replays exactly on any machine. Its modes are the failures
 // the design names: clean leave, silent crash, freeze (no heartbeat, no compute), hidden tab, slow
-// hardware, the four commands, and a liar that returns consistent wrong bytes.
+// hardware, the four commands, and a liar that returns consistent wrong bytes. With
+// `deadlineEnforced` it also gives a task back at its deadline, as the real orchestrator does.
+
+import { fromBase64 } from "@tabframe/core/testing";
 import {
   type Assign,
   byteLength,
@@ -14,16 +17,17 @@ import {
   type FsManifest,
   fsManifest,
   LIMITS,
+  RELEASED,
 } from "@tabframe/protocol";
 import { CachingBlobReader } from "@tabframe/sandbox";
-import { fromBase64 } from "../src/bytes.ts";
 import { compute } from "./program.ts";
 import { sha256 } from "./store.ts";
 import type { Client, Socket, Timer, WorldApi } from "./types.ts";
+import { closeName } from "./wire.ts";
 
 export interface NodeProfile {
   hostId: string;
-  /** The launch token a cloud core shows in its hello (WP8.3). */
+  /** The launch token a cloud core shows in its hello. */
   coreToken?: string;
   kind: "tab" | "core";
   /** Compute-time multiplier: 1 is the reference machine, 3 is a slow one. */
@@ -45,6 +49,8 @@ interface Work {
   remainingMs: number;
   startedAt: number;
   timer: Timer | null;
+  /** With `deadlineEnforced`, the moment the node gives the task back. */
+  deadline: Timer | null;
   phase: "computing" | "uploading";
   /** Hashes still to upload before the result can go out. */
   awaiting: Set<string>;
@@ -59,9 +65,6 @@ const FATAL_CLOSES = new Set<number>([
   CLOSE.rateLimited,
   CLOSE.generationMismatch,
 ]);
-
-export const closeName = (code: number): string =>
-  Object.entries(CLOSE).find(([, c]) => c === code)?.[0] ?? String(code);
 
 const EMPTY_MANIFEST: FsManifest = { version: 1, files: {} };
 
@@ -311,13 +314,38 @@ export class VirtualNode implements Client {
       remainingMs: this.duration(msg),
       startedAt: this.world.now,
       timer: null,
+      deadline: null,
       phase: "computing",
       awaiting: new Set(),
       blobs: new Map(),
       result: null,
     };
     this.work.set(msg.taskId, work);
+    if (this.world.realism.deadlineEnforced)
+      work.deadline = this.world.after(msg.deadlineMs, () => this.giveUp(work));
     if (!this.paused) this.startTimer(work);
+  }
+
+  /** The deadline passed while still computing: the attempt is released, as the orchestrator does. */
+  private giveUp(work: Work): void {
+    work.deadline = null;
+    const taskId = work.msg.taskId;
+    if (this.work.get(taskId) !== work || work.phase !== "computing" || !this.sock || this.paused)
+      return;
+    if (work.timer) this.world.cancel(work.timer);
+    this.work.delete(taskId);
+    this.world.send(this.sock, {
+      t: "result",
+      taskId,
+      attempt: work.msg.attempt,
+      error: RELEASED,
+      computeMs: Math.max(1, this.world.now - work.assignedAt),
+    });
+  }
+
+  private clearDeadline(work: Work): void {
+    if (work.deadline) this.world.cancel(work.deadline);
+    work.deadline = null;
   }
 
   private onCancel(taskId: string): void {
@@ -327,6 +355,7 @@ export class VirtualNode implements Client {
       return;
     }
     if (work.timer) this.world.cancel(work.timer);
+    this.clearDeadline(work);
     this.work.delete(taskId);
     this.world.stats.cancelsHonoured += 1;
   }
@@ -478,6 +507,7 @@ export class VirtualNode implements Client {
       this.reader,
       msg.limits,
     );
+    this.clearDeadline(work);
     if (!computed.ok) {
       this.work.delete(taskId);
       this.world.stats.errors += 1;
@@ -594,7 +624,10 @@ export class VirtualNode implements Client {
       this.world.cancel(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    for (const work of this.work.values()) if (work.timer) this.world.cancel(work.timer);
+    for (const work of this.work.values()) {
+      if (work.timer) this.world.cancel(work.timer);
+      this.clearDeadline(work);
+    }
     this.work.clear();
   }
 }

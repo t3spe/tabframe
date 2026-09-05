@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_TASK_LIMITS } from "@tabframe/core/testing";
 import {
   BUNDLE_PATHS,
   type FsManifest,
@@ -14,7 +15,6 @@ import {
   type TaskLimits,
 } from "@tabframe/protocol";
 import { type BlobReader, runTask, validateModuleBytes } from "@tabframe/sandbox";
-import { DEFAULT_TASK_LIMITS } from "../src/ledger.ts";
 import { type FakeStore, sha256 } from "./store.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");

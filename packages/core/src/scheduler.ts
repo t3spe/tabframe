@@ -3,7 +3,8 @@ import { toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
 import type { ExecutionRecord, Ledger, NodeRecord, TaskRecord } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
-import { COMPUTE_MS_REPORT_CAP } from "./results.ts";
+import { COMPUTE_MS_REPORT_CAP, DEADLINE_DOUBLINGS } from "./policy.ts";
+import { releaseTask, runningAttempts, setStatus, stageTasks } from "./tasks.ts";
 
 /** Median of the execution's recent compute samples times the factor, floored (design §6.4). */
 export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
@@ -15,19 +16,14 @@ export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
 }
 
 /**
- * A task released at its deadline gets a longer one next time (WP8.3): doubled per release, three
- * times at most (eight times the first) and never past ten minutes — so a legitimately slow program
- * is not killed at the floor on every node for ever, while a program that never returns still fails
+ * A task released at its deadline gets a longer one next time: doubled per release, three times at
+ * most (eight times the first) and never past ten minutes — so a legitimately slow program is not
+ * killed at the floor on every node for ever, while a program that never returns still fails
  * within about a minute (2 + 4 + 8 + 16 + 16 + 16 s at the floor) rather than after ten.
  */
-export const DEADLINE_DOUBLINGS = 3;
 export function deadlineFor(task: TaskRecord, base: number): number {
   const released = task.attempts.filter((a) => a.outcome === "released").length;
   return Math.min(COMPUTE_MS_REPORT_CAP, base * 2 ** Math.min(released, DEADLINE_DOUBLINGS));
-}
-
-export function runningAttempts(task: TaskRecord): number {
-  return task.attempts.filter((a) => a.outcome === "running").length;
 }
 
 function holds(task: TaskRecord, nodeId: string): boolean {
@@ -89,8 +85,8 @@ function eligible(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
   if (holds(task, nodeId) || answered(task, nodeId)) return false;
   if (task.contestedRounds > 0 && reported(task, nodeId) && freshNodeFree(ledger, task))
     return false;
-  // Work a node released at its deadline goes to someone else while someone else is free (WP8.1):
-  // fill runs from the releasing node's own report, and would hand the task straight back.
+  // Work a node released at its deadline goes to someone else while someone else is free: fill
+  // runs from the releasing node's own report, and would hand the task straight back.
   if (releasedBy(task, nodeId) && otherNodeFree(ledger, task, nodeId)) return false;
   return true;
 }
@@ -136,25 +132,11 @@ export function pickTask(
   return null;
 }
 
-/** The current stage's tasks plus any plan task in flight, in fill order. */
-export function stageTasks(ledger: Ledger, exec: ExecutionRecord): TaskRecord[] {
-  const out: TaskRecord[] = [];
-  if (exec.planTaskId) {
-    const p = ledger.tasks.get(exec.planTaskId);
-    if (p) out.push(p);
-  }
-  for (const id of exec.stageTaskIds) {
-    const t = ledger.tasks.get(id);
-    if (t) out.push(t);
-  }
-  return out;
-}
-
 /** Give every node with a free slot its next task (design §6.3). Deterministic: nodes by id. */
 export function fill(ledger: Ledger, now: number): Effect[] {
   // A control plane that has handed its ledger over must not assign anything (design §9.4), and
-  // a paused one assigns nothing new while the editor tab holding it lives (WP6.4).
-  if (ledger.meta.phase !== "active" || ledger.meta.pausedBy !== null) return [];
+  // a paused one assigns nothing new while the editor tab holding it lives.
+  if (ledger.meta.phase !== "active" || ledger.session.pausedBy !== null) return [];
   const effects: Effect[] = [];
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   if (!exec) return effects;
@@ -194,11 +176,7 @@ function assignTask(
     speculative,
     outcome: "running",
   });
-  if (task.status === "pending") {
-    task.status = "assigned";
-    exec.counters.pending = Math.max(0, exec.counters.pending - 1);
-    exec.counters.assigned += 1;
-  }
+  setStatus(exec, task, "assigned");
   node.inFlight.push(task.taskId);
   if (speculative) exec.counters.speculated += 1;
   const msg: Assign = {
@@ -238,46 +216,9 @@ export function releaseNode(ledger: Ledger, node: NodeRecord): Effect[] {
     if (!task) continue;
     for (const a of task.attempts)
       if (a.nodeId === node.nodeId && a.outcome === "running") a.outcome = "lost";
-    if (
-      task.status === "assigned" &&
-      runningAttempts(task) === 0 &&
-      currentRoundResults(task) === 0
-    ) {
-      task.status = "pending";
-      task.released = true;
-      const exec = ledger.executions.get(task.executionId);
-      if (exec) {
-        exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
-        exec.counters.pending += 1;
-        exec.counters.reassigned += 1;
-      }
-      effects.push(...broadcast(ledger, { t: "taskReassigned", taskId, fromNode: node.nodeId }));
-    }
+    effects.push(...releaseTask(ledger, task, node.nodeId));
   }
   node.inFlight = [];
-  return effects;
-}
-
-/** Cancel every open attempt of a task except the one to keep; the nodes are told (design §6.5). */
-export function cancelOthers(
-  ledger: Ledger,
-  task: TaskRecord,
-  keepNodeId: string | null,
-): Effect[] {
-  const effects: Effect[] = [];
-  for (const a of task.attempts) {
-    if (a.outcome !== "running" || a.nodeId === keepNodeId) continue;
-    a.outcome = "cancelled";
-    const node = ledger.nodes.get(a.nodeId);
-    if (node) {
-      node.inFlight = node.inFlight.filter((id) => id !== task.taskId);
-      effects.push({
-        kind: "send",
-        connId: node.connId,
-        msg: { t: "cancel", v: PROTOCOL_VERSION, gen: ledger.meta.generation, taskId: task.taskId },
-      });
-    }
-  }
   return effects;
 }
 

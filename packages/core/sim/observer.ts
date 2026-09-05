@@ -11,8 +11,8 @@ import {
   LIMITS,
   type Snapshot,
 } from "@tabframe/protocol";
-import { closeName } from "./node.ts";
 import { type Client, count, type Socket, type Timer, type WorldApi } from "./types.ts";
+import { closeName } from "./wire.ts";
 
 const FATAL_CLOSES = new Set<number>([
   CLOSE.invalidMessage,

@@ -5,7 +5,14 @@ import { encodeStageSpec, PROTOCOL_VERSION, type StageSpec } from "@tabframe/pro
 import { apply } from "./apply.ts";
 import type { Effect, Event } from "./events.ts";
 import { checkInvariants } from "./invariants.ts";
-import { createLedger, type Ledger, type LedgerConfig } from "./ledger.ts";
+import {
+  createLedger,
+  type ExecutionRecord,
+  type Ledger,
+  type LedgerConfig,
+  type WriteRecord,
+} from "./ledger.ts";
+import { adoptLedger, deserializeLedger } from "./snapshot.ts";
 
 export const H = (c: string) => c.repeat(64);
 export const BUNDLE = H("b");
@@ -17,16 +24,35 @@ export const defaultBundleFiles: FsManifest["files"] = {
 };
 export const MODULE = H("d");
 
+/** An event as a test writes it: a core launch may leave the token to the harness. */
+export type HarnessEvent =
+  | Exclude<Event, { kind: "coreLaunched" }>
+  | { kind: "coreLaunched"; microvmId: string; token?: string };
+
+export interface AssignSummary {
+  connId: string;
+  taskId: string;
+  attempt: number;
+  kind: "run" | "plan";
+  stage: number;
+  index: number;
+  deadlineMs: number;
+}
+
 export interface Harness {
-  ledger: Ledger;
+  readonly ledger: Ledger;
   readonly now: number;
+  /** The generation every message the harness sends carries; `adopt` moves it. */
+  readonly gen: number;
   advance(ms: number): void;
+  /** Take over a handed-over ledger as generation `generation`, the way a successor process does; the adoption's effects. */
+  adopt(json: string, generation: number): Effect[];
   connect(connId: string, role: "node" | "observer"): Effect[];
   send(connId: string, body: Record<string, unknown>): Effect[];
   raw(connId: string, raw: unknown): Effect[];
   disconnect(connId: string): Effect[];
   tick(): Effect[];
-  event(e: Event): Effect[];
+  event(e: HarnessEvent): Effect[];
   hello(connId: string, hostId?: string, kind?: "tab" | "core"): Effect[];
   subscribe(connId: string): Effect[];
   heartbeat(connId: string, visible?: boolean): Effect[];
@@ -49,14 +75,26 @@ export interface Harness {
   ): Effect[];
   resultError(connId: string, taskId: string, attempt: number, error: string): Effect[];
   /** All assign messages in a batch of effects. */
-  assigns(effects: Effect[]): Array<{
+  assigns(effects: Effect[]): AssignSummary[];
+  /** The running plan attempt of an execution: where its result must come from. */
+  planAssign(executionId: string): {
     connId: string;
     taskId: string;
     attempt: number;
     kind: "run" | "plan";
-    stage: number;
-    index: number;
-  }>;
+  };
+  /**
+   * A program, observer "o1", nodes c1..cn on hosts h1..hn, and a person's launch whose plan task
+   * (two with redundancy, which must agree) has reported: the spec fetch is pending in the effects.
+   */
+  plannedLaunch(nodes: number, opts?: { redundancy?: boolean }): Effect[];
+  /** `plannedLaunch` answered with a rendered stage of `tasks` tiles; the run assignments are in the effects. */
+  stage(nodes: number, tasks: number, opts?: { redundancy?: boolean }): Effect[];
+  /**
+   * Run the running execution to done: a rendered stage of `tasks` tiles, every result carrying
+   * `writes`, its manifest stored as `root`, and a planner that says done with no follow-up.
+   */
+  completeFrame(root: string, opts?: { tasks?: number; writes?: WriteRecord[] }): ExecutionRecord;
   invariants(): string[];
   rng: () => number;
 }
@@ -71,8 +109,9 @@ export function harness(
   random?: () => number,
 ): Harness {
   const coreTokens = new Map<string, string>();
-  const ledger = createLedger(gen, { storeBase: "https://cdn.test/blob", ...config }, 1_000_000);
+  let ledger = createLedger(gen, { storeBase: "https://cdn.test/blob", ...config }, 1_000_000);
   let now = 1_000_000;
+  let generation = gen;
   let seed = 12345;
   const rng =
     random ??
@@ -80,36 +119,57 @@ export function harness(
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x80000000;
     });
-  const env = { v: PROTOCOL_VERSION, gen };
+  const running = (): ExecutionRecord => {
+    const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
+    if (!exec) throw new Error("nothing running");
+    return exec;
+  };
   const h: Harness = {
-    ledger,
+    get ledger() {
+      return ledger;
+    },
     get now() {
       return now;
+    },
+    get gen() {
+      return generation;
     },
     rng,
     advance(ms) {
       now += ms;
     },
+    adopt(json, next) {
+      ledger = deserializeLedger(json);
+      generation = next;
+      return adoptLedger(ledger, next, now);
+    },
     event(e) {
-      // A launch without a token gets one (WP8.3): the ledger links a core only on a token match.
-      if (e.kind === "coreLaunched" && e.token === undefined) {
-        const token = coreTokens.get(e.microvmId) ?? `tok-${e.microvmId}`.padEnd(32, "0"); // the schema wants 16+ chars
+      if (e.kind === "coreLaunched") {
+        // The ledger links a core only on a token match; the schema wants sixteen characters.
+        const token =
+          e.token ?? coreTokens.get(e.microvmId) ?? `tok-${e.microvmId}`.padEnd(32, "0");
         coreTokens.set(e.microvmId, token);
-        e = { ...e, token };
+        return apply(ledger, { ...e, token }, now, { rng });
       }
       return apply(ledger, e, now, { rng });
     },
     connect: (connId, role) => apply(ledger, { kind: "connected", connId, role }, now, { rng }),
     send: (connId, body) =>
-      apply(ledger, { kind: "message", connId, raw: JSON.stringify({ ...env, ...body }) }, now, {
-        rng,
-      }),
+      apply(
+        ledger,
+        {
+          kind: "message",
+          connId,
+          raw: JSON.stringify({ v: PROTOCOL_VERSION, gen: generation, ...body }),
+        },
+        now,
+        { rng },
+      ),
     raw: (connId, raw) => apply(ledger, { kind: "message", connId, raw }, now, { rng }),
     disconnect: (connId) => apply(ledger, { kind: "disconnected", connId }, now, { rng }),
     tick: () => apply(ledger, { kind: "tick" }, now, { rng }),
     hello(connId, hostId = "h1", kind = "tab") {
       h.connect(connId, "node");
-      // A core's hello carries the token its launch was given (WP8.2; strict since WP8.3).
       const coreToken = kind === "core" ? coreTokens.get(hostId.replace(/^core-/, "")) : undefined;
       return h.send(connId, {
         t: "hello",
@@ -166,19 +226,74 @@ export function harness(
     resultError: (connId, taskId, attempt, error) =>
       h.send(connId, { t: "result", taskId, attempt, error, computeMs: 5 }),
     assigns: (effects) =>
-      effects
-        .filter((e) => e.kind === "send" && e.msg.t === "assign")
-        .map((e) => {
-          if (e.kind !== "send" || e.msg.t !== "assign") throw new Error("unreachable");
-          return {
-            connId: e.connId,
-            taskId: e.msg.taskId,
-            attempt: e.msg.attempt,
-            kind: e.msg.kind,
-            stage: e.msg.stage,
-            index: e.msg.index,
-          };
-        }),
+      effects.flatMap((e) =>
+        e.kind === "send" && e.msg.t === "assign"
+          ? [
+              {
+                connId: e.connId,
+                taskId: e.msg.taskId,
+                attempt: e.msg.attempt,
+                kind: e.msg.kind,
+                stage: e.msg.stage,
+                index: e.msg.index,
+                deadlineMs: e.msg.deadlineMs,
+              },
+            ]
+          : [],
+      ),
+    planAssign(executionId) {
+      const exec = ledger.executions.get(executionId);
+      const task = exec?.planTaskId ? ledger.tasks.get(exec.planTaskId) : undefined;
+      const attempt = task?.attempts.find((a) => a.outcome === "running");
+      if (!task || !attempt) throw new Error(`no running plan attempt for ${executionId}`);
+      const node = ledger.nodes.get(attempt.nodeId);
+      if (!node) throw new Error(`no node ${attempt.nodeId}`);
+      return {
+        connId: node.connId,
+        taskId: task.taskId,
+        attempt: attempt.attempt,
+        kind: task.kind,
+      };
+    },
+    plannedLaunch(nodes, opts = {}) {
+      h.addProgram();
+      h.subscribe("o1");
+      if (opts.redundancy) h.send("o1", { t: "setRedundancy", on: true });
+      for (let i = 1; i <= nodes; i++) h.hello(`c${i}`, `h${i}`);
+      const plan = h.assigns(h.launch());
+      if (plan.length !== (opts.redundancy ? 2 : 1) || !plan.every((p) => p.kind === "plan"))
+        throw new Error(`expected the plan task's assignments, got ${JSON.stringify(plan)}`);
+      let planned: Effect[] = [];
+      for (const p of plan)
+        planned = [...planned, ...h.result(p.connId, p.taskId, p.attempt, H("a"))];
+      return planned;
+    },
+    stage: (nodes, tasks, opts = {}) => h.planSpec(h.plannedLaunch(nodes, opts), renderSpec(tasks)),
+    completeFrame(root, opts = {}) {
+      const { tasks = 1, writes = [] } = opts;
+      const exec = running();
+      const plan = h.planAssign(exec.executionId);
+      const stage = h.planSpec(
+        h.result(plan.connId, plan.taskId, plan.attempt, H("e")),
+        renderSpec(tasks),
+      );
+      let pending = h.assigns(stage).filter((a) => a.kind === "run");
+      let last = stage;
+      while (pending.length > 0) {
+        const next: AssignSummary[] = [];
+        for (const run of pending) {
+          last = h.result(run.connId, run.taskId, run.attempt, H("1"), { writes });
+          next.push(...h.assigns(last).filter((a) => a.kind === "run"));
+        }
+        pending = next.length > 0 ? next : h.assigns(h.tick()).filter((a) => a.kind === "run");
+      }
+      h.manifestStored(last, root);
+      const again = h.planAssign(exec.executionId);
+      h.planSpec(h.result(again.connId, again.taskId, again.attempt, H("d")), doneSpec(null));
+      if (exec.status !== "done")
+        throw new Error(`${exec.executionId} is ${exec.status}, not done`);
+      return exec;
+    },
     invariants: () => checkInvariants(ledger),
   };
   return h;

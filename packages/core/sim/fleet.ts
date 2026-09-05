@@ -1,17 +1,14 @@
 // The process's fleet layer (design §6.8) as the simulation runs it. The core decides what the
 // machine wants and says so with `launchCore` and `terminateCore`; this turns those into MicroVMs
 // — virtual machines that take a couple of seconds to boot, dial in as ordinary nodes named
-// `core-<microvmId>`, and stop existing when their VM is destroyed.
-// packages/control-plane/src/cores.ts is the real thing, with one difference called out at
-// `reconcile` below.
-import type { Event } from "../src/events.ts";
+// `core-<microvmId>`, and stop existing when their VM is destroyed. packages/control-plane/src/cores.ts
+// is the real thing. The §6.8 policy checks live in properties.ts.
+import type { Event } from "@tabframe/core";
 import {
-  CORE_LAUNCH_GAP_MS,
-  DESIRED_CORES,
-  SLEEP_AFTER_NO_INTERACTION_MS,
+  DESIRED_CLOUD_CORES,
+  type Ledger,
   SLEEP_AFTER_NO_OBSERVER_MS,
-} from "../src/fleet.ts";
-import type { Ledger } from "../src/ledger.ts";
+} from "@tabframe/core/testing";
 import type { NodeProfile, VirtualNode } from "./node.ts";
 import type { VirtualObserver } from "./observer.ts";
 import type { WorldApi } from "./types.ts";
@@ -37,30 +34,16 @@ export interface FleetWorld extends WorldApi {
   dispatch(event: Event): void;
 }
 
-/**
- * The fleet as the process runs it, plus the policy checks of §6.8. Everything it asserts is
- * something the pure core promises; where the core promises less than the design says, the
- * simulation counts it (`coresAdrift`) instead of failing, and the work package's document says
- * so.
- */
+/** The fleet as the process runs it: MicroVMs that boot, join, die, and are reported gone. */
 export class SimFleet {
   private readonly world: FleetWorld;
   private readonly vms = new Map<string, Microvm>();
   private counter = 0;
-  private lastLaunchAt: number | null = null;
-  /** When each core record lost its node, for the adrift measurement. */
-  private readonly adriftSince = new Map<string, number>();
-  /** Awake/asleep bookkeeping, so an announcement can be counted against a transition. */
-  private awake = true;
-  private sleptAt: number | null = null;
-  private announcementsThisSleep = 0;
 
   constructor(world: FleetWorld) {
     this.world = world;
     this.scheduleReconcile();
   }
-
-  // --- effects ------------------------------------------------------------------------------
 
   /** `launchCore`: RunMicrovm, then a boot, then a node like any other. */
   launch(): void {
@@ -136,13 +119,7 @@ export class SimFleet {
     vm.node?.kill();
   }
 
-  /**
-   * The one thing the simulation does that packages/control-plane does not yet: ask which of the
-   * ledger's cores are still serving and report the rest. `CoreFleet.gone()` exists for exactly
-   * this and nothing calls it (WP3.3 left it for M4). Without it a core whose MicroVM dies keeps
-   * its record until the four-hour ceiling and is never replaced, which is less than §6.8
-   * promises — recorded in the work package's document.
-   */
+  /** Ask which of the ledger's cores are still serving and report the rest gone, as the process's reaper does. */
   private reconcile(): void {
     for (const core of this.world.ledger.cores.values()) {
       const vm = this.vms.get(core.microvmId);
@@ -156,84 +133,6 @@ export class SimFleet {
       this.reconcile();
       this.scheduleReconcile();
     });
-  }
-
-  // --- the policy, checked after every event -------------------------------------------------
-
-  /**
-   * §6.8 as properties: never more cores than wanted, launches a second apart, no cores and no
-   * automatic continuation while asleep, and one announcement per sleep.
-   */
-  check(sleepingAnnouncements: number): void {
-    const ledger = this.world.ledger;
-    const cores = ledger.cores;
-    if (cores.size > DESIRED_CORES)
-      this.world.violation(
-        `the ledger holds ${cores.size} cores, the fleet wants ${DESIRED_CORES}`,
-      );
-
-    // A record with no node behind it is the machine short-handed. A few seconds of it is normal
-    // (a MicroVM booting, a core reconnecting); a long one means the fleet is counting records
-    // rather than working cores, which is measured here and discussed in the work package.
-    for (const core of cores.values()) {
-      if (core.nodeId !== null) {
-        this.adriftSince.delete(core.microvmId);
-        continue;
-      }
-      const since = this.adriftSince.get(core.microvmId) ?? this.world.now;
-      this.adriftSince.set(core.microvmId, since);
-      const ms = this.world.now - since;
-      if (ms > this.world.stats.coresAdriftMs) this.world.stats.coresAdriftMs = ms;
-    }
-    for (const id of [...this.adriftSince.keys()]) if (!cores.has(id)) this.adriftSince.delete(id);
-
-    if (!ledger.meta.awake) {
-      if (cores.size > 0)
-        this.world.violation(`asleep with ${cores.size} cores still in the ledger`);
-      for (const exec of ledger.executions.values()) {
-        if (!exec.human && this.sleptAt !== null && exec.queuedAt > this.sleptAt)
-          this.world.violation(`${exec.executionId} was queued automatically while asleep`);
-      }
-    }
-
-    // Awake ⇄ asleep, and the announcement that goes with it.
-    if (this.awake && !ledger.meta.awake) {
-      this.awake = false;
-      this.sleptAt = this.world.now;
-      this.announcementsThisSleep = 0;
-      this.world.stats.sleeps += 1;
-      const reason = ledger.meta.sleepReason ?? "";
-      const quiet = this.world.now - ledger.meta.lastObserverAt;
-      const idle = this.world.now - ledger.meta.lastInteractionAt;
-      if (
-        !(quiet >= SLEEP_AFTER_NO_OBSERVER_MS && ledger.observers.size === 0) &&
-        !(idle >= SLEEP_AFTER_NO_INTERACTION_MS)
-      ) {
-        this.world.violation(`slept early: ${reason} after ${quiet} ms quiet, ${idle} ms idle`);
-      }
-      this.world.note(`machine asleep: ${reason}`);
-    } else if (!this.awake && ledger.meta.awake) {
-      this.awake = true;
-      this.sleptAt = null;
-      this.world.stats.wakes += 1;
-      this.world.note("machine awake");
-    }
-    if (!this.awake) {
-      this.announcementsThisSleep += sleepingAnnouncements;
-      if (this.announcementsThisSleep > 1)
-        this.world.violation(
-          `${this.announcementsThisSleep} machineSleeping announcements for one sleep`,
-        );
-    } else if (sleepingAnnouncements > 0) {
-      this.world.violation("machineSleeping announced while awake");
-    }
-
-    if (this.lastLaunchAt !== null && ledger.meta.lastCoreLaunchAt > this.lastLaunchAt) {
-      const gap = ledger.meta.lastCoreLaunchAt - this.lastLaunchAt;
-      if (gap < CORE_LAUNCH_GAP_MS)
-        this.world.violation(`two core launches ${gap} ms apart, the gap is ${CORE_LAUNCH_GAP_MS}`);
-    }
-    if (ledger.meta.lastCoreLaunchAt > 0) this.lastLaunchAt = ledger.meta.lastCoreLaunchAt;
   }
 }
 
@@ -282,11 +181,11 @@ export class FleetDrill {
     switch (this.step) {
       case "kill": {
         const live = this.fleet.liveCores();
-        if (live.length < DESIRED_CORES) {
+        if (live.length < DESIRED_CLOUD_CORES) {
           // Still filling the fleet after the chaos; give it the replacement budget to get there.
           if (elapsed > REPLACE_BUDGET_MS)
             this.world.violation(
-              `drill: ${live.length} of ${DESIRED_CORES} cores serving after ${elapsed} ms`,
+              `drill: ${live.length} of ${DESIRED_CLOUD_CORES} cores serving after ${elapsed} ms`,
             );
           return;
         }
@@ -305,7 +204,7 @@ export class FleetDrill {
             );
           return;
         }
-        if (live.length < DESIRED_CORES) {
+        if (live.length < DESIRED_CLOUD_CORES) {
           if (elapsed > REPLACE_BUDGET_MS)
             this.world.violation(
               `drill: a destroyed core was not replaced within ${elapsed} ms (${live.length} serving)`,
@@ -346,7 +245,7 @@ export class FleetDrill {
         const live = this.fleet.liveCores();
         const rendering =
           this.world.stats.framesDone > this.framesAtWake || ledger.running !== null;
-        if (ledger.meta.awake && live.length >= DESIRED_CORES && rendering) {
+        if (ledger.meta.awake && live.length >= DESIRED_CLOUD_CORES && rendering) {
           this.world.note("drill: awake, fleet back, rendering");
           this.advance("done");
           return;

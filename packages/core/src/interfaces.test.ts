@@ -6,15 +6,15 @@ describe("seededRng", () => {
     const a = seededRng(42);
     const b = seededRng(42);
     const c = seededRng(43);
-    const xs = Array.from({ length: 5 }, () => a.next());
-    expect(Array.from({ length: 5 }, () => b.next())).toEqual(xs);
-    expect(Array.from({ length: 5 }, () => c.next())).not.toEqual(xs);
+    const xs = Array.from({ length: 5 }, () => a());
+    expect(Array.from({ length: 5 }, () => b())).toEqual(xs);
+    expect(Array.from({ length: 5 }, () => c())).not.toEqual(xs);
   });
   test("stays in [0, 1) and looks uniform enough", () => {
     const r = seededRng(7);
     let sum = 0;
     for (let i = 0; i < 10_000; i++) {
-      const x = r.next();
+      const x = r();
       expect(x).toBeGreaterThanOrEqual(0);
       expect(x).toBeLessThan(1);
       sum += x;

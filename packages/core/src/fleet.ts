@@ -1,28 +1,18 @@
-// The fleet and sleep policies (design §6.8). The core decides *what* the machine wants — two
-// cloud cores while awake, none while asleep — and says so with effects; the process is what
-// talks to the MicroVM API.
+// The fleet and sleep policies (design §6.8). The core decides what the machine wants — two cloud
+// cores while awake, none while asleep — and says so with effects; the process talks to the
+// MicroVM API.
 import type { Effect } from "./events.ts";
 import type { Ledger } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
-
-/** How many cloud cores the machine keeps while awake. */
-export const DESIRED_CORES = 2;
-/** The account allows one RunMicrovm a second, so cores come up one at a time. */
-export const CORE_LAUNCH_GAP_MS = 1_000;
-/** A launch asked for and not acknowledged within this long is forgotten (WP8.1). */
-export const CORE_LAUNCH_ACK_MS = 60_000;
-/** A core is replaced before it reaches its four-hour ceiling. */
-export const CORE_MAX_AGE_MS = 3.5 * 60 * 60 * 1_000;
-/**
- * A core boots and says hello within seconds; one that has had no node for this long is not
- * coming (a MicroVM that booted but whose process never connected — seen once in two launches
- * during the WP4.4 demo runs) and is terminated so the policy launches another.
- */
-export const CORE_LINK_TIMEOUT_MS = 2 * 60 * 1_000;
-/** Asleep after this long with nobody watching. */
-export const SLEEP_AFTER_NO_OBSERVER_MS = 10 * 60 * 1_000;
-/** Asleep after this long with a dashboard open but nobody touching it (a tab left overnight). */
-export const SLEEP_AFTER_NO_INTERACTION_MS = 60 * 60 * 1_000;
+import {
+  CLOUD_CORE_LAUNCH_ACK_MS,
+  CLOUD_CORE_LAUNCH_GAP_MS,
+  CLOUD_CORE_LINK_TIMEOUT_MS,
+  CLOUD_CORE_MAX_AGE_MS,
+  DESIRED_CLOUD_CORES,
+  SLEEP_AFTER_NO_INTERACTION_MS,
+  SLEEP_AFTER_NO_OBSERVER_MS,
+} from "./policy.ts";
 
 /** Why the machine would be asleep right now, or null if it should be awake. */
 export function sleepReason(ledger: Ledger, now: number): string | null {
@@ -38,11 +28,26 @@ export function sleepReason(ledger: Ledger, now: number): string | null {
   return null;
 }
 
+/** Forget a cloud core and have its MicroVM terminated. */
+export function forgetCloudCore(ledger: Ledger, microvmId: string): Effect {
+  ledger.cores.delete(microvmId);
+  return { kind: "terminateCore", microvmId };
+}
+
+/** A node has gone: if it was a cloud core, the core is unlinked and replaced after the link timeout. */
+export function unlinkCloudCore(ledger: Ledger, nodeId: string, now: number): void {
+  for (const core of ledger.cores.values()) {
+    if (core.nodeId === nodeId) {
+      core.nodeId = null;
+      core.unlinkedAt = now;
+    }
+  }
+}
+
 /**
- * One pass of the fleet and sleep policies, called on every tick. Awake: keep `DESIRED_CORES`
+ * One pass of the fleet and sleep policies, on every tick. Awake: keep `DESIRED_CLOUD_CORES`
  * alive, one launch per second, replacing any core near its ceiling. Asleep: terminate them and
- * say so once; automatic continuation stops (see `ensureDefaultLoop`) and the control plane's own
- * idle policy suspends it a quarter of an hour later.
+ * say so once; the loop's gate stops automatic continuation.
  */
 export function fleetTick(ledger: Ledger, now: number): Effect[] {
   if (ledger.observers.size > 0) ledger.meta.lastObserverAt = now;
@@ -55,10 +60,8 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
       ledger.meta.sleepReason = reason;
       effects.push(...broadcast(ledger, { t: "machineSleeping", reason }));
     }
-    for (const core of ledger.cores.values()) {
-      effects.push({ kind: "terminateCore", microvmId: core.microvmId });
-    }
-    ledger.cores.clear();
+    for (const core of [...ledger.cores.values()])
+      effects.push(forgetCloudCore(ledger, core.microvmId));
     return effects;
   }
   if (!ledger.config.cloudCores) {
@@ -77,19 +80,18 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
   // Retire a core before its MicroVM ceiling, or one that has had no node for too long; the
   // replacement comes up on a later tick.
   for (const core of [...ledger.cores.values()]) {
-    const unlinkedFor = core.nodeId === null ? now - (core.unlinkedAt ?? core.launchedAt) : 0;
-    if (now - core.launchedAt >= CORE_MAX_AGE_MS || unlinkedFor >= CORE_LINK_TIMEOUT_MS) {
-      ledger.cores.delete(core.microvmId);
-      effects.push({ kind: "terminateCore", microvmId: core.microvmId });
-    }
+    const unlinkedFor = core.unlinkedAt === null ? 0 : now - core.unlinkedAt;
+    if (now - core.launchedAt >= CLOUD_CORE_MAX_AGE_MS || unlinkedFor >= CLOUD_CORE_LINK_TIMEOUT_MS)
+      effects.push(forgetCloudCore(ledger, core.microvmId));
   }
-  // Launches asked for and not yet acknowledged count towards the desired size (WP8.1): with a
-  // half-second tick and a one-second gap, an API that takes longer than that used to be asked
-  // twice. An acknowledgement that never comes expires after a minute.
-  ledger.meta.coreLaunches = ledger.meta.coreLaunches.filter((t) => now - t < CORE_LAUNCH_ACK_MS);
+  // Launches asked for and not yet acknowledged count towards the desired size: with a half-second
+  // tick and a one-second gap, an API that takes longer would be asked twice.
+  ledger.meta.coreLaunches = ledger.meta.coreLaunches.filter(
+    (t) => now - t < CLOUD_CORE_LAUNCH_ACK_MS,
+  );
   if (
-    ledger.cores.size + ledger.meta.coreLaunches.length < DESIRED_CORES &&
-    now - ledger.meta.lastCoreLaunchAt >= CORE_LAUNCH_GAP_MS
+    ledger.cores.size + ledger.meta.coreLaunches.length < DESIRED_CLOUD_CORES &&
+    now - ledger.meta.lastCoreLaunchAt >= CLOUD_CORE_LAUNCH_GAP_MS
   ) {
     ledger.meta.lastCoreLaunchAt = now;
     ledger.meta.coreLaunches.push(now);
@@ -97,41 +99,38 @@ export function fleetTick(ledger: Ledger, now: number): Effect[] {
   }
   // More cores than wanted (an acknowledgement after its expiry, an adopted ledger's extras): the
   // youngest unlinked ones go.
-  if (ledger.cores.size > DESIRED_CORES) {
+  if (ledger.cores.size > DESIRED_CLOUD_CORES) {
     const surplus = [...ledger.cores.values()]
       .filter((c) => c.nodeId === null)
       .sort((a, b) => b.launchedAt - a.launchedAt)
-      .slice(0, ledger.cores.size - DESIRED_CORES);
-    for (const core of surplus) {
-      ledger.cores.delete(core.microvmId);
-      effects.push({ kind: "terminateCore", microvmId: core.microvmId });
-    }
+      .slice(0, ledger.cores.size - DESIRED_CLOUD_CORES);
+    for (const core of surplus) effects.push(forgetCloudCore(ledger, core.microvmId));
   }
   return effects;
 }
 
-/** The process launched a core: remember it so a handover carries it (design §6.8). */
-export function coreLaunched(
+/** The process launched a core: remember it, with the token its hello must show, so a handover carries it. */
+export function cloudCoreLaunched(
   ledger: Ledger,
   microvmId: string,
+  token: string,
   now: number,
-  token?: string,
 ): Effect[] {
   ledger.meta.coreLaunches.shift(); // the oldest launch asked for is the one answered
   if (!ledger.cores.has(microvmId)) {
     ledger.cores.set(microvmId, {
       microvmId,
       launchedAt: now,
+      token,
       nodeId: null,
       unlinkedAt: now,
-      ...(token ? { token } : {}),
     });
   }
   return [];
 }
 
 /** A core's MicroVM is gone (it died, or a control killed it): forget it so it is replaced. */
-export function coreGone(ledger: Ledger, microvmId: string): Effect[] {
+export function cloudCoreGone(ledger: Ledger, microvmId: string): Effect[] {
   ledger.cores.delete(microvmId);
   return [];
 }

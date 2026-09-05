@@ -5,9 +5,9 @@
 // machine must finish a frame within a bounded time (the liveness property of design §6.10).
 import type { NodeProfile, VirtualNode } from "./node.ts";
 import type { VirtualObserver } from "./observer.ts";
-import type { Timer, WorldApi } from "./types.ts";
+import { LENIENT, type Realism, type Timer, type WorldApi } from "./types.ts";
 
-export interface Scenario {
+export interface Scenario extends Realism {
   long: boolean;
   maxNodes: number;
   initialNodes: number;
@@ -23,13 +23,14 @@ export interface Scenario {
   maxObservers: number;
 }
 
-export interface ScenarioOverrides {
+export interface ScenarioOverrides extends Partial<Realism> {
   liar?: boolean | null;
   redundancy?: "random" | "always" | "never";
   frames?: number;
   maxNodes?: number;
 }
 
+/** The scenario for a seed; the realism knobs come from the overrides alone, never from the seed. */
 export function scenarioFor(
   seed: number,
   long: boolean,
@@ -50,6 +51,10 @@ export function scenarioFor(
     liars: long && liars > 0 && seed % 3 === 0 ? 2 : liars,
     redundancy: overrides.redundancy ?? "random",
     maxObservers: long ? 6 : 3,
+    deadlineEnforced: overrides.deadlineEnforced ?? LENIENT.deadlineEnforced,
+    storeFailRate: overrides.storeFailRate ?? LENIENT.storeFailRate,
+    duplicateRate: overrides.duplicateRate ?? LENIENT.duplicateRate,
+    rotateAfterMs: overrides.rotateAfterMs ?? LENIENT.rotateAfterMs,
   };
 }
 

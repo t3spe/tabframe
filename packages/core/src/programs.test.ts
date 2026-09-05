@@ -1,45 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { controlPlaneToObserver } from "@tabframe/protocol";
-import { pruneExecutions } from "./executions.ts";
-import { BUNDLE, H, harness } from "./harness.ts";
+import { BUNDLE, H, type Harness, harness } from "./harness.ts";
+import { pruneExecutions } from "./retention.ts";
 
-/** A late observer learns the programs from the snapshot, not only from programAdded. */
-describe("programs in the snapshot", () => {
-  test("page 0 lists every program with its view and default params", () => {
-    const h = harness();
-    h.addProgram("bars");
-    const effects = h.subscribe("obs");
-    const snap = effects.find((e) => e.kind === "send" && e.msg.t === "snapshot");
-    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
-    expect(snap.msg.programs).toEqual([
-      {
-        bundle: BUNDLE,
-        name: "demo",
-        view: "bars",
-        description: null,
-        defaultParams: { preset: 0 },
-        addedAt: expect.any(Number),
-        source: null,
-      },
-    ]);
-  });
-});
-
-/** The plan task of an execution as assigned: where to send its result. */
-function planAssignOf(h: ReturnType<typeof harness>, executionId: string) {
-  const task = [...h.ledger.tasks.values()].find(
-    (t) => t.executionId === executionId && t.kind === "plan" && t.status === "assigned",
-  );
-  const attempt = task?.attempts.find((a) => a.outcome === "running");
-  if (!task || !attempt) throw new Error(`no running plan attempt for ${executionId}`);
-  const node = h.ledger.nodes.get(attempt.nodeId);
-  if (!node) throw new Error("no node");
-  return { connId: node.connId, taskId: task.taskId, attempt: attempt.attempt };
-}
-
-/** A newer bundle under the same name (WP4.9): the old one leaves the list and its chain ends. */
+/** A newer bundle under the same name: the old one leaves the list and its chain ends. */
 describe("retiring a program", () => {
-  const snapshotPrograms = (h: ReturnType<typeof harness>, conn: string) => {
+  const snapshotPrograms = (h: Harness, conn: string) => {
     const snap = h.subscribe(conn).find((e) => e.kind === "send" && e.msg.t === "snapshot");
     if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
     return (snap.msg.programs ?? []).map((p) => p.name);
@@ -114,7 +79,7 @@ describe("retiring a program", () => {
     expect(h.ledger.config.defaultLoop?.bundle).toBe(NEXT);
     // The old frame finishes with a follow-up of its own; it is not queued, the new bundle is.
     h.tick();
-    const plan = planAssignOf(h, first.executionId);
+    const plan = h.planAssign(first.executionId);
     h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
       kind: "done",
       next: { preset: 7 },
@@ -128,58 +93,5 @@ describe("retiring a program", () => {
     expect(after[0]?.params).toEqual({ preset: 1 });
     expect(h.ledger.programs.has(BUNDLE)).toBe(true); // still referenced by the finished frame
     expect(h.invariants()).toEqual([]);
-  });
-});
-
-/** Nothing running: a late observer still sees the execution that ended last (WP4.4). */
-describe("the snapshot after a launch ends", () => {
-  test("shows the last ended execution with its tasks instead of idle", () => {
-    const h = harness();
-    h.hello("a", "h1");
-    h.addProgram("tiles");
-    h.launch({ preset: 0 }, true);
-    h.tick();
-    const exec = [...h.ledger.executions.values()][0];
-    if (!exec) throw new Error("nothing launched");
-    const plan = planAssignOf(h, exec.executionId);
-    h.planSpec(h.result(plan.connId, plan.taskId, plan.attempt, H("e")), {
-      kind: "done",
-      next: null,
-    });
-    expect(exec.status).toBe("done");
-    expect(h.ledger.running).toBeNull();
-    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
-    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
-    expect(snap.msg.execution?.executionId).toBe(exec.executionId);
-    expect(snap.msg.execution?.status).toBe("done");
-    expect(snap.msg.tasks.length).toBeGreaterThan(0);
-  });
-});
-
-describe("a trapped task in the snapshot (WP7.7)", () => {
-  test("a failed plan task has no output in the view, and the snapshot after a trap still decodes", () => {
-    const h = harness();
-    h.hello("a", "h1");
-    h.addProgram("tiles");
-    h.launch({ preset: 1 }, true); // e1, a person's; its plan task goes to the node on the next fill
-    h.tick();
-    const exec = h.ledger.executions.get("e1");
-    const task = exec?.planTaskId ? h.ledger.tasks.get(exec.planTaskId) : undefined;
-    const attempt = task?.attempts.find((a) => a.outcome === "running");
-    if (!task || !attempt) throw new Error("no running plan attempt");
-    const node = h.ledger.nodes.get(attempt.nodeId);
-    if (!node) throw new Error("no node");
-    h.resultError(node.connId, task.taskId, attempt.attempt, "abort: this planner refuses to plan");
-    expect(h.ledger.executions.get("e1")?.status).toBe("failed");
-    const snap = h.subscribe("late").find((e) => e.kind === "send" && e.msg.t === "snapshot");
-    if (snap?.kind !== "send" || snap.msg.t !== "snapshot") throw new Error("no snapshot");
-    // Before the fix the trapped task carried output "" and no dashboard could decode the snapshot,
-    // so nobody arriving after a trap could subscribe until the execution was pruned.
-    const failed = snap.msg.tasks.find((t) => t.taskId === task.taskId);
-    expect(failed?.status).toBe("failed");
-    expect(failed?.output).toBeNull();
-    expect(controlPlaneToObserver.safeParse(JSON.parse(JSON.stringify(snap.msg))).success).toBe(
-      true,
-    );
   });
 });

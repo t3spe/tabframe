@@ -1,18 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { ensureDefaultLoop } from "./executions.ts";
+import { advance } from "./advance.ts";
+import { cloudCoreGone, cloudCoreLaunched, microvmIdOfHost, sleepReason } from "./fleet.ts";
+import { BUNDLE, harness } from "./harness.ts";
 import {
-  CORE_LAUNCH_GAP_MS,
-  CORE_LINK_TIMEOUT_MS,
-  CORE_MAX_AGE_MS,
-  coreGone,
-  coreLaunched,
-  DESIRED_CORES,
-  microvmIdOfHost,
+  CLOUD_CORE_LAUNCH_GAP_MS,
+  CLOUD_CORE_LINK_TIMEOUT_MS,
+  CLOUD_CORE_MAX_AGE_MS,
+  DESIRED_CLOUD_CORES,
   SLEEP_AFTER_NO_INTERACTION_MS,
   SLEEP_AFTER_NO_OBSERVER_MS,
-  sleepReason,
-} from "./fleet.ts";
-import { BUNDLE, harness } from "./harness.ts";
+} from "./policy.ts";
 import { adoptLedger } from "./snapshot.ts";
 
 const cloud = () => harness({ cloudCores: true });
@@ -26,10 +23,10 @@ describe("the cloud-core fleet", () => {
     expect(kinds(h.tick())).toContain("launchCore");
     expect(kinds(h.tick())).not.toContain("launchCore");
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
-    h.advance(CORE_LAUNCH_GAP_MS);
+    h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).toContain("launchCore");
     h.event({ kind: "coreLaunched", microvmId: "microvm-b" });
-    expect(h.ledger.cores.size).toBe(DESIRED_CORES);
+    expect(h.ledger.cores.size).toBe(DESIRED_CLOUD_CORES);
     // Two is enough, however long passes.
     h.advance(60_000);
     expect(kinds(h.tick())).not.toContain("launchCore");
@@ -70,10 +67,10 @@ describe("the cloud-core fleet", () => {
     h.subscribe("obs");
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
     h.event({ kind: "coreLaunched", microvmId: "microvm-b" });
-    h.advance(CORE_LAUNCH_GAP_MS);
+    h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).not.toContain("launchCore");
     h.event({ kind: "coreGone", microvmId: "microvm-a" });
-    h.advance(CORE_LAUNCH_GAP_MS);
+    h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).toContain("launchCore");
   });
 
@@ -83,7 +80,7 @@ describe("the cloud-core fleet", () => {
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
     h.event({ kind: "coreLaunched", microvmId: "microvm-b" });
     h.hello("c2", "core-microvm-b", "core");
-    h.advance(CORE_LINK_TIMEOUT_MS - 1_000);
+    h.advance(CLOUD_CORE_LINK_TIMEOUT_MS - 1_000);
     expect(kinds(h.tick())).not.toContain("terminateCore");
     h.advance(1_000);
     const effects = h.tick();
@@ -92,10 +89,10 @@ describe("the cloud-core fleet", () => {
     ]);
     expect(h.ledger.cores.has("microvm-a")).toBe(false);
     expect(h.ledger.cores.has("microvm-b")).toBe(true);
-    // The replacement is asked for in the same tick and counted until it is acknowledged (WP8.1):
-    // a slow RunMicrovm used to be asked twice, a tick apart.
+    // The replacement is asked for in the same tick and counted until it is acknowledged, so a
+    // slow RunMicrovm is not asked twice, a tick apart.
     expect(kinds(effects)).toContain("launchCore");
-    h.advance(CORE_LAUNCH_GAP_MS);
+    h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).not.toContain("launchCore");
     h.event({ kind: "coreLaunched", microvmId: "microvm-c" });
     expect(h.ledger.cores.size).toBe(2);
@@ -108,7 +105,7 @@ describe("the cloud-core fleet", () => {
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
     h.hello("c1", "core-microvm-a", "core");
     // Ten minutes of a live machine: the core heartbeats, the observer pings, the clocks follow.
-    for (let t = 0; t < CORE_LINK_TIMEOUT_MS * 5; t += 1_000) {
+    for (let t = 0; t < CLOUD_CORE_LINK_TIMEOUT_MS * 5; t += 1_000) {
       h.advance(1_000);
       h.heartbeat("c1");
       h.send("obs", { t: "ping" });
@@ -122,7 +119,7 @@ describe("the cloud-core fleet", () => {
     h.send("obs2", { t: "subscribe" });
     expect(h.ledger.cores.get("microvm-a")?.nodeId).toBeNull();
     expect(kinds(h.tick())).not.toContain("terminateCore");
-    h.advance(CORE_LINK_TIMEOUT_MS + 1);
+    h.advance(CLOUD_CORE_LINK_TIMEOUT_MS + 1);
     expect(kinds(h.tick())).toContain("terminateCore");
   });
 
@@ -131,10 +128,10 @@ describe("the cloud-core fleet", () => {
     h.subscribe("obs");
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
     h.hello("c1", "core-microvm-a", "core");
-    h.advance(CORE_LINK_TIMEOUT_MS * 3);
+    h.advance(CLOUD_CORE_LINK_TIMEOUT_MS * 3);
     expect(kinds(h.tick())).not.toContain("terminateCore"); // linked all along
     h.disconnect("c1");
-    h.advance(CORE_LINK_TIMEOUT_MS - 1_000);
+    h.advance(CLOUD_CORE_LINK_TIMEOUT_MS - 1_000);
     expect(kinds(h.tick())).not.toContain("terminateCore");
     h.advance(1_000);
     expect(kinds(h.tick())).toContain("terminateCore");
@@ -151,7 +148,7 @@ describe("the cloud-core fleet", () => {
       { kind: "terminateCore", microvmId: "microvm-a" },
     ]);
     expect(h.ledger.cores.size).toBe(0);
-    h.advance(CORE_LAUNCH_GAP_MS);
+    h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).toContain("launchCore");
 
     const g = cloud();
@@ -176,7 +173,7 @@ describe("the cloud-core fleet", () => {
     h.subscribe("obs");
     h.event({ kind: "coreLaunched", microvmId: "microvm-a" });
     h.event({ kind: "coreLaunched", microvmId: "microvm-b" });
-    h.advance(CORE_MAX_AGE_MS);
+    h.advance(CLOUD_CORE_MAX_AGE_MS);
     // Someone is still watching and still clicking, so the machine is awake at the ceiling.
     h.subscribe("obs2");
     h.ledger.meta.lastInteractionAt = h.now;
@@ -246,12 +243,10 @@ describe("the sleep policy", () => {
     expect(h.ledger.running).not.toBeNull();
     h.ledger.running = null; // the frame ended
     h.ledger.meta.awake = false;
-    expect(ensureDefaultLoop(h.ledger, h.now)).toEqual([]);
+    expect(advance(h.ledger, h.now)).toEqual([]);
     h.ledger.meta.awake = true;
     expect(
-      ensureDefaultLoop(h.ledger, h.now).some(
-        (e) => e.kind === "send" && e.msg.t === "executionQueued",
-      ),
+      advance(h.ledger, h.now).some((e) => e.kind === "send" && e.msg.t === "executionQueued"),
     ).toBe(true);
   });
 
@@ -292,11 +287,11 @@ describe("the sleep policy", () => {
 
   test("coreLaunched is idempotent and coreGone forgets", () => {
     const h = cloud();
-    coreLaunched(h.ledger, "microvm-a", 1);
-    coreLaunched(h.ledger, "microvm-a", 2);
+    cloudCoreLaunched(h.ledger, "microvm-a", "t".repeat(32), 1);
+    cloudCoreLaunched(h.ledger, "microvm-a", "t".repeat(32), 2);
     expect(h.ledger.cores.size).toBe(1);
     expect(h.ledger.cores.get("microvm-a")?.launchedAt).toBe(1);
-    coreGone(h.ledger, "microvm-a");
+    cloudCoreGone(h.ledger, "microvm-a");
     expect(h.ledger.cores.size).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-import { canonicalStringify, PROTOCOL_VERSION, RELEASED, type Result } from "@tabframe/protocol";
+import { canonicalStringify, RELEASED, type Result } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
 import type {
   ExecutionRecord,
@@ -9,7 +9,13 @@ import type {
   WriteRecord,
 } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
-import { cancelOthers, runningAttempts } from "./scheduler.ts";
+import {
+  COMPUTE_MS_REPORT_CAP,
+  MAX_CONTESTED_ROUNDS,
+  RELEASES_PER_TASK_CAP,
+  RESULTS_PER_TASK_CAP,
+} from "./policy.ts";
+import { cancelOthers, failTask, releaseTask, setStatus } from "./tasks.ts";
 
 /** Equal identities mean identical output bytes and identical written files (design §5.4). */
 export function resultIdentity(output: string, writes: WriteRecord[]): string {
@@ -43,27 +49,23 @@ export function onResult(
   const attempt = task?.attempts.find(
     (a) => a.attempt === msg.attempt && a.nodeId === node.nodeId && a.outcome === "running",
   );
-  // A report for an attempt this node never held is still evidence (D7: a late duplicate settles,
-  // verifies, or contests; the tests and the design lean on it), but it cannot *fail* a task
-  // (WP8.1): without this, any connected node could end any execution with one error message.
+  // A report for an attempt this node never held may verify or contest a *settled* task (D7's
+  // late duplicate); it can neither settle an open task nor fail one: any visitor holds the public
+  // token and task ids are sequential, so an open task is closed only by a node that was given it.
   const known = task?.attempts.find((a) => a.attempt === msg.attempt && a.nodeId === node.nodeId);
-  // (WP8.2) An unknown attempt may verify or contest a *settled* task (D7's late duplicate); it
-  // can neither settle an open task nor fail one: any visitor holds the public token and task ids
-  // are sequential, so an open task must only be closed by a node that was given it.
   if (task && !known && (task.status !== "done" || !task.accepted || msg.error !== undefined))
     return { effects, settlement: { kind: "none" } };
-  // Compute time is what the node says, within a bound (WP8.1): the attempt's own deadline window
-  // or ten minutes, whichever is longer, so a report cannot spend the execution's budget at will.
+  // Compute time is what the node says, within a bound: the attempt's own deadline window or ten
+  // minutes, whichever is longer, so a report cannot spend the execution's budget at will.
   const bound = Math.max(COMPUTE_MS_REPORT_CAP, known ? known.deadlineAt - known.assignedAt : 0);
   if (msg.computeMs > bound) msg = { ...msg, computeMs: bound };
   if (task) msg = checkTileSize(ledger, task, msg);
   if (attempt) node.inFlight = node.inFlight.filter((id) => id !== msg.taskId);
   if (msg.error === RELEASED) {
     // The node gave up at its own deadline: the attempt is released, the task is not judged — but
-    // the time it held the task is charged to the execution (WP8.2: a program that spins for ever
-    // used to be free), and a task released too many times is a program fault, not bad luck.
-    // Only the running attempt can be released (WP8.3): a replayed release charged the budget again
-    // and again, so a single node could fail any execution with a handful of frames.
+    // the time it held the task is charged to the execution (a program that spins for ever is not
+    // free), and a task released too many times is a program fault, not bad luck. Only the running
+    // attempt can be released: a replayed release would charge the budget again and again.
     if (!attempt) return { effects, settlement: { kind: "none" } };
     attempt.outcome = "released";
     const exec = task ? ledger.executions.get(task.executionId) : undefined;
@@ -72,17 +74,12 @@ export function onResult(
     if (task && exec?.status === "running") {
       const released = task.attempts.filter((a) => a.outcome === "released").length;
       if (released >= RELEASES_PER_TASK_CAP && task.status !== "done" && task.status !== "failed") {
-        effects.push(...cancelOthers(ledger, task, null));
-        task.status = "failed";
-        task.failure = `released ${released} times: the task never finishes within its deadline`;
-        exec.counters.failed += 1;
-        effects.push(
-          ...broadcast(ledger, { t: "taskFailed", taskId: task.taskId, reason: task.failure }),
-        );
-        return { effects, settlement: { kind: "failed", task, reason: task.failure } };
+        const reason = `released ${released} times: the task never finishes within its deadline`;
+        effects.push(...failTask(ledger, exec, task, reason, now));
+        return { effects, settlement: { kind: "failed", task, reason } };
       }
     }
-    if (task) effects.push(...releaseIfOrphaned(ledger, task, node.nodeId));
+    if (task) effects.push(...releaseTask(ledger, task, node.nodeId));
     return { effects, settlement: { kind: "none" } };
   }
   if (!task) return { effects, settlement: { kind: "none" } };
@@ -122,11 +119,11 @@ export function onResult(
   );
   if (earlier && earlier.identity === record.identity)
     return { effects, settlement: { kind: "none" } };
-  // Bounded evidence (WP8.1): every record travels in snapshots and handovers.
+  // Bounded evidence: every record travels in snapshots and handovers.
   if (task.results.length >= RESULTS_PER_TASK_CAP) return { effects, settlement: { kind: "none" } };
   // The budget, the deadline samples, and the node's speed are charged once per attempt the ledger
-  // handed out (WP8.3), after the duplicate checks: a replayed report used to spend the execution's
-  // budget every time it arrived and feed the deadline model with copies.
+  // handed out, after the duplicate checks: a replayed report must not spend the budget again or
+  // feed the deadline model with copies.
   if (attempt) {
     node.tasksDone += 1;
     node.lastTaskMs = msg.computeMs;
@@ -175,9 +172,9 @@ export function onResult(
     const chosen = round[0] as ResultRecord;
     const accepted = accept(ledger, exec, task, chosen, node.nodeId, now);
     if (task.requiredAgreement > 1 && task.status === "done") {
-      // Agreement by recompute (redundancy on): the node that completed it verified the other.
-      // Without this the toggle's own counter never moved — a twin that agrees *after* a task is
-      // done was counted, the pair that settles it together was not (found by the WP4.4 demo).
+      // Agreement by recompute (redundancy on): the node that completed it verified the other, so
+      // the toggle's counter moves for the pair that settles a task together, not only for a twin
+      // that agrees after it is done.
       exec.counters.verified += 1;
       accepted.push(
         ...broadcast(ledger, { t: "taskVerified", taskId: task.taskId, nodeId: node.nodeId }),
@@ -189,16 +186,9 @@ export function onResult(
   return { effects, settlement: { kind: "none" } };
 }
 
-/** Records kept per task (WP8.1). */
-export const RESULTS_PER_TASK_CAP = 16;
-/** Releases a task survives before it is a program fault (WP8.2). */
-export const RELEASES_PER_TASK_CAP = 6;
-/** The most compute time one report may claim (WP8.1). */
-export const COMPUTE_MS_REPORT_CAP = 10 * 60_000;
-
 /**
- * Settle a task on the result it already holds (WP8.1): when redundancy is turned off, a task that
- * waited for a twin settles on the one report it has.
+ * Settle a task on the result it already holds: when redundancy is turned off, a task that waited
+ * for a twin settles on the one report it has.
  */
 export function settleExisting(
   ledger: Ledger,
@@ -231,21 +221,6 @@ function checkTileSize(ledger: Ledger, task: TaskRecord, msg: Result): Result {
   };
 }
 
-/** With no attempt left running and nothing decided this round, the task goes back to the front. */
-function releaseIfOrphaned(ledger: Ledger, task: TaskRecord, fromNode: string): Effect[] {
-  if (task.status !== "assigned" || runningAttempts(task) > 0) return [];
-  if (task.results.some((r) => r.round === task.contestedRounds)) return [];
-  task.status = "pending";
-  task.released = true;
-  const exec = ledger.executions.get(task.executionId);
-  if (exec) {
-    exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
-    exec.counters.pending += 1;
-    exec.counters.reassigned += 1;
-  }
-  return broadcast(ledger, { t: "taskReassigned", taskId: task.taskId, fromNode });
-}
-
 /**
  * A done task whose result the execution has already built on: a plan task once its spec was
  * fetched, a run task once its stage was folded. Retracting it would unwind a manifest that
@@ -270,22 +245,12 @@ function accept(
   byNode: string,
   now: number,
 ): Effect[] {
-  const effects: Effect[] = [];
-  effects.push(...cancelOthers(ledger, task, null));
   task.accepted = result;
+  if (result.identity.startsWith("error:"))
+    return failTask(ledger, exec, task, result.identity.slice(6), now);
+  const effects = cancelOthers(ledger, task, null);
+  setStatus(exec, task, "done");
   task.doneAt = now;
-  if (task.status === "assigned") exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
-  if (result.identity.startsWith("error:")) {
-    task.status = "failed";
-    task.failure = result.identity.slice(6);
-    exec.counters.failed += 1;
-    effects.push(
-      ...broadcast(ledger, { t: "taskFailed", taskId: task.taskId, reason: task.failure }),
-    );
-    return effects;
-  }
-  task.status = "done";
-  exec.counters.done += 1;
   effects.push(
     ...broadcast(ledger, {
       t: "taskDone",
@@ -311,22 +276,15 @@ function contest(
   effects.push(...broadcast(ledger, { t: "taskMismatch", taskId: task.taskId, nodeId: byNode }));
   effects.push(...cancelOthers(ledger, task, null));
   if (task.status === "done") {
-    // Retraction (toggle off): the painted tile is withdrawn and recomputed.
-    exec.counters.done = Math.max(0, exec.counters.done - 1);
+    // Retraction: the painted tile is withdrawn and recomputed.
     task.accepted = null;
     task.doneAt = null;
-  } else if (task.status === "assigned") {
-    exec.counters.assigned = Math.max(0, exec.counters.assigned - 1);
   }
   task.contestedRounds += 1;
-  task.status = "pending";
+  setStatus(exec, task, "pending");
   task.released = true;
-  exec.counters.pending += 1;
   return effects;
 }
-
-/** Rounds after which a tied vote is broken by report order rather than by another round. */
-const MAX_CONTESTED_ROUNDS = 4;
 
 /**
  * After the second contested round, the identity reported by the most nodes wins (D7). Votes are
@@ -363,11 +321,6 @@ function settleContested(
   if (!winner) return { kind: "contested", task };
   if (tied && task.contestedRounds < MAX_CONTESTED_ROUNDS) return { kind: "contested", task };
   task.resolvedByVote = true;
-  exec.counters.pending = Math.max(0, exec.counters.pending - 1);
-  task.status = "assigned"; // accept() expects an open task
-  exec.counters.assigned += 1;
   effects.push(...accept(ledger, exec, task, winner, winner.nodeId, now));
   return settlementFor(task, winner);
 }
-
-export { PROTOCOL_VERSION, runningAttempts };
