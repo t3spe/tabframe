@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { compileFixture } from "./compile.ts";
-import { blobs, dec, limits, manifest, modeInput } from "./helpers.ts";
+import { blobs, dec, H1, limits, manifest, modeInput } from "./helpers.ts";
 
 const DRIVER = path.resolve(import.meta.dir, "driver-node.ts");
 const b64 = (b: Uint8Array): string => Buffer.from(b).toString("base64");
@@ -72,8 +72,8 @@ describe("node adapter under a real Node process", () => {
       "hello world",
     );
     expect(line?.log).toBe("hello world");
-    // 11 bytes through an 8-byte region takes two chunks; the caching reader asks once per blob.
-    expect(line?.fetches).toBe(2);
+    // The caching reader asks once per blob, in region-sized chunks through the bridge.
+    expect(line?.fetches).toBe(Math.ceil((blobs[H1] as Uint8Array).length / 8));
   }, 30_000);
 
   test("a spinning loop is killed at the deadline and the host recovers with a fresh worker", async () => {
