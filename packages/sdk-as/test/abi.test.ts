@@ -1,20 +1,17 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { runTask } from "@tabframe/sandbox";
-import { compileProgram } from "../scripts/build-programs.ts";
 import { HOST_LIMITS, instantiate, loadProgram, memoryFs, ProgramError } from "../scripts/host.ts";
+import { compileIfStale, DIST_TEST } from "../scripts/programs.ts";
 
-// The echo program is compiled at test time by the compiler and flags the build uses, so these
-// tests prove the SDK's byte formats against @tabframe/protocol in both directions.
-const here = import.meta.dir;
-const out = path.join(here, "..", "dist-test", "echo.wasm");
+// The echo program is compiled by the compiler and flags the build uses, so these tests prove the
+// SDK's byte formats against @tabframe/protocol in both directions.
 let module: WebAssembly.Module;
 let wasm: Uint8Array;
 
 beforeAll(async () => {
-  await compileProgram(path.join(here, "assembly", "echo.ts"), out);
-  wasm = new Uint8Array(readFileSync(out));
+  const entry = path.join(import.meta.dir, "assembly", "echo.ts");
+  wasm = await compileIfStale(entry, path.join(DIST_TEST, "echo.wasm"));
   module = loadProgram(wasm).module;
 }, 60_000);
 

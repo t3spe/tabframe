@@ -1,31 +1,41 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { programManifest } from "@tabframe/protocol";
-import { compileProgram } from "../scripts/build-programs.ts";
-import { instantiate, loadProgram, type ProgramInstance } from "../scripts/host.ts";
+import { instantiate, loadProgram, type ProgramInstance, sha256Hex } from "../scripts/host.ts";
+import { compiledProgram, readGoldens, readManifest } from "../scripts/programs.ts";
 
-const root = path.resolve(import.meta.dir, "../../..");
-const programDir = path.join(root, "programs", "mandelbrot");
-const out = path.join(import.meta.dir, "..", "dist-test", "mandelbrot.wasm");
 let module: WebAssembly.Module;
 let wasm: Uint8Array;
 let planner: ProgramInstance;
-const manifest = programManifest.parse(
-  JSON.parse(readFileSync(path.join(programDir, "manifest.json"), "utf8")),
-);
+const manifest = readManifest("mandelbrot");
 const params = manifest.defaultParams;
 
 beforeAll(async () => {
-  await compileProgram(path.join(programDir, "assembly", "index.ts"), out);
-  wasm = new Uint8Array(readFileSync(out));
+  wasm = await compiledProgram("mandelbrot");
   module = loadProgram(wasm).module;
   planner = instantiate(module);
 }, 60_000);
 
+/** A tile's input as the planner writes it and `run` reads it: 54 little-endian bytes. */
+function tileInput(b: Uint8Array) {
+  expect(b.length).toBe(54);
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  return {
+    cx: v.getFloat64(0, true),
+    cy: v.getFloat64(8, true),
+    scale: v.getFloat64(16, true),
+    maxIter: v.getUint32(24, true),
+    canvasW: v.getUint32(28, true),
+    canvasH: v.getUint32(32, true),
+    palette: v.getUint8(36),
+    ss: v.getUint8(37),
+    x: v.getInt32(38, true),
+    y: v.getInt32(42, true),
+    w: v.getInt32(46, true),
+    h: v.getInt32(50, true),
+  };
+}
+
 describe("module", () => {
-  test("only env.abort is imported, the four exports exist, memory maximum is declared, under 32 KB", async () => {
+  test("only env.abort is imported, the four exports exist, the memory maximum is declared; a 32 KB size budget", () => {
     const { imports, exports, memory } = loadProgram(wasm);
     expect(imports).toEqual(["env.abort"]);
     expect(exports.sort()).toEqual(["alloc", "memory", "plan", "run"]);
@@ -60,7 +70,13 @@ describe("plan", () => {
       const d = (p.x + 32 - 1024) ** 2 + (p.y + 32 - 640) ** 2;
       expect(d).toBeGreaterThanOrEqual(last);
       last = d;
-      expect(t.input.length).toBe(8 * 3 + 4 * 3 + 2 + 4 * 4);
+      // The input carries the placement and the canvas the tile is rendered against.
+      const input = tileInput(t.input);
+      expect(input).toMatchObject({ canvasW: 2048, canvasH: 1280, palette: 0, x: p.x, y: p.y });
+      expect([input.w, input.h]).toEqual([64, 64]);
+      expect(input.ss).toBeGreaterThanOrEqual(1);
+      expect(input.ss).toBeLessThanOrEqual(8);
+      expect(input.maxIter).toBeGreaterThan(0);
     }
     expect(seen.size).toBe(640);
     const first = spec.tasks[0]?.place as { x: number; y: number };
@@ -84,13 +100,9 @@ describe("plan", () => {
 });
 
 describe("run", () => {
-  const goldens = JSON.parse(readFileSync(path.join(programDir, "goldens.json"), "utf8")) as {
-    hashes: string[];
-    taskCount: number;
-  };
-  const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+  const goldens = readGoldens<{ hashes: string[]; taskCount: number }>("mandelbrot");
 
-  test("a tile is 64×64 RGBA with alpha 255 and both interior and exterior pixels; two runs are identical", async () => {
+  test("a tile is 64×64 RGBA with alpha 255 and both interior and exterior pixels; two runs are identical", () => {
     const spec = planner.plan(0, params);
     if (spec.kind !== "stage") throw new Error("stage expected");
     const centre = spec.tasks[0] as (typeof spec.tasks)[number];
@@ -109,38 +121,25 @@ describe("run", () => {
     expect(black).toBeGreaterThan(0);
     expect(colored).toBeGreaterThan(0);
   });
-  test("palette changes the bytes, and mono tiles are grey", async () => {
+  test("palette changes the bytes, and mono tiles are grey", () => {
     const fire = planner.plan(0, { preset: 0, palette: "fire" });
     const mono = planner.plan(0, { preset: 0, palette: "mono" });
     const ocean = planner.plan(0, params);
     if (fire.kind !== "stage" || mono.kind !== "stage" || ocean.kind !== "stage")
       throw new Error("stage expected");
     const i = 200;
-    const fireTile = instantiate(module).run(
-      0,
-      i,
-      640,
-      (fire.tasks[i] as (typeof fire.tasks)[number]).input,
-    );
-    const monoTile = instantiate(module).run(
-      0,
-      i,
-      640,
-      (mono.tasks[i] as (typeof mono.tasks)[number]).input,
-    );
-    const oceanTile = instantiate(module).run(
-      0,
-      i,
-      640,
-      (ocean.tasks[i] as (typeof ocean.tasks)[number]).input,
-    );
+    const tile = (spec: typeof fire) =>
+      instantiate(module).run(0, i, 640, (spec.tasks[i] as (typeof spec.tasks)[number]).input);
+    const fireTile = tile(fire);
+    const monoTile = tile(mono);
+    const oceanTile = tile(ocean);
     expect(fireTile).not.toEqual(oceanTile);
     for (let p = 0; p < monoTile.length; p += 4) {
       expect(monoTile[p]).toBe(monoTile[p + 1] as number);
       expect(monoTile[p]).toBe(monoTile[p + 2] as number);
     }
   });
-  test("a deterministic sample of tiles matches goldens.json", async () => {
+  test("a deterministic sample of tiles matches goldens.json", () => {
     expect(goldens.taskCount).toBe(640);
     expect(goldens.hashes.length).toBe(640);
     const spec = planner.plan(0, params);
@@ -148,7 +147,7 @@ describe("run", () => {
     for (let i = 0; i < 640; i += 40) {
       const task = spec.tasks[i] as (typeof spec.tasks)[number];
       const tile = instantiate(module).run(0, i, 640, task.input);
-      expect(sha(tile)).toBe(goldens.hashes[i] as string);
+      expect(sha256Hex(tile)).toBe(goldens.hashes[i] as string);
     }
   }, 60_000);
 });

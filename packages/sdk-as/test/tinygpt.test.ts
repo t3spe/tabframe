@@ -1,18 +1,13 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { programManifest } from "@tabframe/protocol";
-import { compileProgram } from "../scripts/build-programs.ts";
-import { loadProgram, runStaged } from "../scripts/host.ts";
+import { loadProgram, runStaged, sha256Hex } from "../scripts/host.ts";
+import { compiledProgram, inputsOf, programDir, readManifest } from "../scripts/programs.ts";
 
-// Tiny GPT (WP6.5): the forward pass in WebAssembly against the reference its training script
-// wrote with the same (dequantised) weights. Skipped when the weights are not there.
-const root = path.resolve(import.meta.dir, "../../..");
-const programDir = path.join(root, "programs", "tinygpt");
-const out = path.join(import.meta.dir, "..", "dist-test", "tinygpt.wasm");
-const weightsFile = path.join(programDir, "in", "weights.bin");
-const referenceFile = path.join(programDir, "train", "reference.json");
+// The forward pass in WebAssembly against the reference its training script wrote with the same
+// (dequantised) weights. Skipped when the weights or the reference are not there.
+const weightsFile = path.join(programDir("tinygpt"), "in", "weights.bin");
+const referenceFile = path.join(programDir("tinygpt"), "train", "reference.json");
 const have = existsSync(weightsFile) && existsSync(referenceFile);
 
 interface Reference {
@@ -23,21 +18,10 @@ interface Reference {
 }
 
 let module: WebAssembly.Module;
-const manifest = programManifest.parse(
-  JSON.parse(readFileSync(path.join(programDir, "manifest.json"), "utf8")),
-);
-
-function bundleInputs(): Map<string, Uint8Array> {
-  const m = new Map<string, Uint8Array>();
-  for (const f of readdirSync(path.join(programDir, "in")).sort())
-    m.set(`/in/${f}`, new Uint8Array(readFileSync(path.join(programDir, "in", f))));
-  return m;
-}
-const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+const manifest = readManifest("tinygpt");
 
 beforeAll(async () => {
-  await compileProgram(path.join(programDir, "assembly", "index.ts"), out);
-  module = loadProgram(new Uint8Array(readFileSync(out))).module;
+  module = loadProgram(await compiledProgram("tinygpt")).module;
 }, 120_000);
 
 describe.skipIf(!have)("tiny GPT", () => {
@@ -47,11 +31,12 @@ describe.skipIf(!have)("tiny GPT", () => {
     expect(manifest.defaultParams.tokens).toBe(96);
   });
 
-  test("the continuations agree with the reference, token for token, and the bytes are the same every run", async () => {
+  test("the continuations agree with the reference, token for token, and the bytes are the same every run", () => {
     const refs = JSON.parse(readFileSync(referenceFile, "utf8")) as Reference[];
     const prompts = refs.map((r) => r.prompt).join("|");
+    const inputs = inputsOf("tinygpt");
     const started = performance.now();
-    const run = runStaged(module, bundleInputs(), { prompts, tokens: 24 });
+    const run = runStaged(module, inputs, { prompts, tokens: 24 });
     const ms = performance.now() - started;
     expect(run.stages.map((s) => s.name)).toEqual(["generate", "collect"]);
     const stage0 = run.stages[0];
@@ -92,12 +77,12 @@ describe.skipIf(!have)("tiny GPT", () => {
       `[tinygpt] ${refs.length} prompts × 24 tokens in ${ms.toFixed(0)} ms (${(ms / (refs.length * 24)).toFixed(1)} ms per token, compared ${compared})`,
     );
     // Determinism: the same task twice gives the same bytes.
-    const again = runStaged(module, bundleInputs(), { prompts, tokens: 24 });
+    const again = runStaged(module, inputs, { prompts, tokens: 24 });
     expect(again.stages[0]?.hashes).toEqual(stage0.hashes);
     // The collect stage joins every continuation into the text the dashboard shows.
     expect(run.final).not.toBeNull();
     const text = new TextDecoder().decode(run.final as Uint8Array);
     for (const r of refs) expect(text).toContain(r.prompt);
-    expect(sha(run.final as Uint8Array)).toBe(sha(again.final as Uint8Array));
+    expect(sha256Hex(run.final as Uint8Array)).toBe(sha256Hex(again.final as Uint8Array));
   }, 300_000);
 });
