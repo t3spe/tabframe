@@ -1,8 +1,20 @@
 import { z } from "zod";
-import { fsPath } from "./fs.ts";
+import { writeEntry } from "./fs.ts";
 import { LIMITS } from "./limits.ts";
-import { envelope, hash, hostId, millis, nodeId, nodeKind } from "./shared.ts";
-import { taskKind, taskLimits } from "./task.ts";
+import {
+  envelope,
+  executionId,
+  hash,
+  hostId,
+  millis,
+  nodeId,
+  nodeKind,
+  presignBody,
+  presignedBody,
+  storeUrl,
+  taskId,
+} from "./shared.ts";
+import { taskKind, taskLimits, taskLog } from "./task.ts";
 
 /** Node → control plane. */
 export const hello = z.object({
@@ -12,7 +24,7 @@ export const hello = z.object({
   kind: nodeKind,
   cores: z.number().int().min(1).max(1024),
   sandboxVersion: z.string().min(1).max(32),
-  /** A cloud core proves it is the MicroVM it names: the token its run payload carried (WP8.2). */
+  /** A cloud core proves it is the MicroVM it names: the token its run payload carried. */
   coreToken: z.string().min(16).max(64).optional(),
 });
 
@@ -25,8 +37,6 @@ export const heartbeat = z.object({
   tasksDone: z.number().int().nonnegative(),
 });
 
-const writeEntry = z.object({ path: fsPath, hash, size: z.number().int().nonnegative() });
-
 /**
  * The error string a node sends when it gave up on a task at its own deadline (design §4.2): not a
  * program fault, so the control plane releases the attempt instead of failing the task.
@@ -38,17 +48,14 @@ export const result = z
   .object({
     t: z.literal("result"),
     ...envelope,
-    taskId: z.string().min(1).max(64),
+    taskId,
     attempt: z.number().int().min(1),
     output: hash.optional(),
     /** Byte length of the output blob, for the filesystem manifest entry. */
     outputSize: z.number().int().nonnegative().optional(),
     error: z.string().min(1).max(1024).optional(),
     writes: z.array(writeEntry).max(LIMITS.maxWriteFiles).default([]),
-    log: z
-      .union([z.object({ hash }), z.object({ text: z.string().max(LIMITS.maxInlineLogBytes) })])
-      .nullable()
-      .default(null),
+    log: taskLog.default(null),
     computeMs: millis,
   })
   .refine((r) => (r.output === undefined) !== (r.error === undefined), {
@@ -59,14 +66,7 @@ export const result = z
   });
 
 /** Ask for presigned upload URLs for these hashes (design D18). */
-export const presign = z.object({
-  t: z.literal("presign"),
-  ...envelope,
-  items: z
-    .array(z.object({ hash, size: z.number().int().positive().max(LIMITS.maxOutputBytes) }))
-    .min(1)
-    .max(LIMITS.maxPresignItems),
-});
+export const presign = z.object({ t: z.literal("presign"), ...envelope, ...presignBody });
 
 export const nodeToControlPlane = z.discriminatedUnion("t", [hello, heartbeat, result, presign]);
 
@@ -77,15 +77,15 @@ export const welcome = z.object({
   nodeId,
   heartbeatMs: millis,
   maxInFlight: z.number().int().min(1).max(8),
-  storeBase: z.string().url().or(z.string().startsWith("/")),
+  storeBase: storeUrl,
 });
 
 export const assign = z.object({
   t: z.literal("assign"),
   ...envelope,
-  taskId: z.string().min(1).max(64),
+  taskId,
   attempt: z.number().int().min(1),
-  executionId: z.string().min(1).max(64),
+  executionId,
   program: hash,
   kind: taskKind,
   stage: z.number().int().nonnegative(),
@@ -98,11 +98,7 @@ export const assign = z.object({
   limits: taskLimits,
 });
 
-export const cancel = z.object({
-  t: z.literal("cancel"),
-  ...envelope,
-  taskId: z.string().min(1).max(64),
-});
+export const cancel = z.object({ t: z.literal("cancel"), ...envelope, taskId });
 
 export const command = z.object({
   t: z.literal("command"),
@@ -110,18 +106,7 @@ export const command = z.object({
   op: z.enum(["close", "freeze", "throttle", "resume"]),
 });
 
-export const presigned = z.object({
-  t: z.literal("presigned"),
-  ...envelope,
-  urls: z.array(
-    z.object({
-      hash,
-      /** Absent when the store already has the bytes. */
-      url: z.string().url().or(z.string().startsWith("/")).nullable(),
-      headers: z.record(z.string(), z.string()),
-    }),
-  ),
-});
+export const presigned = z.object({ t: z.literal("presigned"), ...envelope, ...presignedBody });
 
 export const controlPlaneToNode = z.discriminatedUnion("t", [
   welcome,
