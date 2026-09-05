@@ -37,4 +37,32 @@ test moved beside it, so `tests/` holds the two repository-wide checks.
 
 ## Deploy and demo
 
-DEPLOY_DEMO
+Three deploys closed the milestone, each `mise run deploy` from a green main: guard, 679 unit
+tests, 30 browser tests, the IAM gate (no flag needed), the four stacks, `up`.
+
+| Deploy | Main | Generation | Image | What it carried | Checked by |
+|---|---|---|---|---|---|
+| 1 | `3d4d02a` | 134 | 27.0 | the whole M9 tree | `mise run demo -- --repeat 3`: three passes, 6.5 min |
+| 2 | `4782993` | 138 | 28.0 | the health script fix below | `mise run health`: `/health` and `/diag` 200, build `4782993`, `authoritative: true`, image version `28.0` |
+| 3 | `2c3ccd7` | 139 | 29.0 | the handover diagnostic below | `mise run health`: 200/200, build `2c3ccd7`, image version `29.0`; one more demo pass (1.8 min, rotated to 140 inside it) |
+
+**The live deploy caught what no test could.** The refactored health script asked CloudFormation for
+a resource named `FleetSecret`; CDK hashes nested logical ids (`FleetSecret09141AA3`), so the first
+`mise run health` after deploy 1 failed. The Core stack now outputs `FleetSecretArn` beside
+`PointerParameter`, the script reads the output, the resource lookup went (no caller left), and the
+synth test pins both outputs. The rotate function, the demo, and the dashboard never touched that
+path, which is why the deploy and the three passes were green while the operator's first command was
+not.
+
+**A rotation reported `handedOver: false`.** Deploy 2's rotation got 502 from the predecessor on
+`/handover` and `/drain`, and the successor adopted the snapshot. The MicroVM API named the cause:
+the predecessor was `TERMINATED` with `Resume lifecycle hook connection was refused` — the idle
+policy had suspended it (fifteen minutes without traffic after the third demo pass), and the
+platform could not resume it for the handover. Its suspend hook had written a snapshot 58 s before
+the rotation, and nothing changed in between, so the successor lost nothing (32 executions, 1284
+tasks carried). The same 502 appears three earlier times since 2026-09-02: 4 of 41 rotations, all
+on a machine nobody was watching; not a regression. The rotate function now fetches the
+predecessor's state and reason into its warning (tested), and the runbook has the row.
+
+The MicroVM log group could not help: as the runbook records, a run stream carries only the first
+line a process writes. The snapshots in S3 and the MicroVM API were the evidence.
