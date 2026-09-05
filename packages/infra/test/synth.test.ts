@@ -1,14 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as cdk from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { CANARY_ENV, ROTATE_ENV, SESSION_ENV } from "../../fleet/src/env.ts";
 import { NAMES } from "../../fleet/src/names.ts";
-import { CoreStack } from "../lib/core-stack.ts";
-import { FleetStack } from "../lib/fleet-stack.ts";
-import { ImageStack } from "../lib/image-stack.ts";
-import { WebStack } from "../lib/web-stack.ts";
+import { buildApp } from "../lib/app.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -16,30 +12,18 @@ const env = { account: "123456789012", region: "us-west-2" };
 const PLACEHOLDER_EMAIL = "budget@example.invalid";
 
 function synth(budgetEmail?: string) {
-  const app = new cdk.App({
+  const { app, core, image, fleet, web } = buildApp(
+    {
+      env,
+      budgetEmail: budgetEmail ?? null,
+      stagingDir: resolve(repoRoot, "packages/infra/image"),
+      fleetDir: resolve(repoRoot, "packages/fleet"),
+      // A directory that exists in the repo stands in for the built bundle.
+      webDistDir: resolve(repoRoot, "packages/web/public"),
+    },
     // Skip esbuild bundling of the fleet functions during tests; the templates are what we assert.
-    context: { "aws:cdk:bundling-stacks": [] },
-  });
-  const core = new CoreStack(app, "TabframeCore", { env, ...(budgetEmail ? { budgetEmail } : {}) });
-  const image = new ImageStack(app, "TabframeImage", {
-    env,
-    core,
-    baseImageVersion: "1",
-    stagingDir: resolve(repoRoot, "packages/infra/image"),
-  });
-  const fleet = new FleetStack(app, "TabframeFleet", {
-    env,
-    core,
-    image,
-    fleetDir: resolve(repoRoot, "packages/fleet"),
-  });
-  const web = new WebStack(app, "TabframeWeb", {
-    env,
-    core,
-    fleet,
-    // A directory that exists in the repo stands in for the built bundle.
-    distDir: resolve(repoRoot, "packages/web/public"),
-  });
+    { "aws:cdk:bundling-stacks": [] },
+  );
   const assembly = app.synth();
   return {
     core: Template.fromStack(core),
@@ -196,8 +180,8 @@ describe("Image stack", () => {
 describe("CloudFront response header policies", () => {
   const { core } = synth();
   test("security headers are never custom headers (CloudFront refuses the policy at deploy time)", () => {
-    // Found by the first deploy after WP8.1: `Content-Security-Policy` in `customHeaders` synthesises
-    // fine and fails as CREATE_FAILED. The blob policy's CSP now lives in the security headers block.
+    // `Content-Security-Policy` among the custom headers synthesises fine and fails as
+    // CREATE_FAILED; the blob policy's CSP lives in the security headers block.
     const security = new Set([
       "content-security-policy",
       "x-frame-options",
@@ -236,8 +220,7 @@ describe("Fleet stack", () => {
   const { fleet, image } = synth();
 
   test("three Node 22 arm64 functions with the design's names and concurrency", () => {
-    // Ours (session, rotate, and since WP8.2 the canary), plus the retention provider CDK adds
-    // for `logRetention` on existing log groups.
+    // Session, rotate and the canary, plus the retention provider CDK adds for `logRetention`.
     fleet.resourceCountIs("AWS::Lambda::Function", 4);
     fleet.resourceCountIs("Custom::LogRetention", 3);
     fleet.hasResourceProperties("AWS::Lambda::Function", {
@@ -248,12 +231,6 @@ describe("Fleet stack", () => {
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-rotate",
       Timeout: 600,
-      Environment: {
-        Variables: Match.objectLike({
-          TABFRAME_SESSION_URL: Match.anyValue(),
-          TABFRAME_FLEET_SECRET_ARN: Match.anyValue(),
-        }),
-      },
     });
   });
 
@@ -274,12 +251,6 @@ describe("Fleet stack", () => {
       FunctionName: "tabframe-canary",
       MemorySize: 128,
       Timeout: 10,
-      Environment: {
-        Variables: Match.objectLike({
-          TABFRAME_WEB_ORIGIN: Match.anyValue(),
-          TABFRAME_SESSION_URL: Match.anyValue(),
-        }),
-      },
     });
     fleet.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)" });
     // Its policy names CloudWatch only: never a MicroVM action, so it cannot wake the machine.
@@ -326,8 +297,8 @@ describe("Fleet stack", () => {
     expect(sessionPolicy).not.toContain("lambda:RunMicrovm");
     const rotatePolicy = policies.find((p) => p.includes("RotateServiceRole"));
     expect(rotatePolicy).toContain("lambda:RunMicrovm");
-    // The launchers may run the Tabframe image only (WP8.1 claimed it, WP8.2 landed it): no
-    // RunMicrovm statement in either stack names a wildcard image.
+    // The launchers may run the Tabframe image only: no RunMicrovm statement in either stack names
+    // a wildcard image.
     for (const resources of [runMicrovmResources(fleet), runMicrovmResources(image)]) {
       expect(resources.length).toBeGreaterThan(0);
       for (const r of resources) expect(r).not.toContain("microvm-image:*");
@@ -353,6 +324,14 @@ describe("assembly", () => {
     expect(deps.TabframeImage).toEqual(["TabframeCore"]);
     expect(deps.TabframeFleet).toEqual(["TabframeCore", "TabframeImage"]);
     expect(deps.TabframeWeb).toEqual(["TabframeCore", "TabframeFleet"]);
+  });
+
+  test("the address that configures the budget also subscribes it to the alarms", () => {
+    const { fleet } = synth(PLACEHOLDER_EMAIL);
+    fleet.hasResourceProperties("AWS::SNS::Subscription", {
+      Protocol: "email",
+      Endpoint: PLACEHOLDER_EMAIL,
+    });
   });
 });
 
