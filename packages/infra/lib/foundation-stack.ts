@@ -207,5 +207,7 @@ export class FoundationStack extends cdk.Stack {
     new cdk.CfnOutput(this, "WebBucketName", { value: this.webBucket.bucketName });
     new cdk.CfnOutput(this, "ArtifactsBucketName", { value: this.artifactsBucket.bucketName });
     new cdk.CfnOutput(this, "PointerParameter", { value: this.pointer.parameterName });
+    // The operator scripts probe the private port with the fleet secret; the ARN is not a secret.
+    new cdk.CfnOutput(this, "FleetSecretArn", { value: this.fleetSecret.secretArn });
   }
 }

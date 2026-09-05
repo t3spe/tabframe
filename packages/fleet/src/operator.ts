@@ -1,11 +1,7 @@
 // Wiring for the operator scripts: real clients under the Tabframe identity, and what the deployed
 // stacks say about themselves. Importing this module refuses any other identity, so a script run
 // by hand cannot fall back to a default profile.
-import {
-  CloudFormationClient,
-  DescribeStackResourceCommand,
-  DescribeStacksCommand,
-} from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import {
   EventBridgeRuleControl,
   LambdaInvoker,
@@ -37,16 +33,6 @@ export async function stackOutputs(stackName: string): Promise<Record<string, st
   return Object.fromEntries(
     (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
   );
-}
-
-/** The physical id of one of a deployed stack's resources, for what the stacks do not output. */
-export async function stackResourceId(stackName: string, logicalId: string): Promise<string> {
-  const r = await cfn.send(
-    new DescribeStackResourceCommand({ StackName: stackName, LogicalResourceId: logicalId }),
-  );
-  const id = r.StackResourceDetail?.PhysicalResourceId;
-  if (!id) throw new Error(`${stackName} has no ${logicalId} resource; deploy first`);
-  return id;
 }
 
 /** The image ARN embeds the account id, so it is never in the repo: the environment or the deployed stack names it. */
