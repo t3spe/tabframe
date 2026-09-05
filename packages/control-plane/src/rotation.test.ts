@@ -4,36 +4,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { HANDOVER_LEASE_MS } from "@tabframe/core";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
-import type { Config } from "./config.ts";
 import { buildFixturePrograms } from "./fixtures.ts";
 import { discoverPrograms } from "./seed.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
+import { privateUrl, runHook, testConfig } from "./testing.ts";
 
 const SECRET = "fleet-secret-for-the-test";
-const imageConfig: Config = {
-  mode: "image",
-  allowOpenFleetRoutes: true,
-  publicPort: 0,
-  privatePort: 0,
-  host: "127.0.0.1",
-  generation: 1,
-  storeBase: null,
-  webDir: null,
-  blobBucket: null,
-  localOff: false,
-  localNeutral: false,
-  tickMs: 50,
-  programsDir: null,
-  defaultProgram: "mandelbrot",
-  snapshotBucket: null,
-  snapshotEveryMs: 60_000,
-  coreCheckMs: 60_000,
-  imageArn: null,
-  imageVersion: null,
-  coreRoleArn: null,
-  region: "us-west-2",
-  sessionUrl: null,
-};
+const imageConfig = testConfig();
 
 const planes: ControlPlane[] = [];
 let programsDir = "";
@@ -56,22 +33,14 @@ async function boot(generation: number, seed = true): Promise<ControlPlane> {
   return cp;
 }
 
-const priv = (cp: ControlPlane, path: string) =>
-  `http://127.0.0.1:${cp.privateAddress.port}${path}`;
+const priv = privateUrl;
 
 async function run(cp: ControlPlane, generation: number): Promise<void> {
-  const res = await fetch(priv(cp, "/aws/lambda-microvms/runtime/v1/run"), {
-    method: "POST",
-    body: JSON.stringify({
-      microvmId: `vm-${generation}`,
-      runHookPayload: JSON.stringify({
-        role: "control-plane",
-        generation,
-        snapshotKey: null,
-        fleetSecret: SECRET,
-      }),
-    }),
-  });
+  const res = await runHook(
+    cp,
+    { role: "control-plane", generation, snapshotKey: null, fleetSecret: SECRET },
+    `vm-${generation}`,
+  );
   expect(res.status).toBe(200);
 }
 

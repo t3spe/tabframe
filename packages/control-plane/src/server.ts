@@ -153,6 +153,8 @@ export async function createControlPlane(
     if (ledger) dispatch({ kind: "tick" });
   }
   let sessionUrl: string | null = config.sessionUrl;
+  const configuredVersion = (): string | null =>
+    config.mode === "image" ? (config.cores?.imageVersion ?? null) : null;
   let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
 
@@ -189,10 +191,7 @@ export async function createControlPlane(
   /** Fresh or adopted, the ledger is ours from here: announce the role and seed the programs. */
   /** Cloud cores need the image, the core role, and a session URL to point the cores at. */
   function canRunCores(): boolean {
-    return Boolean(
-      deps.cores ??
-        (config.imageArn && config.coreRoleArn && sessionUrl && config.mode === "image"),
-    );
+    return Boolean(deps.cores ?? (config.mode === "image" && config.cores && sessionUrl));
   }
 
   function becomeControlPlane(gen: number, base: string, adopted: Ledger | null): void {
@@ -207,13 +206,13 @@ export async function createControlPlane(
       ledger = createLedger(gen, { storeBase: base, cloudCores: canRunCores() }, clock.now());
     }
     ledger.config.cloudCores = canRunCores();
-    if (canRunCores() && !cores) {
+    if (!cores && config.mode === "image" && config.cores && sessionUrl) {
       fleetConfig = {
-        imageArn: config.imageArn as string,
-        imageVersion: runningImageVersion ?? config.imageVersion,
-        coreRoleArn: config.coreRoleArn as string,
+        imageArn: config.cores.imageArn,
+        imageVersion: runningImageVersion ?? config.cores.imageVersion,
+        coreRoleArn: config.cores.coreRoleArn,
         region: config.region,
-        sessionUrl: sessionUrl as string,
+        sessionUrl,
         storeBase: base,
         generation: gen,
         fleetSecret,
@@ -644,7 +643,7 @@ export async function createControlPlane(
           .describe(microvmId)
           .then((info) => {
             runningImageVersion = info?.imageVersion ?? null;
-            if (fleetConfig) fleetConfig.imageVersion = runningImageVersion ?? config.imageVersion;
+            if (fleetConfig) fleetConfig.imageVersion = runningImageVersion ?? configuredVersion();
             log("image-version", { imageVersion: runningImageVersion });
           })
           .catch((err) => log("image-version-failed", { error: String(err) }));
@@ -818,7 +817,7 @@ export async function createControlPlane(
         generation,
         protocol: PROTOCOL_VERSION,
         build: buildStamp(),
-        imageVersion: runningImageVersion ?? config.imageVersion ?? null,
+        imageVersion: runningImageVersion ?? configuredVersion(),
         authoritative,
         awake: ledger?.meta.awake ?? null,
         sleepReason: ledger?.meta.sleepReason ?? null,

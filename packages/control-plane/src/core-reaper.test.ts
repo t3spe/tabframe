@@ -3,33 +3,11 @@
 // core's MicroVM is gone so the core can replace it.
 import { afterAll, describe, expect, test } from "bun:test";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
-import type { Config } from "./config.ts";
 import type { CoreFleet } from "./cores.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
+import { runHook, testConfig, until } from "./testing.ts";
 
-const config: Config = {
-  mode: "image",
-  publicPort: 0,
-  privatePort: 0,
-  host: "127.0.0.1",
-  generation: 1,
-  storeBase: null,
-  webDir: null,
-  blobBucket: null,
-  localOff: false,
-  localNeutral: false,
-  tickMs: 50,
-  programsDir: null,
-  defaultProgram: "mandelbrot",
-  snapshotBucket: null,
-  snapshotEveryMs: 60_000,
-  coreCheckMs: 100,
-  imageArn: null,
-  imageVersion: null,
-  coreRoleArn: null,
-  region: "us-west-2",
-  sessionUrl: null,
-};
+const config = testConfig({ coreCheckMs: 100 });
 
 /** A fleet that launches instantly and reports whichever MicroVMs the test has declared dead. */
 class FakeFleet implements CoreFleet {
@@ -48,14 +26,6 @@ class FakeFleet implements CoreFleet {
   }
 }
 
-const until = async (pred: () => boolean, ms: number, what: string) => {
-  const deadline = Date.now() + ms;
-  while (!pred()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(25);
-  }
-};
-
 describe("the process keeps the fleet the core asks for", () => {
   const planes: ControlPlane[] = [];
   afterAll(async () => {
@@ -71,19 +41,10 @@ describe("the process keeps the fleet the core asks for", () => {
       cores: fleet,
     });
     planes.push(cp);
-    const res = await fetch(
-      `http://127.0.0.1:${cp.privateAddress.port}/aws/lambda-microvms/runtime/v1/run`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          microvmId: "vm-cp",
-          runHookPayload: JSON.stringify({
-            role: "control-plane",
-            generation: 1,
-            snapshotKey: null,
-          }),
-        }),
-      },
+    const res = await runHook(
+      cp,
+      { role: "control-plane", generation: 1, snapshotKey: null },
+      "vm-cp",
     );
     expect(res.status).toBe(200);
     expect(cp.ledger?.config.cloudCores).toBe(true);

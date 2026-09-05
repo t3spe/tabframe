@@ -2,53 +2,19 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
 import { createLedger, type Ledger, serializeLedger } from "@tabframe/core";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
-import type { Config } from "./config.ts";
 import { buildFixturePrograms } from "./fixtures.ts";
 import { type DiscoveredProgram, discoverPrograms } from "./seed.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
 import { LATEST_KEY, snapshotKey } from "./snapshotter.ts";
+import { hook, privateUrl, runHook as run, testConfig } from "./testing.ts";
 
 const H = (c: string) => c.repeat(64);
-const imageConfig: Config = {
-  mode: "image",
-  allowOpenFleetRoutes: true,
-  publicPort: 0,
-  privatePort: 0,
-  host: "127.0.0.1",
-  generation: 1,
-  storeBase: null,
-  webDir: null,
-  blobBucket: null,
-  localOff: false,
-  localNeutral: false,
-  tickMs: 50,
-  programsDir: null,
-  defaultProgram: "mandelbrot",
-  snapshotBucket: null,
-  snapshotEveryMs: 60_000,
-  coreCheckMs: 60_000,
-  imageArn: null,
-  imageVersion: null,
-  coreRoleArn: null,
-  region: "us-west-2",
-  sessionUrl: null,
-};
+const imageConfig = testConfig();
 
 let programsDir = "";
 beforeAll(async () => {
   programsDir = await buildFixturePrograms();
 }, 60_000);
-
-async function run(cp: ControlPlane, payload: Record<string, unknown>) {
-  const res = await fetch(
-    `http://127.0.0.1:${cp.privateAddress.port}/aws/lambda-microvms/runtime/v1/run`,
-    {
-      method: "POST",
-      body: JSON.stringify({ microvmId: "vm-1", runHookPayload: JSON.stringify(payload) }),
-    },
-  );
-  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
-}
 
 describe("adopt from snapshot on /run", () => {
   const cps: ControlPlane[] = [];
@@ -142,10 +108,7 @@ describe("adopt from snapshot on /run", () => {
     // The suspend hook forces a write, gzipped, plus the latest pointer. (The periodic writer is
     // set to a minute here, so this counts a delta rather than assuming none has fired.)
     const writesBefore = cp.snapshots.writes;
-    const res = await fetch(
-      `http://127.0.0.1:${cp.privateAddress.port}/aws/lambda-microvms/runtime/v1/suspend`,
-      { method: "POST" },
-    );
+    const res = await hook(cp, "suspend");
     expect(res.status).toBe(200);
     expect(cp.snapshots.writes).toBe(writesBefore + 1);
     expect(cp.snapshots.lastKey?.startsWith("g2/")).toBe(true);
@@ -162,13 +125,14 @@ describe("adopt from snapshot on /run", () => {
     expect(await cp.snapshot(true)).not.toBeNull();
     expect(cp.snapshots.writes).toBe(writesBefore + 2);
     // The private route serves the current ledger as JSON.
-    const snap = await fetch(`http://127.0.0.1:${cp.privateAddress.port}/snapshot`);
+    const snap = await fetch(privateUrl(cp, "/snapshot"));
     expect(snap.status).toBe(200);
     expect(((await snap.json()) as { programs: unknown[] }).programs.length).toBe(1);
     // Health reports the counts.
-    const health = (await (
-      await fetch(`http://127.0.0.1:${cp.privateAddress.port}/health`)
-    ).json()) as Record<string, unknown>;
+    const health = (await (await fetch(privateUrl(cp, "/health"))).json()) as Record<
+      string,
+      unknown
+    >;
     expect(health.programs).toEqual(["mandelbrot"]);
     expect((health.snapshots as { writes: number }).writes).toBe(writesBefore + 2);
   });
@@ -240,7 +204,7 @@ describe("seeding an adopted ledger", () => {
     });
     planes.push(second);
     await run(second, { role: "control-plane", generation: 21, snapshotKey: null });
-    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+    const adopt = await fetch(privateUrl(second, "/adopt"), {
       method: "POST",
       body: handed,
     });
@@ -275,7 +239,7 @@ describe("seeding an adopted ledger", () => {
     });
     planes.push(second);
     await run(second, { role: "control-plane", generation: 31, snapshotKey: null });
-    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+    const adopt = await fetch(privateUrl(second, "/adopt"), {
       method: "POST",
       body: handed,
     });
@@ -288,9 +252,9 @@ describe("seeding an adopted ledger", () => {
     const newBundle = listed[0]?.bundle as string;
     expect(newBundle).not.toBe(oldBundle);
     expect(second.ledger?.config.defaultLoop?.bundle).toBe(newBundle);
-    const health = (await (
-      await fetch(`http://127.0.0.1:${second.privateAddress.port}/health`)
-    ).json()) as { programs: string[] };
+    const health = (await (await fetch(privateUrl(second, "/health"))).json()) as {
+      programs: string[];
+    };
     expect(health.programs).toEqual(["mandelbrot"]);
   }, 30_000);
 
@@ -327,7 +291,7 @@ describe("seeding an adopted ledger", () => {
     });
     planes.push(second);
     await run(second, { role: "control-plane", generation: 41, snapshotKey: null });
-    const adopt = await fetch(`http://127.0.0.1:${second.privateAddress.port}/adopt`, {
+    const adopt = await fetch(privateUrl(second, "/adopt"), {
       method: "POST",
       body: handed,
     });
