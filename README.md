@@ -116,7 +116,7 @@ tests in Playwright, and CI on every push with no AWS credentials.
 
 - **One MicroVM endpoint accepts 16 concurrent connections.** That is an AWS quota, not
   adjustable, the same at every VM size we can launch — measured, then found in the account's
-  Service Quotas ([design §9.7](docs/design.md), [`m3-verification.md`](docs/m3-verification.md)).
+  Service Quotas ([design §9.7](docs/design.md)).
   One control plane therefore serves about seven browser tabs that each lend a node (fourteen that only watch), and the ledger's 256-node cap is
   a property of the scheduler, not of the deployment. Scaling the client edge is an architecture
   decision recorded in the plan (WP4.6): document it for now, evaluate an EC2 host for the control
@@ -178,7 +178,7 @@ A deploy is a rotation: the new image version is published, the rotate function 
 generation, hands the ledger over, flips the pointer, and drains the old one. Rollback is the same
 path onto the previous image version.
 
-What it costs is in the design's §9.5: about $0.13 for a reviewer hour with cores idle, about $3 if
+What it costs is in the design's §9.5: about $0.13 for an hour with a visitor and idle cores, about $3 if
 left running all day, near zero suspended. The machine sleeps ten minutes after the last observer
 leaves — cores terminated, automatic continuation paused — and wakes on the next visitor.
 
@@ -194,16 +194,13 @@ resumes while the page is open. `mise run down` turns it off for good; `mise run
 
 | Where | What |
 |---|---|
-| [`docs/design.md`](docs/design.md) | the design record: decisions D1–D20, the system, the wire, hosting, and the drift log |
-| [`docs/plan.md`](docs/plan.md) | the execution plan: ground rules, milestones, work packages with acceptance lines, the risk register, and a "where we are" line |
-| [`docs/implementation/`](docs/implementation/README.md) | one document per work package — what, how, why, evidence, drift, open items |
-| [`docs/m1-verification.md`](docs/m1-verification.md), [`m2`](docs/m2-verification.md), [`m3`](docs/m3-verification.md) | the runbook results against AWS |
-| [`docs/rationale.md`](docs/rationale.md) | the short design rationale the assignment asks for |
+| [`docs/design.md`](docs/design.md) | the design record: decisions D1–D20, the system, the wire, hosting, security, tooling, and the drift log |
 | [`docs/runbook.md`](docs/runbook.md) | operating it: the mise tasks, what `/health` says, incidents and what they meant |
 | [`docs/walkthrough.md`](docs/walkthrough.md) | the page's contract: every screen, state, and control, checked by `e2e/walkthrough.e2e.ts` |
 | [`docs/feasibility-transformer.md`](docs/feasibility-transformer.md) | the small transformer on the cores: the assessment with measured numbers |
-| [`docs/transcripts/index.md`](docs/transcripts/index.md) | the build's session transcripts, scrubbed, one file per session |
-| [`docs/timelog.md`](docs/timelog.md) | time spent: developer time and total time, per session |
+| [`docs/implementation/`](docs/implementation/README.md) | how it was built, one note per work package — what, how, why, evidence, drift |
+| [`packages/sdk-as/README.md`](packages/sdk-as/README.md) | how to write a program (the in-page guide is cut from it) |
+| [`programs/`](programs/) | the three programs that ship, each with its README |
 
 ## License and attribution
 

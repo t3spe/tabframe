@@ -83,7 +83,7 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 - **`/diag`** (private port, fleet secret): DNS, a store put-and-get round trip with its latency,
   which store driver, snapshotter status, memory, the environment facts that matter
   (`TABFRAME_SANDBOX_WORKER`, cloud cores enabled).
-- **The dashboard** is the observability surface a reviewer sees; everything above is for the
+- **The dashboard** is the observability surface a visitor sees; everything above is for the
   operator.
 - **CloudWatch.** The functions log JSON lines to their own groups, kept fourteen days. The MicroVM
   group `/aws/lambda/microvms/tabframe` (seven days) gets one stream per MicroVM; the image-build

@@ -24,7 +24,7 @@ and which stays correct while cores — and the control plane itself — come an
 10. Security and credentials
 11. Tooling and repo
 12. Tests and dev loop
-13. Deploy, operations, and the reviewer's view
+13. Deploy and operations
 14. Milestones
 15. Rationale hooks
 16. Glossary
@@ -121,7 +121,7 @@ and which stays correct while cores — and the control plane itself — come an
  +------------------------------+   +------------------------------+
 ```
 
-**When a reviewer opens the URL:**
+**When a visitor opens the URL:**
 
 1. **Page load** from CloudFront: the HTML and the bundles (host, node, sandbox, editor).
 2. **Session.** The host calls the session function and receives the active control plane's endpoint, a token, the store base URL, and the generation. Tokens are not per client: the session function mints one per control plane every twenty-five minutes and hands the same one to every caller. If the machine is off, the page says so and stops. If the control plane is suspended, its first request auto-resumes it and the page shows the machine waking. If none is running, the session function launches one and the page shows it starting.
@@ -476,19 +476,19 @@ Exactly one control plane is **active**, stamped with a generation. Others are b
 | Scenario | Cost |
 |---|---|
 | Idle, suspended, 1 GB baseline | ≈ $0.08/month of snapshot storage |
-| One reviewer hour, cores mostly idle | ≈ $0.13 |
-| One reviewer hour, cores computing flat out (bursting to a full vCPU each) | ≈ $0.26 |
+| One visitor hour, cores mostly idle | ≈ $0.13 |
+| One visitor hour, cores computing flat out (bursting to a full vCPU each) | ≈ $0.26 |
 | Left running all day | ≈ $3 |
 | Each suspend/resume cycle | < $0.01 |
 
 ### 9.6 Verified in M0
 
-Measured on 2026-09-02 against the deployed image (`docs/m0-verification.md`): WebSocket frames count as idle-policy traffic; an open socket survives its token's expiry; the endpoint throttles at about 50 requests per second, so reconnect jitter is 30 ms per client (§8.4); 250 concurrent sockets are sustained when opened at a paced rate; 15 messages per second per connection passes; DNS and S3 resolve inside the image; boot to RUNNING takes about 2 s and resume under 1 s at 1 GB; token minting is not throttled at 20 in a burst; the memory quota is 8 GB and RunMicrovm is limited to 1 per second. No fallback was needed.
+Measured on 2026-09-02 against the deployed image: WebSocket frames count as idle-policy traffic; an open socket survives its token's expiry; the endpoint throttles at about 50 requests per second, so reconnect jitter is 30 ms per client (§8.4); 250 concurrent sockets are sustained when opened at a paced rate; 15 messages per second per connection passes; DNS and S3 resolve inside the image; boot to RUNNING takes about 2 s and resume under 1 s at 1 GB; token minting is not throttled at 20 in a burst; the memory quota is 8 GB and RunMicrovm is limited to 1 per second. No fallback was needed.
 
 ---
 ### 9.7 Capacity: what one MicroVM endpoint can hold
 
-Measured on 2026-09-02 (`docs/m3-verification.md`, `packages/infra/scripts/socket-ceiling.ts`) and
+Measured on 2026-09-02 (`packages/infra/scripts/socket-ceiling.ts`) and
 confirmed in the account's Service Quotas: a MicroVM endpoint accepts **16 concurrent connections**
 and answers 429 to the seventeenth. The quota is *Concurrent connections per 2 vCPU MicroVM*, it is
 not adjustable, and it scales only with the vCPU class (8 / 16 / 32 / 64 / 128 for 1 / 2 / 4 / 8 /
@@ -581,7 +581,7 @@ tabframe/
     mandelbrot/      assembly/index.ts, manifest.json, goldens.json
     wordcount/       assembly/index.ts, manifest.json, in/corpus.txt, goldens.json
     tinygpt/         assembly/index.ts, manifest.json, the trained weights, goldens.json (M6)
-  docs/              this record, architecture notes, rationale, transcripts
+  docs/              this record, the runbook, the walkthrough, the feasibility note, the implementation notes
 ```
 
 The image is `packages/infra/image/Dockerfile`, staged by `packages/infra/scripts/stage-image.ts`
@@ -599,7 +599,7 @@ Three stacks in dependency order — **Core** (buckets for artifacts, blobs, sna
 
 ### 11.5 Repo policy
 
-Created by Mircea at `github.com/t3spe/tabframe`; **private until the end, then public.** License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the plan, the time log, architecture, rationale, and transcripts — export mechanism to be decided later). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
+Hosted at `github.com/t3spe/tabframe`. License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the plan, the time log, architecture, rationale, and transcripts — export mechanism to be decided later). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
 
 ---
 
@@ -623,9 +623,7 @@ Plumbing: the core takes an injected clock and random source; `mise run goldens`
 
 ---
 
-## 13. Deploy, operations, and the reviewer's view
-
-**M0 = skeleton + verification.** Buckets, CloudFront, fleet functions, pointer, and an image whose control plane only does hello and heartbeat. Order: `mise run whoami`, `cdk bootstrap` (with confirmation), deploy, publish image, `rotate`, hit the session URL, open a socket, then `mise run verify` retires §9.6 and records results and any design adjustments in `docs/m0-verification.md`.
+## 13. Deploy and operations
 
 **Deploy = rotation.** build → test → `cdk deploy` (stack, image version, web assets) → wait for the version to go active → `rotate`. Cores move to the new version over the next cycle. Hashed asset names with a short TTL on the index; a protocol bump reloads stale pages once. **Rollback** = rotate to the previous immutable image version and deactivate the bad one.
 
@@ -633,26 +631,15 @@ Plumbing: the core takes an injected clock and random source; `mise run goldens`
 
 **Cost guards:** idle policy; no cores and no continuation without an observer; the sixty-minute no-interaction pause; no automatic continuation for human-launched programs; maximum durations on every MicroVM; the node cap; the $100 budget; `mise run down`, which keeps the machine off until `mise run up`.
 
-**The reviewer's first minute.** Page from CloudFront → session → a suspended control plane resumes ("waking") or none exists and one is launched ("starting") → the tab's node joins → two cores arrive → three nodes rendering in under about thirty seconds. Warm path: instant.
+**A visitor's first minute.** Page from CloudFront → session → a suspended control plane resumes ("waking") or none exists and one is launched ("starting") → the tab's node joins → two cores arrive → three nodes rendering in under about thirty seconds. Warm path: instant.
 
-**Demo script, about five minutes.** One tab plus two cloud cores rendering → two more real tabs → spawn ten (bounded by cores, said on screen) → kill half → freeze half → throttle half (twins, verified duplicates) → redundancy on → editor: change the palette, compile in the browser, launch → word count: three stages and a bar chart → trigger a rotation: banner, reconnects, render continues → ledger and files panels: hashes everywhere, no bytes in the control plane.
-
-**Packaging.** README (what, why, architecture, in and out of scope, run, deploy); the rationale doc answering the five required questions, with time spent taken from `docs/timelog.md`, which keeps two columns — developer time and total time — and states the developer number with the total alongside; the video; transcripts (mechanism decided later); secrets scan; the AGPL-3.0 license file; corpus attribution; then public.
+**The unattended demo, about five minutes** (`mise run demo`, and `e2e/demo.e2e.ts`). One tab plus two cloud cores rendering → two more real tabs → spawn ten (bounded by cores, said on screen) → kill half → freeze half → throttle half (twins, verified duplicates) → redundancy on → editor: change the palette, compile in the browser, launch → word count: three stages and a bar chart → trigger a rotation: banner, reconnects, render continues → ledger and files panels: hashes everywhere, no bytes in the control plane.
 
 ---
 
-## 14. Milestones
+## 14. History
 
-Fault-tolerant order; each leaves something deployable.
-
-| M | Contents | Checkpoint |
-|---|---|---|
-| M0 | repo skeleton, mise, workspace, protocol and core skeletons, local dev up with hello/heartbeat; CDK skeleton, hello-only image, session URL; `mise run verify` | a public URL answers; the six unknowns are retired |
-| M1 | ledger, fill, liveness, deadlines, verification, churn simulation; browser node, sandbox, Mandelbrot as a program; basic dashboard; local cores | kill half on a laptop, image completes, hashes match |
-| M2 | planning as a task, filesystem, word count, editor and in-browser compile, queue, views | a reviewer's edited program runs on the cluster |
-| M3 | snapshots, handover and hourly rotation, cloud cores, sleep policy, deploy as rotation, fleet functions | rotation under load on AWS, render continues |
-| M4 | observability polish, banners, ledger and files panels, Playwright end to end | the demo script runs unattended |
-| M5 | README, rationale, video, transcripts, secrets scan, public | submitted |
+The machine was built in nine milestones, each leaving something deployable, and every work package has a note under `docs/implementation/` — what it set out to do, how, why, the evidence, and what drifted from this record. The drift log below (§17) is the same history as seen from this document. There is no roadmap here: what is not built is listed as deferred, with its reason, in the notes that deferred it.
 
 ---
 
@@ -666,7 +653,6 @@ Fault-tolerant order; each leaves something deployable.
 - Verification is live and honest: the mismatch counter should read zero forever, and the redundancy toggle proves recompute yields identical bytes across browsers and VMs.
 - Files are single-assignment per stage, which is why persistence does not break re-execution.
 - Cut on purpose: channels between running tasks and a mutable KV — restartability is the whole point.
-- **Time and scope, said plainly:** the assignment grades scoping against an eight-hour ceiling and asks for time spent. This build is many days by deliberate choice, and the rationale must state the number and own the choice rather than round it down.
 
 ---
 
