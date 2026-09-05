@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import path from "node:path";
+import { spawnProcess, until } from "../../../control-plane/src/testing.ts";
 
 // Integration: a real control plane and a real node, both under Node.
 const CP_MAIN = path.resolve(import.meta.dir, "../../../control-plane/src/main.ts");
@@ -10,44 +11,12 @@ let node: ChildProcess;
 let pub = "";
 let priv = "";
 
-function spawnJson(
-  file: string,
-  env: Record<string, string>,
-  until: string,
-): Promise<{ child: ChildProcess; line: Record<string, unknown> }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("node", [file], {
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let buf = "";
-    child.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString();
-      for (const line of buf.split("\n")) {
-        if (line.includes(until))
-          resolve({ child, line: JSON.parse(line) as Record<string, unknown> });
-      }
-    });
-    child.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
-    setTimeout(() => reject(new Error(`${file} did not print ${until}`)), 15_000);
-  });
-}
-
 async function health(): Promise<{ nodes: number }> {
   return (await (await fetch(`${priv}/health`)).json()) as { nodes: number };
 }
 
-async function waitFor(pred: () => Promise<boolean>, ms = 8_000): Promise<void> {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    if (await pred()) return;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error("condition not met in time");
-}
-
 beforeAll(async () => {
-  const started = await spawnJson(
+  const started = await spawnProcess(
     CP_MAIN,
     {
       TABFRAME_MODE: "local",
@@ -70,7 +39,7 @@ afterAll(async () => {
 describe("node platform against a real control plane", () => {
   test("the process joins as a core node and leaves when killed", async () => {
     expect((await health()).nodes).toBe(0);
-    const started = await spawnJson(
+    const started = await spawnProcess(
       NODE_MAIN,
       { TABFRAME_SESSION_URL: `${pub}/session`, TABFRAME_HOST_ID: "core-test" },
       '"idle"',
@@ -81,7 +50,7 @@ describe("node platform against a real control plane", () => {
     expect((await health()).nodes).toBe(1);
     node.kill("SIGTERM");
     await new Promise((r) => node.once("exit", r));
-    await waitFor(async () => (await health()).nodes === 0);
+    await until(async () => (await health()).nodes === 0, 8_000, "the node to leave", 100);
   }, 20_000);
 
   test("without a session URL the process exits with code 2", async () => {

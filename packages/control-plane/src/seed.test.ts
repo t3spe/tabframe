@@ -1,10 +1,17 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { BUNDLE_PATHS, fsManifest } from "@tabframe/protocol";
+import { apply, createLedger, type Ledger } from "@tabframe/core";
+import { BUNDLE_PATHS, fsManifest, type ProgramManifest } from "@tabframe/protocol";
 import { LocalStore } from "@tabframe/store";
 import { buildFixturePrograms, PROGRAMS_DIR } from "./fixtures.ts";
-import { discoverPrograms, seedPrograms } from "./seed.ts";
+import {
+  discoverPrograms,
+  reconcileSeed,
+  type SeededProgram,
+  STALE_DROP_MS,
+  seedPrograms,
+} from "./seed.ts";
 
 let dir = "";
 beforeAll(async () => {
@@ -115,5 +122,95 @@ describe("seedPrograms", () => {
     // The source is not a file of the bundle: the program cannot see it.
     expect(Object.keys(m.files).some((f) => f.includes("source"))).toBe(false);
     expect(seeded.find((p) => p.name === "wordy")?.manifest.source).toBeUndefined();
+  });
+});
+
+const H = (c: string) => c.repeat(64);
+const NOW = 10 * 60 * 60 * 1000;
+const manifestOf = (name: string): ProgramManifest => ({
+  name,
+  view: "tiles",
+  persist: false,
+  defaultParams: { preset: 0 },
+});
+const shipped = (name: string, bundle: string): SeededProgram => ({
+  name,
+  bundle,
+  module: H("m"),
+  manifest: manifestOf(name),
+  files: {},
+});
+function record(ledger: Ledger, name: string, bundle: string, addedAt: number): void {
+  ledger.programs.set(bundle, {
+    bundle,
+    module: H("m"),
+    manifest: manifestOf(name),
+    files: {},
+    addedAt,
+  });
+}
+
+describe("reconcileSeed", () => {
+  test("adds unseen bundles, retires a shipped name's previous version and old unreferenced drops, and moves the loop", () => {
+    const ledger = createLedger(1, { storeBase: "http://s/blob" }, 0);
+    record(ledger, "mandelbrot", H("a"), 0);
+    record(ledger, "fresh", H("b"), NOW - 60_000);
+    record(ledger, "old", H("c"), NOW - 2 * STALE_DROP_MS);
+    ledger.config.defaultLoop = { bundle: H("a"), params: {} };
+    const { events, report } = reconcileSeed(ledger, [shipped("mandelbrot", H("d"))], {
+      defaultProgram: "mandelbrot",
+      now: NOW,
+    });
+    expect(events.map((e) => e.kind)).toEqual([
+      "programAdded",
+      "programRetired",
+      "programRetired",
+      "setDefaultLoop",
+    ]);
+    expect(report).toEqual({
+      programs: [{ name: "mandelbrot", bundle: H("d").slice(0, 12) }],
+      added: ["mandelbrot"],
+      retired: [`mandelbrot@${H("a").slice(0, 12)}`],
+      stale: [`old@${H("c").slice(0, 12)}`],
+      defaultLoop: "mandelbrot",
+      loopMoved: true,
+    });
+    for (const e of events) apply(ledger, e, NOW);
+    const live = [...ledger.programs.values()]
+      .filter((p) => !p.retired)
+      .map((p) => p.manifest.name);
+    expect(live.sort()).toEqual(["fresh", "mandelbrot"]);
+    expect(ledger.config.defaultLoop).toEqual({ bundle: H("d"), params: { preset: 0 } });
+  });
+
+  test("a bundle already in the ledger is left alone, and a loop on a live program stays", () => {
+    const ledger = createLedger(1, { storeBase: "http://s/blob" }, 0);
+    record(ledger, "mandelbrot", H("d"), 0);
+    ledger.config.defaultLoop = { bundle: H("d"), params: { preset: 3 } };
+    const { events, report } = reconcileSeed(ledger, [shipped("mandelbrot", H("d"))], {
+      defaultProgram: "mandelbrot",
+      now: NOW,
+    });
+    expect(events).toEqual([]);
+    expect(report.loopMoved).toBe(false);
+    expect(report.added).toEqual([]);
+  });
+
+  test("a drop an execution still refers to is kept however old; the loop is set when there is none", () => {
+    const ledger = createLedger(1, { storeBase: "http://s/blob" }, 0);
+    record(ledger, "old-but-used", H("c"), 0);
+    ledger.executions.set("e1", { executionId: "e1", bundle: H("c") } as never);
+    const { events, report } = reconcileSeed(
+      ledger,
+      [shipped("wordcount", H("e")), shipped("mandelbrot", H("d"))],
+      { defaultProgram: "mandelbrot", now: NOW },
+    );
+    expect(events.map((e) => e.kind)).toEqual(["programAdded", "programAdded", "setDefaultLoop"]);
+    expect(report.stale).toEqual([]);
+    expect(report.defaultLoop).toBe("mandelbrot");
+    expect(events.at(-1)).toEqual({
+      kind: "setDefaultLoop",
+      loop: { bundle: H("d"), params: { preset: 0 } },
+    });
   });
 });

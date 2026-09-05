@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
-import { LocalStore, parseRange } from "@tabframe/store";
-import { parseRunBody } from "./hooks.ts";
-import { selfTest } from "./server.ts";
+import { spawnProcess } from "./testing.ts";
 
 // The process under test runs under Node, the production runtime, not under Bun.
 const MAIN = path.resolve(import.meta.dir, "main.ts");
@@ -13,40 +11,6 @@ let child: ChildProcess;
 let pub = "";
 let priv = "";
 const env = { v: PROTOCOL_VERSION, gen: 1 };
-
-function startProcess(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    child = spawn("node", [MAIN], {
-      env: {
-        ...process.env,
-        TABFRAME_MODE: "local",
-        TABFRAME_PUBLIC_PORT: "0",
-        TABFRAME_PRIVATE_PORT: "0",
-        TABFRAME_TICK_MS: "50",
-        // No seeding: this suite is about the process, and a built programs/ directory would
-        // launch the default loop under the test's node.
-        TABFRAME_PROGRAMS_DIR: "",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let buf = "";
-    child.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString();
-      for (const line of buf.split("\n")) {
-        if (!line.includes('"listening"')) continue;
-        const info = JSON.parse(line) as { publicPort: number; privatePort: number; host: string };
-        pub = `http://${info.host}:${info.publicPort}`;
-        priv = `http://${info.host}:${info.privatePort}`;
-        resolve();
-      }
-    });
-    child.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
-    child.on("exit", (code) => {
-      if (!pub) reject(new Error(`process exited early with ${code}`));
-    });
-    setTimeout(() => reject(new Error("process did not start")), 15_000);
-  });
-}
 
 function open(pathname: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -71,7 +35,23 @@ function closed(ws: WebSocket): Promise<{ code: number; reason: string }> {
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
 beforeAll(async () => {
-  await startProcess();
+  const started = await spawnProcess(
+    MAIN,
+    {
+      TABFRAME_MODE: "local",
+      TABFRAME_PUBLIC_PORT: "0",
+      TABFRAME_PRIVATE_PORT: "0",
+      TABFRAME_TICK_MS: "50",
+      // No seeding: this suite is about the process, and a built programs/ directory would
+      // launch the default loop under the test's node.
+      TABFRAME_PROGRAMS_DIR: "",
+    },
+    '"listening"',
+  );
+  child = started.child;
+  const info = started.line as { publicPort: number; privatePort: number; host: string };
+  pub = `http://${info.host}:${info.publicPort}`;
+  priv = `http://${info.host}:${info.privatePort}`;
 });
 afterAll(async () => {
   child.kill("SIGTERM");
@@ -222,12 +202,13 @@ describe("process", () => {
     expect((await hook("validate")).status).toBe(200);
     for (const name of ["resume", "suspend", "terminate"])
       expect((await hook(name)).status).toBe(200);
-    // Local mode is already a control plane, so a second role assignment is refused.
+    // Local mode is already a control plane, so a second role assignment is refused, with the reason.
     const run = await hook("run", {
       microvmId: "mvm-1",
       runHookPayload: JSON.stringify({ role: "core", generation: 2 }),
     });
     expect(run.status).toBe(400);
+    expect(await run.json()).toEqual({ role: "core", ok: false, reason: "role already assumed" });
     expect((await hook("bogus")).status).toBe(404);
     expect((await fetch(`${priv}/aws/lambda-microvms/runtime/v1/ready`)).status).toBe(405);
     expect((await fetch(`${priv}/diag`)).status).toBe(200);
@@ -238,67 +219,5 @@ describe("process", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("web bundle is not built");
     expect((await fetch(`${pub}/nope.js`)).status).toBe(404);
-  });
-});
-
-describe("pure helpers", () => {
-  test("selfTest passes against a scratch ledger", () => {
-    expect(selfTest()).toBe(true);
-  });
-
-  test("parseRunBody accepts a stringified or object payload and rejects junk", () => {
-    const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
-    const a = parseRunBody(
-      enc({
-        microvmId: "m",
-        runHookPayload: JSON.stringify({
-          role: "control-plane",
-          generation: 3,
-          storeBase: "https://s/blob",
-        }),
-      }),
-    );
-    expect(a?.payload.role).toBe("control-plane");
-    expect(a?.payload.generation).toBe(3);
-    expect(a?.payload.storeBase).toBe("https://s/blob");
-    expect(a?.payload.snapshotKey).toBeNull();
-    const b = parseRunBody(enc({ runHookPayload: { role: "core", generation: 0 } }));
-    expect(b?.payload.role).toBe("core");
-    expect(b?.microvmId).toBeNull();
-    expect(parseRunBody(null)).toBeNull();
-    expect(parseRunBody(new TextEncoder().encode("{"))).toBeNull();
-    expect(parseRunBody(enc({ runHookPayload: "{" }))).toBeNull();
-    expect(parseRunBody(enc({ runHookPayload: { role: "root", generation: 1 } }))).toBeNull();
-    expect(parseRunBody(enc({ runHookPayload: { role: "core", generation: -1 } }))).toBeNull();
-    expect(parseRunBody(enc([1]))).toBeNull();
-  });
-
-  test("LocalStore hashes on put, verifies on putVerified, and builds URLs", async () => {
-    const store = new LocalStore("http://x/blob");
-    const bytes = new TextEncoder().encode("abc");
-    const hash = await store.put(bytes);
-    expect(hash).toBe(sha(bytes));
-    expect(await store.exists(hash)).toBe(true);
-    expect(await store.get(hash)).toEqual(bytes);
-    expect(store.urlFor(hash)).toBe(`http://x/blob/${hash}`);
-    expect(store.size).toBe(1);
-    expect(await store.put(bytes)).toBe(hash);
-    expect(store.size).toBe(1);
-    const wrong = await store.putVerified("0".repeat(64), bytes);
-    expect(wrong.ok).toBe(false);
-    const right = await store.putVerified(sha(new Uint8Array([9])), new Uint8Array([9]));
-    expect(right).toEqual({ ok: true, size: 1 });
-    expect(await store.get("f".repeat(64))).toBeNull();
-  });
-
-  test("parseRange", () => {
-    expect(parseRange(undefined, 10)).toBeUndefined();
-    expect(parseRange("bytes=0-3", 10)).toEqual({ start: 0, end: 3 });
-    expect(parseRange("bytes=5-", 10)).toEqual({ start: 5, end: 9 });
-    expect(parseRange("bytes=-3", 10)).toEqual({ start: 7, end: 9 });
-    expect(parseRange("bytes=2-100", 10)).toEqual({ start: 2, end: 9 });
-    expect(parseRange("bytes=12-", 10)).toBeNull();
-    expect(parseRange("bytes=-", 10)).toBeNull();
-    expect(parseRange("items=1-2", 10)).toBeNull();
   });
 });

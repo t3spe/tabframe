@@ -2,10 +2,11 @@
 // watches, two local cores (the Node platform) compute, and the frame's 640 tiles hash to the
 // goldens; then the default loop continues on its own (design §12, plan WP1.7).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { buildFixturePrograms, goldens, ROOT } from "./fixtures.ts";
+import { spawnProcess } from "./testing.ts";
 
 const MAIN = path.resolve(import.meta.dirname, "main.ts");
 const NODE_MAIN = path.join(ROOT, "packages/node/src/platform/node.ts");
@@ -13,58 +14,45 @@ const children: ChildProcess[] = [];
 let pub = "";
 let priv = "";
 
-function startControlPlane(programsDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("node", [MAIN], {
-      env: {
-        ...process.env,
-        TABFRAME_MODE: "local",
-        TABFRAME_PUBLIC_PORT: "0",
-        TABFRAME_PRIVATE_PORT: "0",
-        TABFRAME_TICK_MS: "50",
-        TABFRAME_PROGRAMS_DIR: programsDir,
-        TABFRAME_SNAPSHOT_MS: "500",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(child);
-    let buf = "";
-    child.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.includes('"listening"')) continue;
-        const info = JSON.parse(line) as { publicPort: number; privatePort: number; host: string };
-        pub = `http://${info.host}:${info.publicPort}`;
-        priv = `http://${info.host}:${info.privatePort}`;
-        resolve();
-      }
-    });
-    child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[cp] ${d.toString()}`));
-    child.on("exit", (code) => {
-      if (!pub) reject(new Error(`control plane exited early with ${code}`));
-    });
-    setTimeout(() => reject(new Error("control plane did not start")), 20_000);
-  });
+async function startControlPlane(programsDir: string): Promise<void> {
+  const started = await spawnProcess(
+    MAIN,
+    {
+      TABFRAME_MODE: "local",
+      TABFRAME_PUBLIC_PORT: "0",
+      TABFRAME_PRIVATE_PORT: "0",
+      TABFRAME_TICK_MS: "50",
+      TABFRAME_PROGRAMS_DIR: programsDir,
+      TABFRAME_SNAPSHOT_MS: "500",
+    },
+    '"listening"',
+    { timeoutMs: 20_000, stderrPrefix: "[cp] " },
+  );
+  children.push(started.child);
+  const info = started.line as { publicPort: number; privatePort: number; host: string };
+  pub = `http://${info.host}:${info.publicPort}`;
+  priv = `http://${info.host}:${info.privatePort}`;
 }
 
-function startCore(name: string): void {
-  const child = spawn("node", [NODE_MAIN], {
-    env: { ...process.env, TABFRAME_SESSION_URL: `${pub}/session`, TABFRAME_HOST_ID: name },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  children.push(child);
-  child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[${name}] ${d.toString()}`));
-  // Surface what matters from the core's log: closes, refusals, task failures.
-  child.stdout?.on("data", (d: Buffer) => {
-    for (const line of d.toString().split("\n")) {
-      if (
-        /"event":"(closed|bad-message|task-failed|assign-over-capacity|stray-presigned)"/.test(line)
-      )
-        process.stderr.write(`[${name}] ${line}\n`);
-    }
-  });
+async function startCore(name: string): Promise<void> {
+  const started = await spawnProcess(
+    NODE_MAIN,
+    { TABFRAME_SESSION_URL: `${pub}/session`, TABFRAME_HOST_ID: name },
+    '"status"',
+    {
+      stderrPrefix: `[${name}] `,
+      // Surface what matters from the core's log: closes, refusals, task failures.
+      onLine: (line) => {
+        if (
+          /"event":"(closed|bad-message|task-failed|assign-over-capacity|stray-presigned)"/.test(
+            line,
+          )
+        )
+          process.stderr.write(`[${name}] ${line}\n`);
+      },
+    },
+  );
+  children.push(started.child);
 }
 
 type Ev = { t: string; [key: string]: unknown };
@@ -143,8 +131,8 @@ describe("Mandelbrot end to end", () => {
         20_000,
       );
     }
-    startCore("core-1");
-    startCore("core-2");
+    await startCore("core-1");
+    await startCore("core-2");
     await obs.waitFor((e) => e.t === "nodeJoined", 20_000);
     const started = (await obs.waitFor((e) => e.t === "executionStarted", 20_000)) as unknown as {
       execution: { executionId: string; params: Record<string, unknown> };

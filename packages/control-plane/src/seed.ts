@@ -3,7 +3,7 @@
 // program manifest, and any inputs — so a seeded program launches exactly like an uploaded one.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { DEFAULT_TASK_LIMITS } from "@tabframe/core";
+import { DEFAULT_TASK_LIMITS, type Event, type Ledger } from "@tabframe/core";
 import {
   BUNDLE_PATHS,
   canonicalStringify,
@@ -14,6 +14,9 @@ import {
 import { validateModuleBytes } from "@tabframe/sandbox";
 import type { StoreDriver } from "@tabframe/store";
 
+/** An unshipped program nobody has run in the ledger's memory is retired at seeding after this long. */
+export const STALE_DROP_MS = 60 * 60 * 1000;
+
 export interface DiscoveredProgram {
   name: string;
   dir: string;
@@ -22,7 +25,7 @@ export interface DiscoveredProgram {
   manifest: ProgramManifest;
   /** Files under `in/`, as `/in/<file>`. */
   inputs: Array<{ path: string; bytes: Uint8Array }>;
-  /** The program's source (`assembly/index.ts` in the repo, `source.ts` in the image), when present (WP7.6). */
+  /** The program's source (`assembly/index.ts` in the repo, `source.ts` in the image), when present. */
   source?: Uint8Array;
 }
 
@@ -100,7 +103,7 @@ export async function seedPrograms(
       continue;
     }
     const module = await store.put(p.wasm);
-    // The source goes into the store and the manifest names it (WP7.6), so the editor can open the
+    // The source goes into the store and the manifest names it, so the editor can open the
     // shipped program the way it opens an upload; the manifest blob is re-serialised with the hash.
     let manifest = p.manifest;
     let manifestBytes = p.manifestBytes;
@@ -121,4 +124,86 @@ export async function seedPrograms(
     seeded.push({ name: p.name, bundle, module, manifest, files });
   }
   return { seeded, rejected };
+}
+
+export interface SeedReport {
+  programs: Array<{ name: string; bundle: string }>;
+  added: string[];
+  retired: string[];
+  stale: string[];
+  defaultLoop: string | null;
+  loopMoved: boolean;
+}
+
+/**
+ * What seeding changes in a ledger, decided without touching it. Seeding is by bundle hash, not
+ * "have we ever seeded": a deploy that ships a new program has to reach a machine that keeps
+ * adopting its predecessor's ledger, and a bundle already in the ledger is left alone.
+ */
+export function reconcileSeed(
+  target: Ledger,
+  seeded: SeededProgram[],
+  opts: { defaultProgram: string; now: number; staleAfterMs?: number },
+): { events: Event[]; report: SeedReport } {
+  const staleAfterMs = opts.staleAfterMs ?? STALE_DROP_MS;
+  const events: Event[] = [];
+  const added = seeded.filter((p) => !target.programs.has(p.bundle));
+  for (const p of added) {
+    events.push({
+      kind: "programAdded",
+      bundle: p.bundle,
+      module: p.module,
+      manifest: p.manifest,
+      files: p.files,
+    });
+  }
+  // The image owns the names it ships: a record under a shipped name with another bundle is the
+  // previous deploy's version (or a drop that borrowed the name) and is retired, so the list
+  // shows one `mandelbrot` and the old one's follow-up chain ends.
+  const shipped = new Set(seeded.map((p) => p.bundle));
+  const names = new Set(seeded.map((p) => p.name));
+  const live = [...target.programs.values()].filter((p) => !p.retired && !shipped.has(p.bundle));
+  const retired = live.filter((p) => names.has(p.manifest.name));
+  // Drops stay as long as they are used: an unshipped program that no remaining execution refers
+  // to (the ledger keeps the last 32) and that is over an hour old is retired too, so runbook
+  // uploads and abandoned experiments do not clutter the list for ever.
+  const referenced = new Set([...target.executions.values()].map((e) => e.bundle));
+  const stale = live.filter(
+    (p) =>
+      !names.has(p.manifest.name) &&
+      !referenced.has(p.bundle) &&
+      opts.now - p.addedAt > staleAfterMs,
+  );
+  const retiring = new Set([...retired, ...stale].map((p) => p.bundle));
+  for (const bundle of retiring) events.push({ kind: "programRetired", bundle });
+  // The machine's own loop follows the shipped program: set when there is none, moved when the
+  // one it points at is gone, retired, or about to be.
+  const loop = seeded.find((p) => p.name === opts.defaultProgram) ?? seeded[0] ?? null;
+  const current = target.config.defaultLoop;
+  const currentProgram = current ? target.programs.get(current.bundle) : undefined;
+  const moved =
+    loop !== null &&
+    (!current ||
+      !currentProgram ||
+      currentProgram.retired === true ||
+      retiring.has(currentProgram.bundle));
+  if (loop && moved) {
+    events.push({
+      kind: "setDefaultLoop",
+      loop: { bundle: loop.bundle, params: loop.manifest.defaultParams },
+    });
+  }
+  const short = (p: { manifest: ProgramManifest; bundle: string }) =>
+    `${p.manifest.name}@${p.bundle.slice(0, 12)}`;
+  return {
+    events,
+    report: {
+      programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
+      added: added.map((p) => p.name),
+      retired: retired.map(short),
+      stale: stale.map(short),
+      defaultLoop: loop?.name ?? null,
+      loopMoved: moved,
+    },
+  };
 }

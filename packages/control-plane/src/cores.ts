@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
 // Launching and retiring cloud cores (design §6.8). The control plane holds the only role allowed
 // to pass the core role, so this lives in the process rather than the fleet functions; the core
 // decides how many there should be, this decides what to say to AWS.
+import { randomBytes } from "node:crypto";
 import { egressConnectorArn, ingressConnectorArn } from "@tabframe/fleet/config";
 import { SdkMicrovmClient } from "@tabframe/fleet/microvm-client";
 import type { MicrovmClient, MicrovmInfo } from "@tabframe/fleet/types";
@@ -12,7 +12,8 @@ export const CORE_MAX_DURATION_SECONDS = 4 * 60 * 60;
 
 export interface CoreFleetConfig {
   imageArn: string;
-  imageVersion: string | null;
+  /** Asked at each launch: cores follow the version the control plane runs, which the platform reports only after /run. */
+  imageVersion: () => string | null;
   coreRoleArn: string;
   region: string;
   sessionUrl: string;
@@ -24,7 +25,7 @@ export interface CoreFleetConfig {
 export interface CoreFleet {
   launch(): Promise<{ microvmId: string; token: string }>;
   terminate(microvmId: string): Promise<void>;
-  /** What the platform says about one MicroVM — the control plane asks about itself (WP8.3). */
+  /** What the platform says about one MicroVM; the control plane asks about itself. */
   describe?(microvmId: string): Promise<MicrovmInfo | null>;
   /** Which of these MicroVMs are no longer serving, so the ledger can forget them. */
   gone(microvmIds: string[]): Promise<string[]>;
@@ -38,13 +39,13 @@ export function corePayload(config: CoreFleetConfig, coreToken: string): string 
     snapshotKey: null,
     sessionUrl: config.sessionUrl,
     storeBase: config.storeBase,
-    // A core runs untrusted programs and gates no fleet route: it gets no fleet secret (WP8.2).
+    // A core runs untrusted programs and gates no fleet route: it gets no fleet secret.
     fleetSecret: null,
     coreToken,
   });
 }
 
-/** A fresh core token (WP8.2): the control plane remembers it and the core's hello shows it. */
+/** A fresh core token: the control plane remembers it and the core's hello shows it. */
 export function newCoreToken(): string {
   return randomBytes(16).toString("hex");
 }
@@ -57,7 +58,7 @@ export function createCoreFleet(config: CoreFleetConfig, client?: MicrovmClient)
       const token = newCoreToken();
       const info: MicrovmInfo = await microvms.run({
         imageArn: config.imageArn,
-        imageVersion: config.imageVersion,
+        imageVersion: config.imageVersion(),
         executionRoleArn: config.coreRoleArn,
         runHookPayload: corePayload(config, token),
         // A core dials out to the control plane; nothing dials in to it.

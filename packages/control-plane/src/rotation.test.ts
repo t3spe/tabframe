@@ -2,12 +2,12 @@
 // drain, and the fleet secret that gates them (design §9.3, §9.4).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { HANDOVER_LEASE_MS } from "@tabframe/core";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
+import { CLOSE, PROTOCOL_VERSION } from "@tabframe/protocol";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
 import { buildFixturePrograms } from "./fixtures.ts";
 import { discoverPrograms } from "./seed.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
-import { privateUrl, runHook, testConfig } from "./testing.ts";
+import { privateUrl, runHook, testConfig, until } from "./testing.ts";
 
 const SECRET = "fleet-secret-for-the-test";
 const imageConfig = testConfig();
@@ -140,7 +140,7 @@ describe("rotation", () => {
     expect(drain.status).toBe(200);
     expect((await drain.json()) as { drained: number }).toMatchObject({ drained: 1, next: 5 });
     const close = await node.closed;
-    expect(close.code).toBe(4005);
+    expect(close.code).toBe(CLOSE.rotatingReconnect);
     const reason = JSON.parse(close.reason) as {
       gen: number;
       next: number;
@@ -208,9 +208,8 @@ describe("lease expiry (WP8.2)", () => {
     expect(cp.phase).toBe("handing-over");
     // The rotation died after the flip: nobody drains this one. The lease runs out.
     t += HANDOVER_LEASE_MS + 1_000;
-    const deadline = Date.now() + 5_000;
-    while (cp.phase !== "drained" && Date.now() < deadline) await Bun.sleep(25);
-    expect(cp.phase).toBe("drained");
+    await until(() => cp.phase === "drained", 5_000, "the superseded control plane to drain");
+    await cp.idle();
     expect(terminated).toEqual(["vm-3"]);
   });
 
@@ -237,9 +236,12 @@ describe("lease expiry (WP8.2)", () => {
       (await fetch(priv(cp, "/handover"), { method: "POST", headers: withSecret() })).status,
     ).toBe(200);
     t += HANDOVER_LEASE_MS + 1_000;
-    const deadline = Date.now() + 2_000;
-    while (cp.phase !== "active" && Date.now() < deadline) await Bun.sleep(25);
-    expect(cp.phase).toBe("active");
+    await until(
+      () => cp.phase === "active",
+      2_000,
+      "the lease to run out and the tick to carry on",
+    );
+    await cp.idle();
     expect(terminated).toEqual([]);
   });
 });
@@ -265,8 +267,11 @@ describe("standby (WP8.3)", () => {
     expect((await health()).authoritative).toBe(false);
     // The pointer flips to this process: the next poll notices.
     named = "vm-6";
-    const deadline = Date.now() + 8_000;
-    while (!(await health()).authoritative && Date.now() < deadline) await Bun.sleep(100);
-    expect((await health()).authoritative).toBe(true);
+    await until(
+      async () => (await health()).authoritative,
+      8_000,
+      "the pointer to name this process",
+      100,
+    );
   }, 15_000);
 });
