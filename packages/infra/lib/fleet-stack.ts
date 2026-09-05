@@ -2,9 +2,11 @@
 // disabled), and their least-privilege roles.
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import type { CANARY_ENV, EnvOf, ROTATE_ENV, SESSION_ENV } from "../../fleet/src/env.ts";
+import { NAMES } from "../../fleet/src/names.ts";
 import type { CoreStack } from "./core-stack.ts";
 import type { ImageStack } from "./image-stack.ts";
-import { anyImageArn, functionArn, NAMES, parameterArn, ruleArn } from "./names.ts";
+import { anyImageArn, functionArn, parameterArn, ruleArn } from "./names.ts";
 
 export interface FleetStackProps extends cdk.StackProps {
   /** Where the alarms mail (WP8.1); the budget address, when configured. */
@@ -59,6 +61,12 @@ export class FleetStack extends cdk.Stack {
     // owned them, so the stack cannot create them (already exists); it sets their retention
     // instead. Fourteen days is what the budget can live with.
     const logRetention = cdk.aws_logs.RetentionDays.TWO_WEEKS;
+    const sessionEnv: EnvOf<typeof SESSION_ENV> = {
+      TABFRAME_POINTER_PARAM: NAMES.pointerParam,
+      TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
+      TABFRAME_WEB_ORIGIN: core.webOrigin,
+      TABFRAME_ROTATE_FUNCTION: NAMES.rotateFunction,
+    };
     this.session = new nodejs.NodejsFunction(this, "Session", {
       logRetention,
       functionName: NAMES.sessionFunction,
@@ -72,12 +80,7 @@ export class FleetStack extends cdk.Stack {
       // unreserved (CloudFormation refuses otherwise). Rotate stays single-writer through its
       // idempotent check and the per-generation client token instead.
       bundling,
-      environment: {
-        TABFRAME_POINTER_PARAM: NAMES.pointerParam,
-        TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
-        TABFRAME_WEB_ORIGIN: core.webOrigin,
-        TABFRAME_ROTATE_FUNCTION: NAMES.rotateFunction,
-      },
+      environment: sessionEnv,
       description: "Tabframe session: vends the control-plane endpoint and a shared token; heals",
     });
     for (const st of microvmActionsOnImages(["lambda:CreateMicrovmAuthToken", "lambda:GetMicrovm"]))
@@ -95,6 +98,15 @@ export class FleetStack extends cdk.Stack {
     // would emit the Access-Control-Allow-Origin header twice, which browsers reject.
     this.sessionUrl = this.session.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
+    const rotateEnv: EnvOf<typeof ROTATE_ENV> = {
+      TABFRAME_POINTER_PARAM: NAMES.pointerParam,
+      TABFRAME_IMAGE_ARN: image.imageArn,
+      TABFRAME_CP_ROLE_ARN: image.controlPlaneRole.roleArn,
+      TABFRAME_SESSION_URL: this.sessionUrl.url,
+      TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
+      TABFRAME_FLEET_SECRET_ARN: core.fleetSecret.secretArn,
+      TABFRAME_SNAPSHOT_BUCKET: core.snapshotBucket.bucketName,
+    };
     this.rotate = new nodejs.NodejsFunction(this, "Rotate", {
       logRetention,
       functionName: NAMES.rotateFunction,
@@ -107,15 +119,7 @@ export class FleetStack extends cdk.Stack {
       // retries must not be cut off between the pointer flip and the retire.
       timeout: cdk.Duration.minutes(10),
       bundling,
-      environment: {
-        TABFRAME_POINTER_PARAM: NAMES.pointerParam,
-        TABFRAME_IMAGE_ARN: image.imageArn,
-        TABFRAME_CP_ROLE_ARN: image.controlPlaneRole.roleArn,
-        TABFRAME_SESSION_URL: this.sessionUrl.url,
-        TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
-        TABFRAME_FLEET_SECRET_ARN: core.fleetSecret.secretArn,
-        TABFRAME_SNAPSHOT_BUCKET: core.snapshotBucket.bucketName,
-      },
+      environment: rotateEnv,
       description:
         "Tabframe rotate: launches and hands over control planes; the sole pointer writer",
     });
@@ -206,6 +210,10 @@ export class FleetStack extends cdk.Stack {
     // session function, and records what it saw. It never touches the MicroVM endpoint — that is
     // idle-policy traffic and would keep a suspended machine awake all night — so "starting" for
     // three periods running is the signal that a heal is stuck.
+    const canaryEnv: EnvOf<typeof CANARY_ENV> = {
+      TABFRAME_WEB_ORIGIN: core.webOrigin,
+      TABFRAME_SESSION_URL: this.sessionUrl.url,
+    };
     const canary = new nodejs.NodejsFunction(this, "Canary", {
       logRetention,
       functionName: NAMES.canaryFunction,
@@ -216,10 +224,7 @@ export class FleetStack extends cdk.Stack {
       memorySize: 128,
       timeout: cdk.Duration.seconds(10),
       bundling,
-      environment: {
-        TABFRAME_WEB_ORIGIN: core.webOrigin,
-        TABFRAME_SESSION_URL: this.sessionUrl.url,
-      },
+      environment: canaryEnv,
     });
     canary.addToRolePolicy(
       new iam.PolicyStatement({ actions: ["cloudwatch:PutMetricData"], resources: ["*"] }),

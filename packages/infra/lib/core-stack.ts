@@ -2,7 +2,7 @@
 import { pageCsp } from "@tabframe/protocol";
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { NAMES } from "./names.ts";
+import { NAMES } from "../../fleet/src/names.ts";
 
 export interface CoreStackProps extends cdk.StackProps {
   /** Notification address for the budget. When absent the budget is skipped with a synth warning. */

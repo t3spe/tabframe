@@ -1,22 +1,7 @@
-// Names and ARN helpers shared by the stacks. Explicit names break what would otherwise be
-// token cycles (session → rotate → session URL) and give the operator scripts stable targets.
+// ARN formatters for the stacks. The names themselves live in the fleet package, which reads them
+// at run time; the stacks import them from there so the two sides cannot drift.
 import * as cdk from "aws-cdk-lib";
-
-export const NAMES = {
-  alarmTopic: "tabframe-alarms",
-  canaryFunction: "tabframe-canary",
-  imageName: "tabframe",
-  sessionFunction: "tabframe-session",
-  rotateFunction: "tabframe-rotate",
-  hourlyRule: "tabframe-rotate-hourly",
-  pointerParam: "/tabframe/pointer",
-  microvmLogGroup: "/aws/lambda/microvms/tabframe",
-  baseImageName: "al2023-1",
-} as const;
-
-export const PORTS = { public: 8080, private: 8081 } as const;
-
-export const HOOK_BASE = "/aws/lambda-microvms/runtime/v1";
+import { NAMES } from "../../fleet/src/names.ts";
 
 export function baseImageArn(stack: cdk.Stack): string {
   return `arn:aws:lambda:${stack.region}:aws:microvm-image:${NAMES.baseImageName}`;
@@ -75,9 +60,4 @@ export function parameterArn(stack: cdk.Stack, name: string): string {
     resourceName: name.replace(/^\//, ""),
     arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
   });
-}
-
-/** Every AWS-managed network connector; RunMicrovm needs lambda:PassNetworkConnector on the ones it passes. */
-export function anyManagedConnectorArn(stack: cdk.Stack): string {
-  return `arn:aws:lambda:${stack.region}:aws:network-connector:aws-network-connector:*`;
 }

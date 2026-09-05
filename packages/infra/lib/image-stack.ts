@@ -2,16 +2,9 @@
 // roles. Nothing fleet-related is baked into the image, which keeps Core → Image → Fleet acyclic.
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import { NAMES, PORTS } from "../../fleet/src/names.ts";
 import type { CoreStack } from "./core-stack.ts";
-import {
-  anyImageArn,
-  baseImageArn,
-  imageArn,
-  managedConnectorArn,
-  NAMES,
-  PORTS,
-  parameterArn,
-} from "./names.ts";
+import { anyImageArn, baseImageArn, imageArn, managedConnectorArn, parameterArn } from "./names.ts";
 
 export interface ImageStackProps extends cdk.StackProps {
   core: CoreStack;
@@ -135,8 +128,8 @@ export class ImageStack extends cdk.Stack {
         { key: "TABFRAME_SANDBOX_WORKER", value: "/app/node-worker.js" },
         { key: "TABFRAME_HOST", value: "0.0.0.0" },
       ],
-      // Hooks are ENABLED/DISABLED flags; the paths are fixed by the platform at
-      // `${HOOK_BASE}/<hook>` on the configured port (private, 8081).
+      // Hooks are ENABLED/DISABLED flags; the platform delivers them at `HOOK_BASE/<hook>` on the
+      // private port.
       hooks: {
         port: PORTS.private,
         microvmImageHooks: {

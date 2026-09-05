@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as cdk from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
+import { CANARY_ENV, ROTATE_ENV, SESSION_ENV } from "../../fleet/src/env.ts";
+import { NAMES } from "../../fleet/src/names.ts";
 import { CoreStack } from "../lib/core-stack.ts";
 import { FleetStack } from "../lib/fleet-stack.ts";
 import { ImageStack } from "../lib/image-stack.ts";
@@ -255,7 +257,19 @@ describe("Fleet stack", () => {
     });
   });
 
-  test("the canary (WP8.2) runs every five minutes, may only write metrics, and its alarms mail the topic", () => {
+  test("each function's environment is exactly the keys its loader reads", () => {
+    const fns = Object.values(fleet.findResources("AWS::Lambda::Function"));
+    const envKeys = (name: string) => {
+      const fn = fns.find((f) => f.Properties?.FunctionName === name);
+      const vars = fn?.Properties?.Environment?.Variables as Record<string, unknown> | undefined;
+      return Object.keys(vars ?? {}).sort();
+    };
+    expect(envKeys(NAMES.sessionFunction)).toEqual([...SESSION_ENV].sort());
+    expect(envKeys(NAMES.rotateFunction)).toEqual([...ROTATE_ENV].sort());
+    expect(envKeys(NAMES.canaryFunction)).toEqual([...CANARY_ENV].sort());
+  });
+
+  test("the canary runs every five minutes, may only write metrics, and its alarms mail the topic", () => {
     fleet.hasResourceProperties("AWS::Lambda::Function", {
       FunctionName: "tabframe-canary",
       MemorySize: 128,

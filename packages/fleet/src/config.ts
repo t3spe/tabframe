@@ -1,7 +1,7 @@
 // Configuration from environment variables, with the constants the design fixes (§9.2).
+import { pick, ROTATE_ENV, SESSION_ENV } from "./env.ts";
+import { NAMES, REGION_DEFAULT } from "./names.ts";
 import type { IdlePolicy } from "./types.ts";
-
-export const REGION_DEFAULT = "us-west-2";
 
 export function ingressConnectorArn(region: string): string {
   return `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`;
@@ -19,7 +19,6 @@ export const CONTROL_PLANE_IDLE_POLICY: IdlePolicy = {
 };
 
 export const CONTROL_PLANE_MAX_DURATION_SECONDS = 28_800;
-export const PUBLIC_PORT = 8080;
 export const TOKEN_TTL_MINUTES = 30;
 export const TOKEN_REFRESH_MINUTES = 25;
 
@@ -55,43 +54,49 @@ export interface OpsConfig {
 
 type Env = Record<string, string | undefined>;
 
-function required(env: Env, name: string): string {
+function required<E extends Record<string, string | undefined>>(
+  env: E,
+  name: keyof E & string,
+): string {
   const value = env[name];
   if (!value) throw new Error(`missing required environment variable ${name}`);
   return value;
 }
 
 export function loadSessionConfig(env: Env): SessionConfig {
+  const e = pick(env, SESSION_ENV);
   return {
-    pointerParam: env.TABFRAME_POINTER_PARAM ?? "/tabframe/pointer",
-    storeBase: required(env, "TABFRAME_STORE_BASE"),
-    webOrigin: env.TABFRAME_WEB_ORIGIN ?? "*",
-    rotateFunctionName: env.TABFRAME_ROTATE_FUNCTION ?? "tabframe-rotate",
+    pointerParam: e.TABFRAME_POINTER_PARAM ?? NAMES.pointerParam,
+    storeBase: required(e, "TABFRAME_STORE_BASE"),
+    webOrigin: e.TABFRAME_WEB_ORIGIN ?? "*",
+    rotateFunctionName: e.TABFRAME_ROTATE_FUNCTION ?? NAMES.rotateFunction,
     retryAfterMs: 5000,
     healCooldownMs: 10_000,
   };
 }
 
 export function loadRotateConfig(env: Env): RotateConfig {
+  const e = pick(env, ROTATE_ENV);
   return {
-    pointerParam: env.TABFRAME_POINTER_PARAM ?? "/tabframe/pointer",
+    pointerParam: e.TABFRAME_POINTER_PARAM ?? NAMES.pointerParam,
     region: env.AWS_REGION ?? REGION_DEFAULT,
-    imageArn: required(env, "TABFRAME_IMAGE_ARN"),
+    imageArn: required(e, "TABFRAME_IMAGE_ARN"),
     imageVersion: env.TABFRAME_IMAGE_VERSION ?? null,
-    controlPlaneRoleArn: required(env, "TABFRAME_CP_ROLE_ARN"),
-    sessionUrl: required(env, "TABFRAME_SESSION_URL"),
-    storeBase: required(env, "TABFRAME_STORE_BASE"),
-    fleetSecretArn: required(env, "TABFRAME_FLEET_SECRET_ARN"),
-    readyTimeoutMs: 120_000, // (WP8.2) inside the function's budget with the fleet calls that follow
+    controlPlaneRoleArn: required(e, "TABFRAME_CP_ROLE_ARN"),
+    sessionUrl: required(e, "TABFRAME_SESSION_URL"),
+    storeBase: required(e, "TABFRAME_STORE_BASE"),
+    fleetSecretArn: required(e, "TABFRAME_FLEET_SECRET_ARN"),
+    // Inside the function's ten minutes, with room for the fleet calls that follow.
+    readyTimeoutMs: 120_000,
     pollIntervalMs: 2000,
   };
 }
 
 export function loadOpsConfig(env: Env): OpsConfig {
   return {
-    pointerParam: env.TABFRAME_POINTER_PARAM ?? "/tabframe/pointer",
-    rotateFunctionName: env.TABFRAME_ROTATE_FUNCTION ?? "tabframe-rotate",
-    ruleName: env.TABFRAME_RULE_NAME ?? "tabframe-rotate-hourly",
+    pointerParam: env.TABFRAME_POINTER_PARAM ?? NAMES.pointerParam,
+    rotateFunctionName: env.TABFRAME_ROTATE_FUNCTION ?? NAMES.rotateFunction,
+    ruleName: env.TABFRAME_RULE_NAME ?? NAMES.hourlyRule,
     imageArn: required(env, "TABFRAME_IMAGE_ARN"),
   };
 }
