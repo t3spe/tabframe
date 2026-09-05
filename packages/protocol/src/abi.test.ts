@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import {
   AbiError,
+  BARS_LIMITS,
   type Bar,
   decodeBars,
   decodePlanInput,
@@ -11,12 +12,23 @@ import {
   encodePlanInput,
   encodeRunInput,
   encodeStageSpec,
+  SPEC_LIMITS,
   type StageSpec,
   type TaskSpec,
-} from "./abi.ts";
-import { BARS_LIMITS, SPEC_LIMITS } from "./limits.ts";
+} from "./index.ts";
 
 const bytes = (...b: number[]) => new Uint8Array(b);
+
+/** The code and offset of the AbiError a decode throws. */
+function failure(decode: () => unknown): [string, number] {
+  try {
+    decode();
+  } catch (err) {
+    if (err instanceof AbiError) return [err.code, err.at];
+    throw err;
+  }
+  throw new Error("decoded");
+}
 
 describe("run and plan inputs", () => {
   test("run input round-trips and starts with the magic", () => {
@@ -62,6 +74,36 @@ describe("run and plan inputs", () => {
         ),
       ),
     ).toThrow(/truncated/);
+  });
+  test("run and plan inputs tolerate trailing bytes", () => {
+    const run = encodeRunInput({ stage: 1, taskIndex: 2, taskCount: 3, input: bytes(9) });
+    expect(decodeRunInput(new Uint8Array([...run, 0, 0])).input).toEqual(bytes(9));
+    const plan = encodePlanInput({ stage: 0, params: { a: 1 }, hints: {} });
+    expect(decodePlanInput(new Uint8Array([...plan, 7])).params).toEqual({ a: 1 });
+  });
+});
+
+describe("errors", () => {
+  test("carry a code and the offset where the check failed; messages unchanged", () => {
+    expect(
+      failure(() => decodeRunInput(encodePlanInput({ stage: 0, params: {}, hints: {} }))),
+    ).toEqual(["magic", 0]);
+    const versioned = encodeRunInput({ stage: 0, taskIndex: 0, taskCount: 1, input: bytes() });
+    versioned[4] = 9;
+    expect(failure(() => decodeRunInput(versioned))).toEqual(["version", 4]);
+    const run = encodeRunInput({ stage: 0, taskIndex: 0, taskCount: 1, input: bytes(1, 2) });
+    expect(failure(() => decodeRunInput(run.subarray(0, 20)))).toEqual(["truncated", 20]);
+    const done = encodeStageSpec({ kind: "done", next: null });
+    expect(failure(() => decodeStageSpec(new Uint8Array([...done, 0])))).toEqual(["shape", 10]);
+    const empty = encodeStageSpec({ kind: "stage", name: "x", tasks: [] });
+    expect(failure(() => decodeStageSpec(empty))).toEqual(["cap", 19]);
+    expect(() => decodeStageSpec(empty)).toThrow("task count 0 outside 1..4096");
+    const nan = encodeBars([{ label: "nan", value: Number.NaN }]);
+    expect(failure(() => decodeBars(nan))).toEqual(["shape", 27]);
+    expect(failure(() => decodeStageSpec(new Uint8Array(SPEC_LIMITS.maxBytes + 1)))).toEqual([
+      "cap",
+      0,
+    ]);
   });
 });
 
@@ -145,7 +187,6 @@ describe("stage specs", () => {
       .tuple(fc.uint8Array({ maxLength: 64 }), fc.option(arbPlace, { nil: null }))
       .map(([input, place]) => (place ? { input, place } : { input }));
     const arbCanvas = fc.option(
-      // Within the WP8.3 cap: 4096 a side and four megapixels in all.
       fc.record({ w: fc.integer({ min: 1, max: 2048 }), h: fc.integer({ min: 1, max: 2048 }) }),
       { nil: null },
     );
