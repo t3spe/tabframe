@@ -1,25 +1,23 @@
 // `mise run build:programs`: compile every programs/<name>/assembly/index.ts to
-// programs/<name>/dist/program.wasm with the flags the SDK documents, and copy manifest.json next
-// to it. Runs under Node with the AssemblyScript compiler's API.
+// programs/<name>/dist/program.wasm with the SDK's flags, and copy manifest.json next to it.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import asc from "assemblyscript/asc";
+import { ASC_FLAGS } from "../flags.ts";
+
+export { ASC_FLAGS } from "../flags.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const programsDir = path.join(root, "programs");
 
-/** The compiler flags every program uses (SDK README). 256 pages = 16 MiB, the sandbox's reference maximum. */
-export const ASC_FLAGS = ["-O3", "--runtime", "stub", "--noAssert", "--maximumMemory", "256"];
-
+/** Compile one entry with the build's flags; `--path` lets asc find the SDK through the program's node_modules. */
 export async function compileProgram(
   entry: string,
   outFile: string,
   extraFlags: string[] = [],
 ): Promise<void> {
   mkdirSync(path.dirname(outFile), { recursive: true });
-  // The program package depends on @tabframe/sdk-as; asc resolves the subpath import
-  // "@tabframe/sdk-as/assembly/index" through the program's own node_modules.
   const programDir = path.resolve(path.dirname(entry), "..");
   const args = [
     entry,

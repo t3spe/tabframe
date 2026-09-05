@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { hash } from "./shared.ts";
+import { hash, programName, viewKind } from "./shared.ts";
 
 /** A path inside an execution's filesystem or a bundle: absolute, normalized, no traversal. */
 export const fsPath = z
@@ -10,6 +10,9 @@ export const fsPath = z
   .refine((p) => p.split("/").every((seg) => seg !== "." && seg !== ".."), "no dot segments");
 
 export const fileEntry = z.object({ hash, size: z.number().int().nonnegative() });
+
+/** A file a task wrote: an entry with its path. */
+export const writeEntry = fileEntry.extend({ path: fsPath });
 
 /**
  * A manifest blob: the whole filesystem (or bundle) as path → blob. Stored content-addressed
@@ -23,8 +26,8 @@ export type FsManifest = z.infer<typeof fsManifest>;
 
 /** What a program declares about itself (design §5.1). */
 export const programManifest = z.object({
-  name: z.string().min(1).max(64),
-  view: z.enum(["tiles", "bars", "text"]),
+  name: programName,
+  view: viewKind,
   persist: z.boolean().default(false),
   defaultParams: z
     .record(z.string(), z.unknown())
@@ -32,9 +35,9 @@ export const programManifest = z.object({
     .refine((p) => JSON.stringify(p).length <= 4096, "defaultParams over 4 KB"),
   description: z.string().max(512).optional(),
   /**
-   * The hash of the program's source text in the store (WP7.6): the editor uploads it with the
-   * module and can reopen the program on any browser; the seeder sets it for shipped programs.
-   * Absent for a module dropped as a .wasm.
+   * The program's source text in the store: the editor uploads it with the module so the program
+   * can be reopened on any browser; the seeder sets it for shipped programs. Absent for a module
+   * dropped as a .wasm.
    */
   source: hash.optional(),
 });

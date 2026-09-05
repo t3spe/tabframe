@@ -40,7 +40,7 @@ class Preset {
 // shortcuts costs ss² × 4096 × maxIter iterations whatever the zoom, so the product ss² × maxIter
 // stays at or under about 7 000: a worst-case tile of roughly half a second under Node, which is
 // about two seconds — the scheduler's deadline floor — in a browser tab, where tiles run two to
-// four times slower. The frame's total comes from the boundary work; WP4.3 has the numbers.
+// four times slower. The frame's total comes from the boundary work.
 const PRESETS: Preset[] = [
   new Preset("overview", -0.75, 0.0, 3.5, 140, 7),
   new Preset("seahorse valley", -0.7436, 0.1314, 0.003, 13000, 4),
@@ -133,7 +133,7 @@ function channel(palette: i32, stop: i32, c: i32): f64 {
 function sample(cr: f64, ci: f64, maxIter: u32, palette: i32): u32 {
   // Two exact interior tests first: a point inside the main cardioid or the period-2 bulb never
   // escapes, so answering at once costs nothing in output and is what keeps the overview's
-  // interior tiles under the scheduler's deadline (WP4.3). Pure f64 arithmetic, deterministic.
+  // interior tiles under the scheduler's deadline. Pure f64 arithmetic, deterministic.
   const xq = cr - 0.25;
   const q = xq * xq + ci * ci;
   if (q * (q + xq) <= 0.25 * ci * ci) return 0;

@@ -16,7 +16,7 @@ export const CLOSE = {
   generationMismatch: 4006,
   /** The observer cap is reached. */
   observerCap: 4007,
-  /** Every client connection the control plane keeps for clients is taken (WP8.2 cap; WP8.3 code). */
+  /** Every client connection the control plane keeps is taken. */
   machineFull: 4008,
 } as const;
 

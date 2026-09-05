@@ -1,11 +1,21 @@
 import { z } from "zod";
 import { LIMITS } from "./limits.ts";
-import { hash, millis, nodeId } from "./shared.ts";
+import {
+  canvas,
+  executionId,
+  hash,
+  millis,
+  nodeId,
+  programName,
+  taskId,
+  viewKind,
+} from "./shared.ts";
 
 export const taskKind = z.enum(["run", "plan"]);
 export const taskStatus = z.enum(["pending", "assigned", "done", "failed"]);
 export const executionStatus = z.enum(["queued", "running", "done", "failed", "cancelled"]);
-export const view = z.enum(["tiles", "bars", "text"]);
+/** `viewKind` under its older name. */
+export const view = viewKind;
 
 export const place = z.object({
   x: z.number().int(),
@@ -25,8 +35,8 @@ export type TaskLog = z.infer<typeof taskLog>;
 
 /** What observers see about a task (design §6.2, §8.3). */
 export const taskView = z.object({
-  taskId: z.string().min(1).max(64),
-  executionId: z.string().min(1).max(64),
+  taskId,
+  executionId,
   stage: z.number().int().nonnegative(),
   index: z.number().int().nonnegative(),
   kind: taskKind,
@@ -37,7 +47,7 @@ export const taskView = z.object({
   output: hash.nullable(),
   place: place.nullable(),
   contested: z.boolean(),
-  /** The accepted result's log, once the control plane carries it (dashboard v2). */
+  /** The accepted result's log, once the control plane carries it. */
   log: taskLog.optional(),
 });
 export type TaskView = z.infer<typeof taskView>;
@@ -55,19 +65,19 @@ export const counters = z.object({
 export type Counters = z.infer<typeof counters>;
 
 export const executionView = z.object({
-  executionId: z.string().min(1).max(64),
+  executionId,
   program: hash,
-  programName: z.string().min(1).max(64),
+  programName,
   status: executionStatus,
-  /** Why it ended, when it did not end well; "stopped by a person" after a Stop (WP6.1). */
+  /** Why it ended, when it did not end well; "stopped by a person" after a Stop. */
   failure: z.string().max(512).nullable().optional(),
   human: z.boolean(),
-  view,
+  view: viewKind,
   params,
   stage: z.number().int().nonnegative(),
   stageName: z.string().max(64),
   taskCount: z.number().int().nonnegative(),
-  canvas: z.object({ w: z.number().int().positive(), h: z.number().int().positive() }).nullable(),
+  canvas: canvas.nullable(),
   root: hash.nullable(),
   counters,
   startedAt: millis.nullable(),
@@ -75,9 +85,9 @@ export const executionView = z.object({
 export type ExecutionView = z.infer<typeof executionView>;
 
 export const queueEntry = z.object({
-  executionId: z.string().min(1).max(64),
-  programName: z.string().min(1).max(64),
-  /** The bundle hash (WP8.3): the editor matches its own launch on it, not on a name anyone may use. */
+  executionId,
+  programName,
+  /** The bundle hash: the editor matches its own launch on it, not on a name anyone may use. */
   bundle: hash.optional(),
   human: z.boolean(),
   queuedAt: millis,

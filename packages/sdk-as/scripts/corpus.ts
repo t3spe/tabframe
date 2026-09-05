@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 export const CORPUS_FILE = path.join(root, "programs/wordcount/in/corpus.txt");
 
-/** The cache URL first, then the pglaf mirror; both were reachable in preflight (design §5.6). */
+/** The cache URL first, then the pglaf mirror (design §5.6). */
 export const SOURCES = [
   "https://www.gutenberg.org/cache/epub/2701/pg2701.txt",
   "https://gutenberg.pglaf.org/2/7/0/2701/2701-0.txt",

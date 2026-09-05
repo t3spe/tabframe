@@ -1,4 +1,4 @@
-// Tiny GPT (WP6.5): a character-level transformer predicting the next byte, its whole forward pass
+// Tiny GPT: a character-level transformer predicting the next byte, its whole forward pass
 // in this module. The weights come from the bundle (/in/weights.bin, int8 with one f32 scale per
 // tensor, exported by programs/tinygpt/train/train.py); one task is one continuation — a prompt,
 // a token count — decoded greedily, so the same bytes come out of every core (redundancy on
@@ -23,8 +23,6 @@ const MAGIC: u32 = 0x54475054;
 const WEIGHTS = "/in/weights.bin";
 const MAX_PROMPTS = 64;
 
-// ---- plan ---------------------------------------------------------------------------------------
-
 export function plan(ptr: usize, len: i32): usize {
   const input = readPlanInput(ptr, len);
   if (input.stage == 1) {
@@ -47,8 +45,6 @@ export function plan(ptr: usize, len: i32): usize {
   if (count == 0) s.task(new ByteWriter().str("Call me Ishmael").u32(tokens).toBytes());
   return emit(s.toBytes());
 }
-
-// ---- the model ----------------------------------------------------------------------------------
 
 class Tensor {
   data: Float32Array;
@@ -263,8 +259,6 @@ function generate(m: Model, prompt: Uint8Array, tokens: i32): Int32Array {
   }
   return ids;
 }
-
-// ---- run ------------------------------------------------------------------------------------------
 
 export function run(ptr: usize, len: i32): usize {
   const task = readRunInput(ptr, len);

@@ -2,7 +2,7 @@ import type { FsManifest, TaskLimits } from "@tabframe/protocol";
 import { fsPath } from "@tabframe/protocol";
 import type { BlobReader } from "./types.ts";
 
-/** Return codes of the tf imports (design §5.3, pinned here; see the WP doc). */
+/** Return codes of the tf imports (design §5.3); the SDK's RC mirrors them. */
 export const RC = { notFound: -1, badArgs: -2, capExceeded: -3 } as const;
 
 const encoder = new TextEncoder();

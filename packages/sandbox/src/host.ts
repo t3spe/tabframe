@@ -15,14 +15,8 @@ export interface SandboxHost {
   /**
    * Run one task with a deadline. Past the deadline the worker is terminated outright — the only
    * clean way to stop a spinning loop — and the result is `{ok: false, error: "deadline"}`.
-   * `extra` rides along in the task message (the web adapter needs the store base).
    */
-  run(
-    module: WebAssembly.Module,
-    request: HostRequest,
-    deadlineMs: number,
-    extra?: Record<string, unknown>,
-  ): Promise<TaskResult>;
+  run(module: WebAssembly.Module, request: HostRequest, deadlineMs: number): Promise<TaskResult>;
   /** Terminate the worker, if any. */
   dispose(): void;
 }
@@ -32,6 +26,8 @@ export interface TaskMessage {
   id: number;
   module: WebAssembly.Module;
   request: HostRequest;
+  /** Where the worker fetches blobs by hash; the web adapter's worker needs it, the node one has the bridge. */
+  storeBase?: string;
 }
 
 export interface ResultMessage {
@@ -40,14 +36,20 @@ export interface ResultMessage {
   result: TaskResult;
 }
 
+export interface SandboxHostOptions {
+  /** Messages that are not results — how the node adapter services blob requests. */
+  onOther?: (msg: unknown) => void;
+  /** Stamped on every task message. */
+  storeBase?: string;
+}
+
 /**
  * A host that spawns a worker lazily, reuses it across tasks, serializes tasks, and replaces the
- * worker after a deadline kill or a crash. Messages that are not results go to `onOther`, which is
- * how the node adapter services blob requests.
+ * worker after a deadline kill or a crash.
  */
 export function createSandboxHost(
   spawn: () => WorkerLike,
-  onOther?: (msg: unknown) => void,
+  opts: SandboxHostOptions = {},
 ): SandboxHost {
   let worker: WorkerLike | null = null;
   let nextId = 1;
@@ -68,7 +70,7 @@ export function createSandboxHost(
         finish(m.result);
         return;
       }
-      onOther?.(msg);
+      opts.onOther?.(msg);
     });
     w.onError((err) => {
       // A worker we already replaced (deadline kill, dispose) reports its exit late; ignore it.
@@ -92,7 +94,6 @@ export function createSandboxHost(
     module: WebAssembly.Module,
     request: HostRequest,
     deadlineMs: number,
-    extra: Record<string, unknown>,
   ): Promise<TaskResult> {
     return new Promise<TaskResult>((resolve) => {
       if (disposed) {
@@ -107,20 +108,15 @@ export function createSandboxHost(
         finish({ ok: false, error: "deadline", log: "" });
       }, deadlineMs);
       pending = { id, settle: resolve, timer };
-      const message: TaskMessage & Record<string, unknown> = {
-        ...extra,
-        type: "task",
-        id,
-        module,
-        request,
-      };
+      const message: TaskMessage = { type: "task", id, module, request };
+      if (opts.storeBase !== undefined) message.storeBase = opts.storeBase;
       w.postMessage(message);
     });
   }
 
   return {
-    run(module, request, deadlineMs, extra = {}) {
-      const next = chain.then(() => runOne(module, request, deadlineMs, extra));
+    run(module, request, deadlineMs) {
+      const next = chain.then(() => runOne(module, request, deadlineMs));
       chain = next.catch(() => undefined);
       return next;
     },

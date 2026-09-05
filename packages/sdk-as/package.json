@@ -6,9 +6,11 @@
   "description": "AssemblyScript SDK for Tabframe programs: the ABI byte formats, params, stage builder, filesystem imports; plus the program build, goldens, and Node host scripts",
   "ascMain": "assembly/index.ts",
   "exports": {
-    "./host": "./scripts/host.ts"
+    "./host": "./scripts/host.ts",
+    "./programs": "./scripts/programs.ts"
   },
   "dependencies": {
-    "@tabframe/protocol": "workspace:*"
+    "@tabframe/protocol": "workspace:*",
+    "@tabframe/sandbox": "workspace:*"
   }
 }

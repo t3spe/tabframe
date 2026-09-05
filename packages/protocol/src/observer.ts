@@ -1,10 +1,22 @@
 import { z } from "zod";
 import { LIMITS } from "./limits.ts";
-import { envelope, hash, health, millis, nodeId, nodeView, seq } from "./shared.ts";
+import {
+  canvas,
+  envelope,
+  executionId,
+  hash,
+  health,
+  millis,
+  nodeId,
+  nodeView,
+  presignBody,
+  presignedBody,
+  programName,
+  seq,
+  taskId,
+  viewKind,
+} from "./shared.ts";
 import { executionView, params, place, queueEntry, taskLog, taskView } from "./task.ts";
-
-const executionId = z.string().min(1).max(64);
-const taskId = z.string().min(1).max(64);
 
 /** Observer → control plane. */
 export const subscribe = z.object({
@@ -17,27 +29,20 @@ export const subscribe = z.object({
 export const ping = z.object({ t: z.literal("ping"), ...envelope });
 
 /** Bundle uploads presign through the observer socket (design D18). */
-export const observerPresign = z.object({
-  t: z.literal("presign"),
-  ...envelope,
-  items: z
-    .array(z.object({ hash, size: z.number().int().positive().max(LIMITS.maxOutputBytes) }))
-    .min(1)
-    .max(LIMITS.maxPresignItems),
-});
+export const observerPresign = z.object({ t: z.literal("presign"), ...envelope, ...presignBody });
 
 /** Controls (design §6.7, §8.3). Spawn is not a message. */
 export const killHalf = z.object({ t: z.literal("killHalf"), ...envelope });
 export const freezeHalf = z.object({ t: z.literal("freezeHalf"), ...envelope });
 export const throttleHalf = z.object({ t: z.literal("throttleHalf"), ...envelope });
 export const resumeAll = z.object({ t: z.literal("resumeAll"), ...envelope });
-/** Stop: end the running execution, drop the loop's queued continuations, hold the loop (WP6.1). */
+/** Stop: end the running execution, drop the loop's queued continuations, hold the loop. */
 export const stop = z.object({ t: z.literal("stop"), ...envelope });
 /** Start: let the loop run again after a stop. */
 export const start = z.object({ t: z.literal("start"), ...envelope });
 /**
- * Pause (WP6.4): nothing new is assigned or started while the sender's socket lives; in-flight
- * tasks finish. Resume, or the sender going away, lifts it.
+ * Pause: nothing new is assigned or started while the sender's socket lives; in-flight tasks
+ * finish. Resume, or the sender going away, lifts it.
  */
 export const pause = z.object({ t: z.literal("pause"), ...envelope });
 export const resume = z.object({ t: z.literal("resume"), ...envelope });
@@ -86,26 +91,26 @@ export const machineView = z.object({
   awake: z.boolean(),
   reason: z.string().max(128).nullable(),
   redundancy: z.boolean(),
-  /** A person pressed Stop: the loop waits for Start (WP6.1). Absent means no. */
+  /** A person pressed Stop: the loop waits for Start. Absent means no. */
   stopped: z.boolean().optional(),
-  /** An editor tab holds the machine paused (WP6.4). Absent means no. */
+  /** An editor tab holds the machine paused. Absent means no. */
   paused: z.boolean().optional(),
-  /** The loop yielded to a person's launch and waits for Start or ten idle minutes (WP6.8). */
+  /** The loop yielded to a person's launch and waits for Start or ten idle minutes. */
   yielded: z.boolean().optional(),
   /** Next scheduled rotation, when known. */
   nextRotationAt: millis.nullable(),
   uptimeMs: millis,
 });
 
-/** A program the machine can launch (design §5.1); the seeded demos and every upload since. */
+/** A program the machine can launch (design §5.1): the seeded demos and every upload since. */
 export const programView = z.object({
   bundle: hash,
-  name: z.string().min(1).max(64),
-  view: z.enum(["tiles", "bars", "text"]),
+  name: programName,
+  view: viewKind,
   description: z.string().max(512).nullable(),
   defaultParams: params,
   addedAt: millis,
-  /** The program's source text in the store, by hash, when it has one (WP7.6). */
+  /** The program's source text in the store, by hash, when it has one. */
   source: hash.nullable().optional(),
 });
 
@@ -139,13 +144,7 @@ export const error = z.object({
 export const observerPresigned = z.object({
   t: z.literal("presigned"),
   ...envelope,
-  urls: z.array(
-    z.object({
-      hash,
-      url: z.string().url().or(z.string().startsWith("/")).nullable(),
-      headers: z.record(z.string(), z.string()),
-    }),
-  ),
+  ...presignedBody,
 });
 
 const event = { ...envelope, seq };
@@ -176,7 +175,7 @@ export const stageStarted = z.object({
   stage: z.number().int().nonnegative(),
   name: z.string().max(64),
   taskCount: z.number().int().positive(),
-  canvas: z.object({ w: z.number().int().positive(), h: z.number().int().positive() }).nullable(),
+  canvas: canvas.nullable(),
   tasks: z.array(taskView).max(LIMITS.snapshotPageTasks).default([]),
 });
 export const stageDone = z.object({
@@ -230,7 +229,7 @@ export const taskDone = z.object({
   output: hash,
   place: place.nullable(),
   computeMs: millis,
-  /** Present once the control plane forwards the accepted result's log (dashboard v2). */
+  /** Present once the control plane forwards the accepted result's log. */
   log: taskLog.optional(),
 });
 export const taskReassigned = z.object({
@@ -277,14 +276,14 @@ export const programAdded = z.object({
   t: z.literal("programAdded"),
   ...event,
   program: hash,
-  name: z.string().min(1).max(64),
+  name: programName,
 });
-/** A newer bundle shipped under this name; the old one leaves the list (WP4.9). */
+/** A newer bundle shipped under this name; the old one leaves the list. */
 export const programRetired = z.object({
   t: z.literal("programRetired"),
   ...event,
   program: hash,
-  name: z.string().min(1).max(64),
+  name: programName,
 });
 export const controlPlaneRotating = z.object({
   t: z.literal("controlPlaneRotating"),
@@ -299,8 +298,8 @@ export const machineSleeping = z.object({
 });
 
 /**
- * The loop yielded to a person's launch (WP6.8): once their execution has ended the loop launches
- * nothing until Start or ten quiet minutes. `yielded: false` says it took the stage back by itself.
+ * The loop yielded to a person's launch: once their execution has ended the loop launches nothing
+ * until Start or ten quiet minutes. `yielded: false` says it took the stage back by itself.
  */
 export const loopYielded = z.object({
   t: z.literal("loopYielded"),

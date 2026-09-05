@@ -1,26 +1,15 @@
 // `mise run goldens`: run a program single-threaded under Node, hash every task output, and write
-// programs/<name>/goldens.json. The churn simulation and the Playwright tests compare against
-// these. Also the timing tool for pacing: `--preset N` times one preset, `--all` times every one.
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+// programs/<name>/goldens.json; with `--check`, compare the hashes to the committed file instead.
+// The churn simulation, the control-plane fixtures, and the browser suites read these files. Also
+// the pacing tool: `--preset N` times one Mandelbrot preset, `--all` times every one.
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Bar, decodeBars, programManifest } from "@tabframe/protocol";
-import { instantiate, loadProgram, runStaged } from "./host.ts";
+import { type Bar, canonicalStringify, decodeBars, type ProgramManifest } from "@tabframe/protocol";
+import { instantiate, loadProgram, runStaged, sha256Hex } from "./host.ts";
+import { distModule, inputsOf, programDir, ROOT, readGoldens, readManifest } from "./programs.ts";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const args = process.argv.slice(2);
-const flag = (name: string) => {
-  const i = args.indexOf(name);
-  return i >= 0 ? (args[i + 1] ?? "") : null;
-};
-const programName = flag("--program") ?? "mandelbrot";
-const dir = path.join(root, "programs", programName);
-const wasm = new Uint8Array(readFileSync(path.join(dir, "dist", "program.wasm")));
-const manifest = programManifest.parse(
-  JSON.parse(readFileSync(path.join(dir, "manifest.json"), "utf8")),
-);
-
+/** Goldens for a tiles program: stage 0's task hashes and the CPU time per tile. */
 export interface GoldenRun {
   params: Record<string, unknown>;
   stageName: string;
@@ -29,13 +18,12 @@ export interface GoldenRun {
   msPerTile: { min: number; median: number; p95: number; max: number; total: number };
 }
 
-export async function runGolden(
+export function runGolden(
+  module: WebAssembly.Module,
   params: Record<string, unknown>,
   sample?: number,
-): Promise<GoldenRun> {
-  const { module } = await loadProgram(wasm);
-  const planner = await instantiate(module);
-  const spec = planner.plan(0, params, { nodes: 1 });
+): GoldenRun {
+  const spec = instantiate(module).plan(0, params, { nodes: 1 });
   if (spec.kind !== "stage") throw new Error("stage 0 must be a stage");
   const times: number[] = [];
   const hashes: string[] = [];
@@ -43,14 +31,13 @@ export async function runGolden(
   const step = sample ? Math.max(1, Math.floor(count / sample)) : 1;
   for (let i = 0; i < count; i += step) {
     const task = spec.tasks[i] as (typeof spec.tasks)[number];
-    const inst = await instantiate(module);
-    // CPU time, not wall time: the pacing numbers must not depend on what else the machine is
-    // doing while goldens are regenerated (WP4.3).
+    const inst = instantiate(module);
+    // CPU time, not wall time: the pacing numbers must not depend on what else the machine is doing.
     const c0 = process.cpuUsage();
     const out = inst.run(0, i, count, task.input);
     const c1 = process.cpuUsage(c0);
     times.push((c1.user + c1.system) / 1000);
-    hashes.push(createHash("sha256").update(out).digest("hex"));
+    hashes.push(sha256Hex(out));
   }
   const sorted = [...times].sort((a, b) => a - b);
   const total = times.reduce((a, b) => a + b, 0) * step;
@@ -71,17 +58,7 @@ export async function runGolden(
 
 const round = (n: number) => Math.round(n * 10) / 10;
 
-/** A program's bundle inputs: programs/<name>/in/<file> → /in/<file>. */
-export function inputsOf(programDir: string): Map<string, Uint8Array> {
-  const files = new Map<string, Uint8Array>();
-  const inDir = path.join(programDir, "in");
-  if (!existsSync(inDir)) return files;
-  for (const f of readdirSync(inDir).sort())
-    files.set(`/in/${f}`, new Uint8Array(readFileSync(path.join(inDir, f))));
-  return files;
-}
-
-/** Goldens for a staged program (`bars`/`text` views): every stage's output hashes and the decoded result. */
+/** Goldens for a staged program (`bars`/`text`): every stage's hashes and the decoded final payload. */
 export interface StagedGolden {
   params: Record<string, unknown>;
   stages: Array<{ name: string; taskCount: number; hashes: string[] }>;
@@ -90,18 +67,16 @@ export interface StagedGolden {
   msTotal: number;
 }
 
-export async function runStagedGolden(
+export function runStagedGolden(
+  module: WebAssembly.Module,
+  manifest: ProgramManifest,
   params: Record<string, unknown>,
   inputs: Map<string, Uint8Array>,
-): Promise<StagedGolden> {
-  const { module } = await loadProgram(wasm);
+): StagedGolden {
   const t0 = performance.now();
-  const r = await runStaged(module, inputs, params);
+  const r = runStaged(module, inputs, params);
   const final = r.final
-    ? {
-        hash: createHash("sha256").update(r.final).digest("hex"),
-        bars: manifest.view === "bars" ? decodeBars(r.final) : null,
-      }
+    ? { hash: sha256Hex(r.final), bars: manifest.view === "bars" ? decodeBars(r.final) : null }
     : null;
   return {
     params,
@@ -112,49 +87,73 @@ export async function runStagedGolden(
   };
 }
 
+/** A golden without its timings, canonical: what `--check` compares. */
+export function stableGolden(golden: object): string {
+  const rest: Record<string, unknown> = { ...golden };
+  rest.msPerTile = undefined;
+  rest.msTotal = undefined;
+  return canonicalStringify(rest);
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  const flag = (name: string) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? (args[i + 1] ?? "") : null;
+  };
+  const programName = flag("--program") ?? "mandelbrot";
+  const manifest = readManifest(programName);
+  const { module } = loadProgram(distModule(programName));
+  const file = path.join(programDir(programName), "goldens.json");
   const preset = flag("--preset");
   const sample = flag("--sample");
   if (args.includes("--all")) {
     for (let p = 0; ; p++) {
-      const r = await runGolden(
-        { ...manifest.defaultParams, preset: p },
-        sample ? Number(sample) : 8,
-      );
+      const params = { ...manifest.defaultParams, preset: p };
+      const r = runGolden(module, params, sample ? Number(sample) : 8);
       console.log(
         `preset ${p}: ${r.taskCount} tiles, cpu ms/tile min ${r.msPerTile.min} median ${r.msPerTile.median} p95 ${r.msPerTile.p95} max ${r.msPerTile.max}, est. frame ${Math.round(r.msPerTile.total / 1000)} s`,
       );
-      const next = (await instantiate((await loadProgram(wasm)).module)).plan(1, {
-        ...manifest.defaultParams,
-        preset: p,
-      });
+      const next = instantiate(module).plan(1, params);
       if (next.kind !== "done" || !next.next || Number(next.next.preset) === 0) break;
     }
   } else if (preset !== null) {
-    const r = await runGolden(
+    const r = runGolden(
+      module,
       { ...manifest.defaultParams, preset: Number(preset) },
       sample ? Number(sample) : undefined,
     );
     console.log(JSON.stringify({ preset: Number(preset), ...r.msPerTile, taskCount: r.taskCount }));
-  } else if (manifest.view !== "tiles") {
-    // Staged programs: the whole execution single-threaded, every stage's hashes, the final bars.
-    const r = await runStagedGolden(manifest.defaultParams, inputsOf(dir));
-    const file = path.join(dir, "goldens.json");
-    // One-hash arrays on one line, the way the repository's formatter prints them.
-    const json = JSON.stringify(r, null, 2).replace(/\[\n\s+("[0-9a-f]{64}")\n\s+\]/g, "[$1]");
-    writeFileSync(file, `${json}\n`);
-    console.log(
-      `[goldens] ${programName}: ${r.stages.map((s) => `${s.name} ${s.taskCount}`).join(", ")}; ${r.msTotal} ms → ${path.relative(root, file)}`,
-    );
-    if (r.final?.bars) {
-      for (const { label, value } of r.final.bars.slice(0, 10)) console.log(`  ${label}: ${value}`);
-    }
   } else {
-    const r = await runGolden(manifest.defaultParams);
-    const file = path.join(dir, "goldens.json");
-    writeFileSync(file, `${JSON.stringify(r, null, 2)}\n`);
-    console.log(
-      `[goldens] ${programName}: ${r.taskCount} tasks, ms/tile min ${r.msPerTile.min} median ${r.msPerTile.median} max ${r.msPerTile.max}, frame ${Math.round(r.msPerTile.total / 1000)} s → ${path.relative(root, file)}`,
-    );
+    const golden =
+      manifest.view === "tiles"
+        ? runGolden(module, manifest.defaultParams)
+        : runStagedGolden(module, manifest, manifest.defaultParams, inputsOf(programName));
+    if (args.includes("--check")) {
+      const same = stableGolden(readGoldens<object>(programName)) === stableGolden(golden);
+      console.log(
+        `[goldens] ${programName}: hashes ${same ? "match" : "DIFFER from"} ${path.relative(ROOT, file)}`,
+      );
+      if (!same) process.exit(1);
+    } else {
+      // One-hash arrays on one line, the way the repository's formatter prints them.
+      const json = JSON.stringify(golden, null, 2).replace(
+        /\[\n\s+("[0-9a-f]{64}")\n\s+\]/g,
+        "[$1]",
+      );
+      writeFileSync(file, `${json}\n`);
+      if ("stages" in golden) {
+        console.log(
+          `[goldens] ${programName}: ${golden.stages.map((s) => `${s.name} ${s.taskCount}`).join(", ")}; ${golden.msTotal} ms → ${path.relative(ROOT, file)}`,
+        );
+        for (const { label, value } of golden.final?.bars?.slice(0, 10) ?? []) {
+          console.log(`  ${label}: ${value}`);
+        }
+      } else {
+        console.log(
+          `[goldens] ${programName}: ${golden.taskCount} tasks, ms/tile min ${golden.msPerTile.min} median ${golden.msPerTile.median} max ${golden.msPerTile.max}, frame ${Math.round(golden.msPerTile.total / 1000)} s → ${path.relative(ROOT, file)}`,
+        );
+      }
+    }
   }
 }

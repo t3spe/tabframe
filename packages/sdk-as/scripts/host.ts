@@ -1,130 +1,109 @@
-// A minimal Node host for Tabframe programs: instantiates a module with the five `tf` imports
-// backed by an in-memory filesystem, and calls `plan` and `run` through the ABI. Used by the
-// goldens script and the tests; the real sandbox (WP1.4) implements the same imports with caps,
-// deadlines, and the store behind them.
+// The SDK's Node host: the sandbox's own `runTask` behind a per-call API for the program tests and
+// the goldens, so what they exercise is the glue a node runs (design §4.2). Every call is a fresh
+// instance over an in-memory filesystem.
+import { createHash } from "node:crypto";
 import {
   AbiError,
   decodeStageSpec,
   encodePlanInput,
   encodeRunInput,
+  type FsManifest,
+  LIMITS,
   type ParamTable,
   type StageSpec,
+  type TaskLimits,
 } from "@tabframe/protocol";
+import { type BlobReader, compileValidated, type MemoryLimits, runTask } from "@tabframe/sandbox";
 
-export const ALLOWED_IMPORTS = new Set([
-  "tf.stat",
-  "tf.read",
-  "tf.write",
-  "tf.list",
-  "tf.log",
-  "env.abort",
-]);
+/** The caps a node applies: the control plane's defaults (core's DEFAULT_TASK_LIMITS). */
+export const HOST_LIMITS: TaskLimits = {
+  maxOutputBytes: LIMITS.maxOutputBytes,
+  maxWriteBytes: LIMITS.maxWriteBytes,
+  maxWriteFiles: LIMITS.maxWriteFiles,
+  maxLogBytes: LIMITS.maxLogBytes,
+  // The machine's cap on a module's declared maximum; shipped programs declare the SDK's 256.
+  memoryPagesMax: 1024,
+};
 
 export interface HostOptions {
   /** Path → bytes visible to `stat`, `read`, and `list`. */
   files?: Map<string, Uint8Array>;
+  limits?: TaskLimits;
 }
 
+/** A program under the host. Each call runs in a fresh instance, as on a node. */
 export interface ProgramInstance {
   plan(stage: number, params: ParamTable, hints?: ParamTable): StageSpec;
+  /** What `plan` returned, before decoding. */
+  planBytes(stage: number, params: ParamTable, hints?: ParamTable): Uint8Array;
   run(stage: number, taskIndex: number, taskCount: number, input: Uint8Array): Uint8Array;
+  /** Every write of every call so far. */
   readonly writes: Map<string, Uint8Array>;
+  /** One entry per call: that task's log as a node reports it. */
   readonly logs: string[];
 }
 
+/** A task failed — the sandbox's error text (`abort: …`, `trap: …`) — or a stage spec did not decode. */
 export class ProgramError extends Error {}
 
-/** Validate the module's import table against the ABI's allowlist and check a memory maximum is declared. */
-export function checkModule(module: WebAssembly.Module): { imports: string[]; exports: string[] } {
-  const imports = WebAssembly.Module.imports(module).map((i) => `${i.module}.${i.name}`);
-  const bad = imports.filter((i) => !ALLOWED_IMPORTS.has(i));
-  if (bad.length) throw new ProgramError(`forbidden imports: ${bad.join(", ")}`);
-  const exports = WebAssembly.Module.exports(module).map((e) => e.name);
-  for (const required of ["memory", "alloc", "run", "plan"]) {
-    if (!exports.includes(required)) throw new ProgramError(`missing export ${required}`);
-  }
-  return { imports, exports };
+/** sha-256 of some bytes, as hex. */
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
-const utf8 = new TextDecoder();
+const blobHashes = new WeakMap<Uint8Array, string>();
 
-/** Instantiate fresh (design §4.2: no state leaks between tasks) and wrap the ABI. */
-export async function instantiate(
-  module: WebAssembly.Module,
-  opts: HostOptions = {},
-): Promise<ProgramInstance> {
-  const files = opts.files ?? new Map<string, Uint8Array>();
-  const writes = new Map<string, Uint8Array>();
-  const logs: string[] = [];
-  let memory: WebAssembly.Memory | null = null;
-  const bytes = () => new Uint8Array((memory as WebAssembly.Memory).buffer);
-  const readPath = (ptr: number, len: number) => utf8.decode(bytes().subarray(ptr, ptr + len));
-  const lookup = (path: string) => writes.get(path) ?? files.get(path);
-
-  const imports: WebAssembly.Imports = {
-    env: {
-      abort(msgPtr: number, filePtr: number, line: number, col: number) {
-        const asString = (p: number) => {
-          if (!p) return "";
-          const view = new DataView((memory as WebAssembly.Memory).buffer);
-          const len = view.getUint32(p - 4, true);
-          return new TextDecoder("utf-16le").decode(bytes().subarray(p, p + len));
-        };
-        throw new ProgramError(`trap: ${asString(msgPtr)} (${asString(filePtr)}:${line}:${col})`);
-      },
-    },
-    tf: {
-      stat(pathPtr: number, pathLen: number): bigint {
-        const f = lookup(readPath(pathPtr, pathLen));
-        return f ? BigInt(f.length) : -1n;
-      },
-      read(pathPtr: number, pathLen: number, offset: number, dst: number, dstLen: number): number {
-        const f = lookup(readPath(pathPtr, pathLen));
-        if (!f) return -1;
-        if (offset < 0 || offset > f.length) return -2;
-        const n = Math.min(dstLen, f.length - offset);
-        bytes().set(f.subarray(offset, offset + n), dst);
-        return n;
-      },
-      write(pathPtr: number, pathLen: number, src: number, srcLen: number): number {
-        writes.set(readPath(pathPtr, pathLen), bytes().slice(src, src + srcLen));
-        return 0;
-      },
-      list(prefixPtr: number, prefixLen: number, dst: number, dstLen: number): number {
-        const prefix = readPath(prefixPtr, prefixLen);
-        const paths = [...new Set([...files.keys(), ...writes.keys()])]
-          .filter((p) => p.startsWith(prefix))
-          .sort();
-        const text = new TextEncoder().encode(paths.join("\n"));
-        if (text.length <= dstLen) bytes().set(text, dst);
-        return text.length;
-      },
-      log(src: number, len: number) {
-        logs.push(utf8.decode(bytes().subarray(src, src + len)));
-      },
+/** A manifest and a reader over path → bytes, content-addressed the way the store is. */
+export function memoryFs(files: Map<string, Uint8Array>): {
+  manifest: FsManifest;
+  reader: BlobReader;
+} {
+  const blobs = new Map<string, Uint8Array>();
+  const manifest: FsManifest = { version: 1, files: {} };
+  for (const [path, bytes] of files) {
+    let hash = blobHashes.get(bytes);
+    if (hash === undefined) {
+      hash = sha256Hex(bytes);
+      blobHashes.set(bytes, hash);
+    }
+    blobs.set(hash, bytes);
+    manifest.files[path] = { hash, size: bytes.length };
+  }
+  const reader: BlobReader = {
+    read(hash, offset, len) {
+      const whole = blobs.get(hash);
+      if (!whole) return null;
+      if (offset >= whole.length) return new Uint8Array(0);
+      const end = Number.isFinite(len) ? Math.min(whole.length, offset + len) : whole.length;
+      return whole.subarray(offset, end);
     },
   };
-  const instance = await WebAssembly.instantiate(module, imports);
-  memory = instance.exports.memory as WebAssembly.Memory;
-  const alloc = instance.exports.alloc as (len: number) => number;
-  const planFn = instance.exports.plan as (ptr: number, len: number) => number;
-  const runFn = instance.exports.run as (ptr: number, len: number) => number;
+  return { manifest, reader };
+}
 
-  function call(fn: (ptr: number, len: number) => number, input: Uint8Array): Uint8Array {
-    const ptr = alloc(input.length);
-    bytes().set(input, ptr);
-    const pair = fn(ptr, input.length);
-    const view = new DataView((memory as WebAssembly.Memory).buffer);
-    const outPtr = view.getUint32(pair, true);
-    const outLen = view.getUint32(pair + 4, true);
-    return bytes().slice(outPtr, outPtr + outLen);
-  }
+/** Wrap a validated module: `plan` and `run` through the ABI, each in a fresh sandbox instance. */
+export function instantiate(module: WebAssembly.Module, opts: HostOptions = {}): ProgramInstance {
+  const { manifest, reader } = memoryFs(opts.files ?? new Map());
+  const limits = opts.limits ?? HOST_LIMITS;
+  const writes = new Map<string, Uint8Array>();
+  const logs: string[] = [];
+
+  const call = (kind: "run" | "plan", input: Uint8Array): Uint8Array => {
+    const r = runTask(module, { kind, input, manifest, limits, reader });
+    logs.push(r.log);
+    if (!r.ok) throw new ProgramError(r.error);
+    for (const [p, b] of r.writes) writes.set(p, b);
+    return r.output;
+  };
+  const planBytes = (stage: number, params: ParamTable, hints: ParamTable = {}): Uint8Array =>
+    call("plan", encodePlanInput({ stage, params, hints }));
 
   return {
     writes,
     logs,
+    planBytes,
     plan(stage, params, hints = {}) {
-      const out = call(planFn, encodePlanInput({ stage, params, hints }));
+      const out = planBytes(stage, params, hints);
       try {
         return decodeStageSpec(out);
       } catch (err) {
@@ -133,40 +112,9 @@ export async function instantiate(
       }
     },
     run(stage, taskIndex, taskCount, input) {
-      return call(runFn, encodeRunInput({ stage, taskIndex, taskCount, input }));
+      return call("run", encodeRunInput({ stage, taskIndex, taskCount, input }));
     },
   };
-}
-
-/** The module's declared memory limits in 64 KiB pages; `max` is null when the module declares none. */
-export function memoryLimits(wasm: Uint8Array): { min: number; max: number | null } {
-  let pos = 8; // magic + version
-  const leb = (): number => {
-    let result = 0;
-    let shift = 0;
-    for (;;) {
-      const byte = wasm[pos++] as number;
-      result |= (byte & 0x7f) << shift;
-      if ((byte & 0x80) === 0) return result >>> 0;
-      shift += 7;
-    }
-  };
-  while (pos < wasm.length) {
-    const id = wasm[pos++];
-    const size = leb();
-    const end = pos + size;
-    if (id === 5) {
-      const count = leb();
-      if (count > 0) {
-        const flags = leb();
-        const min = leb();
-        const max = flags & 1 ? leb() : null;
-        return { min, max };
-      }
-    }
-    pos = end;
-  }
-  return { min: 0, max: null };
 }
 
 export interface StagedStage {
@@ -175,7 +123,8 @@ export interface StagedStage {
   outputs: Uint8Array[];
   /** sha-256 hex of each task output, by task index. */
   hashes: string[];
-  logs: string[][];
+  /** Each task's log, by task index. */
+  logs: string[];
 }
 
 export interface StagedRun {
@@ -189,22 +138,21 @@ export interface StagedRun {
 
 /**
  * Run a whole execution single-threaded the way the control plane would (design §5.2, §5.4):
- * plan each stage, run its tasks in fresh instances against the filesystem as of the stage start,
- * land outputs at `/out/<stage>/<task>`, fold writes (two tasks writing different bytes to one
- * path is a program bug), and stop at `done`. Goldens and tests compare against this.
+ * plan each stage, run its tasks against the filesystem as of the stage start, land outputs at
+ * `/out/<stage>/<task>`, fold writes (two tasks writing different bytes to one path is a program
+ * bug), and stop at `done`. Goldens and tests compare against this.
  */
-export async function runStaged(
+export function runStaged(
   module: WebAssembly.Module,
   inputs: Map<string, Uint8Array>,
   params: ParamTable,
   opts: { hints?: ParamTable; maxStages?: number } = {},
-): Promise<StagedRun> {
-  const { createHash } = await import("node:crypto");
+): StagedRun {
   let files = new Map(inputs);
   const stages: StagedStage[] = [];
   const maxStages = opts.maxStages ?? 16;
   for (let s = 0; s < maxStages; s++) {
-    const planner = await instantiate(module, { files });
+    const planner = instantiate(module, { files });
     const spec = planner.plan(s, params, opts.hints ?? {});
     const next = new Map(files);
     for (const [p, b] of planner.writes) next.set(p, b);
@@ -219,15 +167,15 @@ export async function runStaged(
     }
     const outputs: Uint8Array[] = [];
     const hashes: string[] = [];
-    const logs: string[][] = [];
+    const logs: string[] = [];
     const written = new Map<string, Uint8Array>();
     for (let i = 0; i < spec.tasks.length; i++) {
       const task = spec.tasks[i] as (typeof spec.tasks)[number];
-      const inst = await instantiate(module, { files });
+      const inst = instantiate(module, { files });
       const out = inst.run(s, i, spec.tasks.length, task.input);
       outputs.push(out);
-      hashes.push(createHash("sha256").update(out).digest("hex"));
-      logs.push(inst.logs);
+      hashes.push(sha256Hex(out));
+      logs.push(inst.logs[0] ?? "");
       next.set(`/out/${s}/${i}`, out);
       for (const [p, b] of inst.writes) {
         const seen = written.get(p);
@@ -249,11 +197,17 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-/** Compile once, instantiate per call. */
-export async function loadProgram(
+/** Validate the way a node does (size, memory, imports, exports) and compile once. */
+export function loadProgram(
   wasm: Uint8Array,
-): Promise<{ module: WebAssembly.Module; imports: string[]; exports: string[] }> {
-  const module = await WebAssembly.compile(wasm);
-  const { imports, exports } = checkModule(module);
-  return { module, imports, exports };
+  limits: TaskLimits = HOST_LIMITS,
+): { module: WebAssembly.Module; imports: string[]; exports: string[]; memory: MemoryLimits } {
+  const v = compileValidated(wasm, limits);
+  if (!v.ok) throw new ProgramError(v.reason);
+  return {
+    module: v.module,
+    imports: WebAssembly.Module.imports(v.module).map((i) => `${i.module}.${i.name}`),
+    exports: WebAssembly.Module.exports(v.module).map((e) => e.name),
+    memory: v.memory,
+  };
 }

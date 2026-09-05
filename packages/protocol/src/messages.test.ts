@@ -289,7 +289,7 @@ describe("manifests", () => {
     expect(m.persist).toBe(false);
     expect(m.defaultParams).toEqual({});
     expect(programManifest.safeParse({ name: "", view: "tiles" }).success).toBe(false);
-    // The source hash is optional and must be a hash when present (WP7.6).
+    // The source hash is optional and must be a hash when present.
     expect(programManifest.parse({ name: "m", view: "tiles" }).source).toBeUndefined();
     const h = "a".repeat(64);
     expect(programManifest.parse({ name: "m", view: "tiles", source: h }).source).toBe(h);
@@ -307,8 +307,8 @@ describe("manifests", () => {
   });
 });
 
-describe("presign bounds (WP8.1)", () => {
-  test("an item over the output cap, or more than 64 items, does not parse", () => {
+describe("a presign is capped at maxPresignItems and the output cap", () => {
+  test("an item over the output cap, or one item more than the cap, does not parse", () => {
     const hash = "a".repeat(64);
     const one = (size: number, n = 1) => ({
       t: "presign",
@@ -318,11 +318,17 @@ describe("presign bounds (WP8.1)", () => {
     });
     expect(nodeToControlPlane.safeParse(one(LIMITS.maxOutputBytes)).success).toBe(true);
     expect(nodeToControlPlane.safeParse(one(LIMITS.maxOutputBytes + 1)).success).toBe(false);
-    expect(nodeToControlPlane.safeParse(one(1, 65)).success).toBe(false);
+    expect(nodeToControlPlane.safeParse(one(1, LIMITS.maxPresignItems)).success).toBe(true);
+    expect(nodeToControlPlane.safeParse(one(1, LIMITS.maxPresignItems + 1)).success).toBe(false);
+    // The observer socket presigns bundle uploads with the same body and the same caps.
+    expect(observerToControlPlane.safeParse(one(1, LIMITS.maxPresignItems)).success).toBe(true);
+    expect(observerToControlPlane.safeParse(one(1, LIMITS.maxPresignItems + 1)).success).toBe(
+      false,
+    );
   });
 });
 
-describe("presign sizing (WP8.2)", () => {
+describe("presigned reply sizing", () => {
   test("a full presigned reply fits one frame", () => {
     // Twenty-four signed S3 URLs of a generous length, with the headers the store asks for.
     const query = `X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${"A".repeat(20)}%2F20260904%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20260904T120000Z&X-Amz-Expires=300&X-Amz-SignedHeaders=content-type%3Bhost%3Bx-amz-checksum-sha256&X-Amz-Security-Token=${"T".repeat(1100)}&X-Amz-Signature=${"f".repeat(64)}`;

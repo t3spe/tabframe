@@ -113,6 +113,12 @@ export class Params {
     return <i32>n;
   }
 
+  /** getI32 clamped into [lo, hi]: absence and junk fall back first, then the clamp applies. */
+  getI32In(key: string, fallback: i32, lo: i32, hi: i32): i32 {
+    const v = this.getI32(key, fallback);
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
   getBool(key: string, fallback: bool): bool {
     const v = this.raw(key);
     if (v === null) return fallback;
