@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
+import { arbBars, arbStageSpec, arbTable, barsBoundaries, specBoundaries } from "./arbitraries.ts";
 import {
   AbiError,
   BARS_LIMITS,
@@ -14,7 +15,6 @@ import {
   encodeStageSpec,
   SPEC_LIMITS,
   type StageSpec,
-  type TaskSpec,
 } from "./index.ts";
 
 const bytes = (...b: number[]) => new Uint8Array(b);
@@ -28,6 +28,16 @@ function failure(decode: () => unknown): [string, number] {
     throw err;
   }
   throw new Error("decoded");
+}
+
+/** "ok" with the value, or "refused" when the decoder threw an AbiError. */
+function outcome<T>(decode: () => T): { outcome: "ok" | "refused"; value: T | null } {
+  try {
+    return { outcome: "ok", value: decode() };
+  } catch (err) {
+    if (err instanceof AbiError) return { outcome: "refused", value: null };
+    throw err;
+  }
 }
 
 describe("run and plan inputs", () => {
@@ -81,6 +91,18 @@ describe("run and plan inputs", () => {
     const plan = encodePlanInput({ stage: 0, params: { a: 1 }, hints: {} });
     expect(decodePlanInput(new Uint8Array([...plan, 7])).params).toEqual({ a: 1 });
   });
+  test("property: any tables round-trip through a plan input", () => {
+    fc.assert(
+      fc.property(arbTable, arbTable, (params, hints) => {
+        expect(decodePlanInput(encodePlanInput({ stage: 3, params, hints }))).toEqual({
+          stage: 3,
+          params,
+          hints,
+        });
+      }),
+      { numRuns: 100 },
+    );
+  });
 });
 
 describe("errors", () => {
@@ -129,21 +151,7 @@ describe("stage specs", () => {
       next: null,
     });
   });
-  test("structural caps: task count, input size, name, placement, canvas, trailing bytes", () => {
-    const many: StageSpec = {
-      kind: "stage",
-      name: "x",
-      tasks: Array.from({ length: SPEC_LIMITS.maxTasks + 1 }, () => ({ input: bytes() })),
-    };
-    expect(() =>
-      decodeStageSpec(encodeStageSpec(many), { ...SPEC_LIMITS, maxBytes: 1 << 26 }),
-    ).toThrow(/task count/);
-    const big: StageSpec = {
-      kind: "stage",
-      name: "x",
-      tasks: [{ input: new Uint8Array(SPEC_LIMITS.maxInlineInput + 1) }],
-    };
-    expect(() => decodeStageSpec(encodeStageSpec(big))).toThrow(/input exceeds/);
+  test("what is refused is named: empty name, zero placement, zero canvas, no tasks, trailing bytes, junk kind", () => {
     expect(() =>
       decodeStageSpec(encodeStageSpec({ kind: "stage", name: "", tasks: [{ input: bytes() }] })),
     ).toThrow(/stage name/);
@@ -176,40 +184,16 @@ describe("stage specs", () => {
     junkKind[8] = 7;
     expect(() => decodeStageSpec(junkKind)).toThrow(/unknown spec kind/);
   });
+  test("every cap accepts its value and refuses one past it", () => {
+    for (const c of specBoundaries()) {
+      const r = outcome(() => decodeStageSpec(encodeStageSpec(c.spec), c.limits ?? SPEC_LIMITS));
+      expect([c.name, r.outcome]).toEqual([c.name, c.ok ? "ok" : "refused"]);
+      if (c.ok) expect(r.value).toEqual(c.spec);
+    }
+  });
   test("any valid spec survives a round trip (property)", () => {
-    const arbPlace = fc.record({
-      x: fc.integer({ min: -100, max: 100 }),
-      y: fc.integer({ min: -100, max: 100 }),
-      w: fc.integer({ min: 1, max: 256 }),
-      h: fc.integer({ min: 1, max: 256 }),
-    });
-    const arbTask: fc.Arbitrary<TaskSpec> = fc
-      .tuple(fc.uint8Array({ maxLength: 64 }), fc.option(arbPlace, { nil: null }))
-      .map(([input, place]) => (place ? { input, place } : { input }));
-    const arbCanvas = fc.option(
-      fc.record({ w: fc.integer({ min: 1, max: 2048 }), h: fc.integer({ min: 1, max: 2048 }) }),
-      { nil: null },
-    );
-    const arbStage: fc.Arbitrary<StageSpec> = fc
-      .tuple(
-        fc.stringMatching(/^[a-z]{1,10}$/),
-        arbCanvas,
-        fc.array(arbTask, { minLength: 1, maxLength: 20 }),
-      )
-      .map(([name, canvas, tasks]) =>
-        canvas ? { kind: "stage", name, canvas, tasks } : { kind: "stage", name, tasks },
-      );
-    const arbDone: fc.Arbitrary<StageSpec> = fc
-      .option(
-        fc.dictionary(
-          fc.stringMatching(/^[a-z]{1,8}$/),
-          fc.oneof(fc.integer(), fc.string(), fc.boolean()),
-        ),
-        { nil: null },
-      )
-      .map((next) => ({ kind: "done", next }));
     fc.assert(
-      fc.property(fc.oneof(arbStage, arbDone), (spec: StageSpec) => {
+      fc.property(arbStageSpec, (spec) => {
         expect(decodeStageSpec(encodeStageSpec(spec))).toEqual(spec);
       }),
       { numRuns: 150 },
@@ -230,11 +214,9 @@ describe("bars payloads", () => {
     expect(decodeBars(encodeBars([]))).toEqual([]);
   });
 
-  test("caps and validity: count, label bytes, total size, finite values, trailing bytes, magic", () => {
+  test("what is refused is named: a lower cap, total size, non-finite values, trailing bytes, magic, truncation", () => {
     const one = encodeBars([{ label: "a", value: 1 }]);
     expect(() => decodeBars(one, { ...BARS_LIMITS, maxBars: 0 })).toThrow(AbiError);
-    const longLabel = encodeBars([{ label: "x".repeat(BARS_LIMITS.maxLabelBytes + 1), value: 1 }]);
-    expect(() => decodeBars(longLabel)).toThrow(/label exceeds/);
     expect(() => decodeBars(one, { ...BARS_LIMITS, maxBytes: 8 })).toThrow(/cap/);
     expect(() => decodeBars(encodeBars([{ label: "nan", value: Number.NaN }]))).toThrow(
       /not finite/,
@@ -249,20 +231,19 @@ describe("bars payloads", () => {
     expect(() => decodeBars(one.subarray(0, one.length - 3))).toThrow(/truncated/);
   });
 
+  test("every cap accepts its value and refuses one past it", () => {
+    for (const c of barsBoundaries()) {
+      const r = outcome(() => decodeBars(encodeBars(c.bars)));
+      expect([c.name, r.outcome]).toEqual([c.name, c.ok ? "ok" : "refused"]);
+      if (c.ok) expect(r.value).toEqual(c.bars);
+    }
+  });
+
   test("any list of finite bars survives a round trip (property)", () => {
     fc.assert(
-      fc.property(
-        fc.array(
-          fc.record({
-            label: fc.string({ maxLength: 40 }),
-            value: fc.double({ noNaN: true, noDefaultInfinity: true }),
-          }),
-          { maxLength: 50 },
-        ),
-        (bars) => {
-          expect(decodeBars(encodeBars(bars))).toEqual(bars);
-        },
-      ),
+      fc.property(arbBars, (bars) => {
+        expect(decodeBars(encodeBars(bars))).toEqual(bars);
+      }),
       { numRuns: 100 },
     );
   });
