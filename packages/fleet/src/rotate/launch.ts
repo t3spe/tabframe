@@ -32,21 +32,25 @@ export interface LaunchRequest {
   onLaunched?: (vm: MicrovmInfo) => Promise<void>;
 }
 
-type LaunchDeps = Pick<
-  RotateDeps,
-  "microvms" | "clock" | "sleep" | "log" | "config" | "latestSnapshotKey"
->;
+type SnapshotDeps = Pick<RotateDeps, "snapshots" | "latestSnapshotKey">;
+type LaunchDeps = Pick<RotateDeps, "microvms" | "clock" | "sleep" | "log" | "config"> &
+  SnapshotDeps;
+
+async function latestSnapshotKey(deps: SnapshotDeps): Promise<string | null> {
+  if (deps.snapshots) return deps.snapshots.latestKey();
+  return (await deps.latestSnapshotKey?.()) ?? null;
+}
 
 /** The payload for generation `generation`, naming the latest snapshot so it boots adopted. */
 export async function buildPayload(
-  deps: Pick<RotateDeps, "config" | "latestSnapshotKey">,
+  deps: Pick<RotateDeps, "config"> & SnapshotDeps,
   generation: number,
   secret: string,
 ): Promise<ControlPlanePayload> {
   return {
     role: "control-plane",
     generation,
-    snapshotKey: (await deps.latestSnapshotKey?.()) ?? null,
+    snapshotKey: await latestSnapshotKey(deps),
     sessionUrl: deps.config.sessionUrl,
     storeBase: deps.config.storeBase,
     fleetSecret: secret,

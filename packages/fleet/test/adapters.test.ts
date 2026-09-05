@@ -15,22 +15,31 @@ import {
   SuspendMicrovmCommand,
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
+import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { mockClient } from "aws-sdk-client-mock";
-import { EventBridgeRuleControl, LambdaInvoker, SecretsManagerReader } from "../src/aws.ts";
+import {
+  EventBridgeRuleControl,
+  LambdaInvoker,
+  S3SnapshotIndex,
+  SecretsManagerReader,
+} from "../src/aws.ts";
 import { SdkMicrovmClient, toSdkPort } from "../src/microvm-client.ts";
+import { FakeLogger } from "../src/testing/fake.ts";
 import { isNotFound, isThrottling, normalizeEndpoint } from "../src/types.ts";
 
 const microvms = mockClient(LambdaMicrovmsClient);
 const lambda = mockClient(LambdaClient);
 const events = mockClient(EventBridgeClient);
 const secrets = mockClient(SecretsManagerClient);
+const s3 = mockClient(S3Client);
 
 afterEach(() => {
   microvms.reset();
   lambda.reset();
   events.reset();
   secrets.reset();
+  s3.reset();
 });
 
 describe("SdkMicrovmClient", () => {
@@ -235,6 +244,35 @@ describe("EventBridgeRuleControl and SecretsManagerReader", () => {
     const reader = new SecretsManagerReader(new SecretsManagerClient({}));
     expect(await reader.read("id")).toBe("s");
     await expect(reader.read("id")).rejects.toThrow("no string value");
+  });
+});
+
+describe("S3SnapshotIndex", () => {
+  test("names the latest snapshot, or null when the bucket has none", async () => {
+    s3.on(ListObjectsV2Command)
+      .resolvesOnce({ Contents: [{ Key: "latest.json.gz" }] })
+      .resolvesOnce({ Contents: [] });
+    const index = new S3SnapshotIndex("snapshots", new S3Client({}), new FakeLogger());
+    expect(await index.latestKey()).toBe("latest.json.gz");
+    expect(await index.latestKey()).toBeNull();
+    expect(s3.commandCalls(ListObjectsV2Command)[0]?.args[0].input).toEqual({
+      Bucket: "snapshots",
+      Prefix: "latest.json.gz",
+      MaxKeys: 1,
+    });
+  });
+
+  test("an unreadable index is null with a warning, never a failed rotation", async () => {
+    s3.on(ListObjectsV2Command).rejects(new Error("AccessDenied"));
+    const log = new FakeLogger();
+    expect(await new S3SnapshotIndex("snapshots", new S3Client({}), log).latestKey()).toBeNull();
+    expect(log.lines).toEqual([
+      {
+        level: "warn",
+        message: "rotate: could not read the latest snapshot key",
+        fields: { reason: "Error: AccessDenied" },
+      },
+    ]);
   });
 });
 

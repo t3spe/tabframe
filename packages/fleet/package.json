@@ -20,6 +20,7 @@
   "exports": {
     ".": "./src/ops.ts",
     "./aws": "./src/aws.ts",
+    "./canary": "./src/canary.ts",
     "./config": "./src/config.ts",
     "./cp-client": "./src/cp-client.ts",
     "./env": "./src/env.ts",

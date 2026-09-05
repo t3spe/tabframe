@@ -1,11 +1,12 @@
-// Real adapters for the pointer store, Lambda invocation, EventBridge rules, and the fleet secret.
-// Field mapping only; tested with aws-sdk-client-mock.
+// Real adapters for the pointer store, Lambda invocation, EventBridge rules, the fleet secret and
+// the snapshot index. Field mapping only; tested with aws-sdk-client-mock.
 import {
   DisableRuleCommand,
   EnableRuleCommand,
   EventBridgeClient,
 } from "@aws-sdk/client-eventbridge";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import {
@@ -15,7 +16,14 @@ import {
   parsePointer,
   serializePointer,
 } from "./pointer.ts";
-import type { Invoker, RuleControl, SecretReader } from "./types.ts";
+import {
+  consoleLogger,
+  type Invoker,
+  type Logger,
+  type RuleControl,
+  type SecretReader,
+  type SnapshotIndex,
+} from "./types.ts";
 
 export class SsmPointerStore implements PointerStore {
   private readonly ssm: SSMClient;
@@ -108,5 +116,34 @@ export class SecretsManagerReader implements SecretReader {
     const out = await this.secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
     if (!out.SecretString) throw new Error(`secret ${secretId} has no string value`);
     return out.SecretString;
+  }
+}
+
+/**
+ * The snapshot the control plane keeps fresh as `latest.json.gz` (design §9.4). An unreadable index
+ * is an answer of null, not a failed rotation: the successor then boots from an empty ledger and
+ * takes the handover instead.
+ */
+export class S3SnapshotIndex implements SnapshotIndex {
+  private readonly bucket: string;
+  private readonly s3: S3Client;
+  private readonly log: Logger;
+
+  constructor(bucket: string, s3: S3Client = new S3Client({}), log: Logger = consoleLogger) {
+    this.bucket = bucket;
+    this.s3 = s3;
+    this.log = log;
+  }
+
+  async latestKey(): Promise<string | null> {
+    try {
+      const out = await this.s3.send(
+        new ListObjectsV2Command({ Bucket: this.bucket, Prefix: "latest.json.gz", MaxKeys: 1 }),
+      );
+      return out.Contents?.[0]?.Key ?? null;
+    } catch (error) {
+      this.log.warn("rotate: could not read the latest snapshot key", { reason: String(error) });
+      return null;
+    }
   }
 }

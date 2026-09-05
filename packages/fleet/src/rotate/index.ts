@@ -19,6 +19,7 @@ import {
   SERVING_STATES,
   type SecretReader,
   type Sleeper,
+  type SnapshotIndex,
 } from "../types.ts";
 import { launchControlPlane } from "./launch.ts";
 import { clearPending, clearRetiring, promote, recordPending } from "./pointer-ops.ts";
@@ -40,7 +41,9 @@ export interface RotateDeps {
   config: RotateConfig;
   /** Talks to a control plane's private port; built per run because it needs the fleet secret. */
   controlPlane?: (secret: string) => ControlPlaneClient;
-  /** The latest ledger snapshot key, so a successor can adopt without its predecessor. */
+  /** Names the latest ledger snapshot, so a successor can adopt without its predecessor. */
+  snapshots?: SnapshotIndex;
+  /** The older form of `snapshots`; packages/control-plane's handover test still passes it. */
   latestSnapshotKey?: () => Promise<string | null>;
 }
 

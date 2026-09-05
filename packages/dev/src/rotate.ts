@@ -174,11 +174,11 @@ const rotate = createRotateHandler({
     // Empty: each control plane serves blobs from its own port, so it keeps its local store base.
     storeBase: "",
     fleetSecretArn: "local",
+    snapshotBucket: null,
     readyTimeoutMs: 20_000,
     pollIntervalMs: 200,
   },
   controlPlane: httpClient,
-  latestSnapshotKey: async () => null,
 });
 
 const children: ChildProcess[] = [];

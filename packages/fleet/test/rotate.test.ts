@@ -24,6 +24,7 @@ const config: RotateConfig = {
   sessionUrl: "https://abc.lambda-url.us-west-2.on.aws/",
   storeBase: "https://d123.cloudfront.net",
   fleetSecretArn: "arn:aws:secretsmanager:us-west-2:000000000000:secret:tabframe-fleet",
+  snapshotBucket: null,
   readyTimeoutMs: 30_000,
   pollIntervalMs: 2000,
 };
@@ -255,7 +256,7 @@ describe("rotation", () => {
       log,
       config,
       controlPlane: () => cp,
-      latestSnapshotKey: async () => latestSnapshotKey,
+      snapshots: { latestKey: async () => latestSnapshotKey },
     });
 
   test("the five steps happen in order, and the successor is told where the snapshot is", async () => {

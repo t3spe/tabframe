@@ -1,5 +1,5 @@
 // Configuration from environment variables, with the constants the design fixes (§9.2).
-import { pick, ROTATE_ENV, SESSION_ENV } from "./env.ts";
+import { CANARY_ENV, pick, ROTATE_ENV, SESSION_ENV } from "./env.ts";
 import { NAMES, REGION_DEFAULT } from "./names.ts";
 import type { IdlePolicy } from "./types.ts";
 
@@ -41,8 +41,18 @@ export interface RotateConfig {
   sessionUrl: string;
   storeBase: string;
   fleetSecretArn: string;
+  /**
+   * Where the control plane writes its snapshots; null or absent when a successor must start empty.
+   * Optional only because packages/control-plane's handover test builds this config by hand.
+   */
+  snapshotBucket?: string | null;
   readyTimeoutMs: number;
   pollIntervalMs: number;
+}
+
+export interface CanaryConfig {
+  webOrigin: string;
+  sessionUrl: string;
 }
 
 export interface OpsConfig {
@@ -86,9 +96,19 @@ export function loadRotateConfig(env: Env): RotateConfig {
     sessionUrl: required(e, "TABFRAME_SESSION_URL"),
     storeBase: required(e, "TABFRAME_STORE_BASE"),
     fleetSecretArn: required(e, "TABFRAME_FLEET_SECRET_ARN"),
+    snapshotBucket: e.TABFRAME_SNAPSHOT_BUCKET ?? null,
     // Inside the function's ten minutes, with room for the fleet calls that follow.
     readyTimeoutMs: 120_000,
     pollIntervalMs: 2000,
+  };
+}
+
+/** Both addresses are required: an unset one would become a relative URL that fails every check. */
+export function loadCanaryConfig(env: Env): CanaryConfig {
+  const e = pick(env, CANARY_ENV);
+  return {
+    webOrigin: required(e, "TABFRAME_WEB_ORIGIN"),
+    sessionUrl: required(e, "TABFRAME_SESSION_URL"),
   };
 }
 
