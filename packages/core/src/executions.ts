@@ -38,7 +38,8 @@ import {
   STORE_RETRY_MS,
   YIELD_IDLE_MS,
 } from "./policy.ts";
-import { cancelOthers, fill } from "./scheduler.ts";
+import { fill } from "./scheduler.ts";
+import { cancelOthers, newTask, setStatus, stageTasks } from "./tasks.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -204,7 +205,7 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   exec.status = "running";
   exec.startedAt = now;
   ledger.running = exec.executionId;
-  const effects = exec.human ? [] : releaseYield(ledger); // the loop is back; a person's launch keeps the yield
+  const effects = exec.human ? [] : unyieldLoop(ledger); // the loop is back; a person's launch keeps the yield
   effects.push(...broadcast(ledger, { t: "executionStarted", execution: executionView(exec) }));
   if (exec.root === null) {
     // An inherited filesystem: blobs expire (design §5.4), so the root is checked before planning
@@ -355,31 +356,12 @@ function createPlanTask(
       stageCount: Math.max(0, exec.stage + 1),
     },
   });
-  const taskId = `t${++ledger.meta.taskCounter}`;
-  const task: TaskRecord = {
-    taskId,
-    executionId: exec.executionId,
-    stage,
-    index: 0,
-    kind: "plan",
-    input,
-    place: null,
-    status: "pending",
-    attempts: [],
-    results: [],
-    accepted: null,
-    released: false,
-    contestedRounds: 0,
-    resolvedByVote: false,
-    requiredAgreement: ledger.meta.redundancy ? 2 : 1,
-    createdAt: now,
-    doneAt: null,
-    failure: null,
-  };
-  ledger.tasks.set(taskId, task);
-  exec.planTaskId = taskId;
-  exec.counters.pending += 1;
-  exec.tasksCreated += 1;
+  exec.planTaskId = newTask(
+    ledger,
+    exec,
+    { stage, index: 0, kind: "plan", input, place: null },
+    now,
+  ).taskId;
   return [];
 }
 
@@ -456,33 +438,15 @@ function onStageSpec(
   for (let i = 0; i < spec.tasks.length; i++) {
     const t = spec.tasks[i];
     if (!t) continue;
-    const id = `t${++ledger.meta.taskCounter}`;
-    const task: TaskRecord = {
-      taskId: id,
-      executionId: exec.executionId,
-      stage,
-      index: i,
-      kind: "run",
-      input: t.input,
-      place: t.place ?? null,
-      status: "pending",
-      attempts: [],
-      results: [],
-      accepted: null,
-      released: false,
-      contestedRounds: 0,
-      resolvedByVote: false,
-      requiredAgreement: ledger.meta.redundancy ? 2 : 1,
-      createdAt: now,
-      doneAt: null,
-      failure: null,
-    };
-    ledger.tasks.set(id, task);
-    exec.stageTaskIds.push(id);
+    const task = newTask(
+      ledger,
+      exec,
+      { stage, index: i, kind: "run", input: t.input, place: t.place ?? null },
+      now,
+    );
+    exec.stageTaskIds.push(task.taskId);
     views.push(taskView(task));
   }
-  exec.counters.pending += spec.tasks.length;
-  exec.tasksCreated += spec.tasks.length;
   const effects = broadcast(ledger, {
     t: "stageStarted",
     executionId: exec.executionId,
@@ -629,12 +593,12 @@ function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
 function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
   const effects: Effect[] = [];
   // Nothing should be open by now; whatever is gets cancelled so no node holds finished work.
-  for (const task of currentTasks(ledger, exec)) effects.push(...cancelOthers(ledger, task, null));
+  for (const task of stageTasks(ledger, exec)) effects.push(...cancelOthers(ledger, task, null));
   exec.status = "done";
   exec.endedAt = now;
   ledger.running = null;
   if (isDefaultLoop(ledger, exec)) ledger.meta.loopBackoffMs = 0;
-  effects.push(...holdResult(ledger, exec, now));
+  effects.push(...yieldLoop(ledger, exec));
   effects.push(
     ...broadcast(ledger, {
       t: "executionDone",
@@ -674,10 +638,10 @@ function settleOpenTasks(
   now: number,
 ): Effect[] {
   const effects: Effect[] = [];
-  for (const task of currentTasks(ledger, exec)) {
+  for (const task of stageTasks(ledger, exec)) {
     effects.push(...cancelOthers(ledger, task, null));
     if (task.status === "pending" || task.status === "assigned") {
-      task.status = "failed";
+      setStatus(exec, task, "failed");
       task.failure = reason;
       task.doneAt = now;
     }
@@ -696,7 +660,7 @@ export function failExecution(
   exec.status = "failed";
   exec.failure = reason;
   exec.endedAt = now;
-  effects.push(...holdResult(ledger, exec, now));
+  effects.push(...yieldLoop(ledger, exec));
   if (ledger.running === exec.executionId) ledger.running = null;
   if (isDefaultLoop(ledger, exec)) {
     // A failing loop must not spin: back off, doubling, before the next automatic launch.
@@ -725,7 +689,7 @@ export function cancelExecution(
     ledger.queue = ledger.queue.filter((id) => id !== exec.executionId);
     exec.status = "cancelled";
     exec.endedAt = now;
-    effects.push(...holdResult(ledger, exec, now));
+    effects.push(...yieldLoop(ledger, exec));
     effects.push(
       ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
     );
@@ -737,16 +701,11 @@ export function cancelExecution(
   exec.failure = reason;
   exec.endedAt = now;
   ledger.running = null;
-  effects.push(...holdResult(ledger, exec, now));
+  effects.push(...yieldLoop(ledger, exec));
   effects.push(
     ...broadcast(ledger, { t: "executionFailed", executionId: exec.executionId, reason }),
   );
   return effects;
-}
-
-export function currentTasks(ledger: Ledger, exec: ExecutionRecord): TaskRecord[] {
-  const ids = exec.planTaskId ? [exec.planTaskId, ...exec.stageTaskIds] : exec.stageTaskIds;
-  return ids.map((id) => ledger.tasks.get(id)).filter((t): t is TaskRecord => t !== undefined);
 }
 
 /** Every task of an execution, all stages, in stage and index order (for snapshots). */
@@ -762,14 +721,14 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
  * is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the stage
  * for as long as the person is around.
  */
-function holdResult(ledger: Ledger, exec: ExecutionRecord, _now: number): Effect[] {
+function yieldLoop(ledger: Ledger, exec: ExecutionRecord): Effect[] {
   if (!exec.human || ledger.meta.loopYielded) return [];
   ledger.meta.loopYielded = true;
   return broadcast(ledger, { t: "loopYielded", yielded: true });
 }
 
 /** The loop takes the stage back — ten quiet minutes have passed — and says so. */
-function releaseYield(ledger: Ledger): Effect[] {
+function unyieldLoop(ledger: Ledger): Effect[] {
   if (!ledger.meta.loopYielded) return [];
   ledger.meta.loopYielded = false;
   return broadcast(ledger, { t: "loopYielded", yielded: false });
@@ -778,7 +737,7 @@ function releaseYield(ledger: Ledger): Effect[] {
 /** The loop's gate for automatic work: stopped, yielded and someone still around, or paused. */
 export function loopMayRun(ledger: Ledger, now: number): boolean {
   if (ledger.meta.loopStopped || ledger.session.pausedBy !== null) return false;
-  // Nobody has touched the page for a while: the loop may come back (`releaseYield` when it does).
+  // Nobody has touched the page for a while: the loop may come back (`unyieldLoop` when it does).
   return !ledger.meta.loopYielded || now - ledger.meta.lastInteractionAt >= YIELD_IDLE_MS;
 }
 
@@ -790,7 +749,7 @@ export function ensureDefaultLoop(ledger: Ledger, now: number): Effect[] {
   if (!ledger.meta.awake) return []; // asleep: automatic continuation pauses (design §6.8)
   if (now < (ledger.meta.loopPausedUntil ?? 0)) return [];
   if (!ledger.programs.has(loop.bundle)) return [];
-  const released = releaseYield(ledger);
+  const released = unyieldLoop(ledger);
   return [
     ...released,
     ...enqueue(

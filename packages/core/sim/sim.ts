@@ -23,8 +23,9 @@ import { seededRng } from "../src/interfaces.ts";
 import { checkInvariants } from "../src/invariants.ts";
 import type { ConnRole, ExecutionRecord, FetchPurpose, Ledger, TaskRecord } from "../src/ledger.ts";
 import { DEFAULT_TASK_LIMITS, YIELD_IDLE_MS } from "../src/policy.ts";
-import { stageTasks, wanted } from "../src/scheduler.ts";
+import { wanted } from "../src/scheduler.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "../src/snapshot.ts";
+import { stageTasks } from "../src/tasks.ts";
 import {
   Chaos,
   type ChaosWorld,
