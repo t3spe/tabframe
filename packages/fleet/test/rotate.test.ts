@@ -292,15 +292,22 @@ describe("rotation", () => {
     expect(microvms.terminated).toEqual(["mvm-old"]);
   });
 
-  test("a handover that fails still rotates: the successor booted from the snapshot", async () => {
+  test("a handover that fails still rotates, and the warning names the predecessor's platform state", async () => {
     cp.failHandover = true;
-    microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    const refused = "Resume lifecycle hook connection was refused.";
+    const old = microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
+    // The platform resumes a suspended predecessor for the handover; when that fails it terminates it.
+    cp.handover = async () => {
+      Object.assign(old, { state: "TERMINATED", stateReason: refused });
+      throw new Error("/handover on mvm-old answered 502");
+    };
     const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
     const result = await rotate(pointer)();
     expect(result).toMatchObject({ action: "rotated", handedOver: false });
     expect(cp.adopted).toBeNull();
     expect(microvms.terminated).toEqual(["mvm-old"]);
-    expect(log.lines.some((l) => l.level === "warn")).toBe(true);
+    const warning = log.lines.find((l) => l.level === "warn");
+    expect(warning?.fields).toMatchObject({ state: "TERMINATED", stateReason: refused });
   });
 
   test("an adopt that fails is the same story, and a drain that fails still terminates", async () => {
