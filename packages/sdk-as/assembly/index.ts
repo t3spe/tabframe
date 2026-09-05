@@ -16,3 +16,4 @@ export { Bars, bars } from "./bars";
 export { ByteReader, ByteWriter } from "./bytes";
 export { fs, log } from "./host";
 export { Params, quote, unquote } from "./params";
+export { RC } from "./rc";

@@ -1,12 +1,18 @@
 // A test program: echoes what the SDK decoded so the TypeScript side can check both directions of
-// every ABI format, and exercises the filesystem imports against the Node host.
+// every ABI format, exercises the filesystem imports against the sandbox, and reports the SDK's
+// return codes. The stage selects the mode — plan: 0 builds a stage from the params, 7 reports
+// return codes, 9 copies the params raw, anything else echoes them decoded; run: 8 builds a bars
+// payload from its input, anything else echoes the run input.
 import {
+  bars,
+  ByteReader,
   ByteWriter,
   done,
   emit,
   fs,
   log,
   Params,
+  RC,
   readPlanInput,
   readRunInput,
   stage,
@@ -14,9 +20,19 @@ import {
 
 export { alloc } from "../../assembly/index";
 
-/** run: [u32 stage][u32 taskIndex][u32 taskCount][blob input] */
+/** run: [u32 stage][u32 taskIndex][u32 taskCount][blob input]; stage 8: `u32 n | n × (str label | f64 value)` → bars. */
 export function run(ptr: usize, len: i32): usize {
   const t = readRunInput(ptr, len);
+  if (t.stage == 8) {
+    const r = new ByteReader(t.input);
+    const n = <i32>r.u32();
+    const b = bars();
+    for (let i = 0; i < n; i++) {
+      const label = r.str();
+      b.bar(label, r.f64());
+    }
+    return emit(b.toBytes());
+  }
   const w = new ByteWriter();
   w.u32(t.stage).u32(t.taskIndex).u32(t.taskCount).blob(t.input);
   return emit(w.toBytes());
@@ -24,8 +40,10 @@ export function run(ptr: usize, len: i32): usize {
 
 /**
  * plan: stage 0 builds a stage from params (name, n tasks, optional canvas, optional placements,
- * each input = [u32 i][f64 scale]); other stages return done with every param echoed raw plus the
- * decoded scalars under new keys. With params.fs = true the filesystem imports are exercised.
+ * each input = [u32 i][f64 scale]); stage 9 returns done with every param copied raw; stage 7
+ * returns done with the SDK's return codes and what the raw fs forms return; other stages return
+ * done with every param echoed raw plus the decoded scalars under new keys. With params.fs = true
+ * the filesystem imports are exercised.
  */
 export function plan(ptr: usize, len: i32): usize {
   const input = readPlanInput(ptr, len);
@@ -47,6 +65,27 @@ export function plan(ptr: usize, len: i32): usize {
     log("hint nodes: " + input.hints.getI32("nodes", -1).toString());
   }
 
+  if (input.stage == 9) {
+    const copy = new Params();
+    for (let i = 0; i < p.size; i++) copy.set(p.keys[i], p.values[i]);
+    return emit(done(copy));
+  }
+
+  if (input.stage == 7) {
+    const probe = new Uint8Array(4);
+    const next = new Params();
+    next.setI32("notFound", RC.notFound);
+    next.setI32("badArgs", RC.badArgs);
+    next.setI32("capExceeded", RC.capExceeded);
+    next.setI32("writeRelative", fs.writeRc("relative/x", probe));
+    next.setI32("writeOk", fs.writeRc("/out/probe", probe));
+    next.setI32("statMissing", <i32>fs.stat("/nope"));
+    next.setI32("readMissing", fs.readRc("/nope", 0, probe));
+    next.setI32("readBadOffset", fs.readRc("/out/probe", -1, probe));
+    next.setI32("readOk", fs.readRc("/out/probe", 1, probe));
+    return emit(done(next));
+  }
+
   if (input.stage != 0) {
     const next = new Params();
     for (let i = 0; i < p.size; i++) next.set(p.keys[i], p.values[i]);
@@ -57,6 +96,7 @@ export function plan(ptr: usize, len: i32): usize {
     next.setBool("b", p.getBool("b", false));
     next.setString("missing", p.getString("missing", "fallback"));
     next.setI32("bad", p.getI32("bad", 7));
+    next.setI32("clamped", p.getI32In("i", 0, -10, 10));
     return emit(done(next));
   }
 

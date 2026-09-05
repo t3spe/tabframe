@@ -1,6 +1,15 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import path from "node:path";
-import { runTask } from "@tabframe/sandbox";
+import {
+  type Bar,
+  decodeBars,
+  decodeStageSpec,
+  encodeBars,
+  encodeStageSpec,
+  Writer,
+} from "@tabframe/protocol";
+import { RC, runTask } from "@tabframe/sandbox";
+import fc from "fast-check";
 import { HOST_LIMITS, instantiate, loadProgram, memoryFs, ProgramError } from "../scripts/host.ts";
 import { compileIfStale, DIST_TEST } from "../scripts/programs.ts";
 
@@ -14,6 +23,35 @@ beforeAll(async () => {
   wasm = await compileIfStale(entry, path.join(DIST_TEST, "echo.wasm"));
   module = loadProgram(wasm).module;
 }, 60_000);
+
+/** Text with every escape JSON has and some non-ASCII, in well-formed strings. */
+const arbText = fc
+  .array(
+    fc.oneof(
+      fc.string({ unit: "grapheme", maxLength: 12 }),
+      fc.constantFrom('"', "\\", "\n", "\r", "\t", "\b", "\f", "\u0001", "/", "é", "🐋", ""),
+    ),
+    { maxLength: 8 },
+  )
+  .map((parts) => parts.join(""));
+
+/** Tables with unicode keys and nested, null, float, and string values. */
+const arbTable: fc.Arbitrary<Record<string, unknown>> = fc.dictionary(
+  arbText,
+  fc.jsonValue({ maxDepth: 3 }),
+  { maxKeys: 12 },
+);
+
+/** The echo program's bars mode takes `u32 n | n × (str label | f64 value)`. */
+function barsInput(list: Bar[]): Uint8Array {
+  const w = new Writer();
+  w.u32(list.length);
+  for (const b of list) {
+    w.str(b.label);
+    w.f64(b.value);
+  }
+  return w.done();
+}
 
 describe("run input", () => {
   test("the SDK decodes what the protocol encodes", () => {
@@ -61,7 +99,7 @@ describe("plan input and stage specs", () => {
     expect(spec.kind === "stage" && spec.tasks.every((t) => t.place === undefined)).toBe(true);
     expect(spec.kind === "stage" && spec.name).toBe("echo");
   });
-  test("done echoes every param raw and decodes scalars, quoted numbers, and fallbacks", () => {
+  test("done echoes every param raw and decodes scalars, quoted numbers, clamps, and fallbacks", () => {
     const params = {
       s: 'he said "hi"\n',
       i: 42,
@@ -83,6 +121,7 @@ describe("plan input and stage specs", () => {
     expect(next.b).toBe(true);
     expect(next.missing).toBe("fallback");
     expect(next.bad).toBe(7);
+    expect(next.clamped).toBe(10);
     expect(next.list).toEqual([1, "two"]);
     expect(next.obj).toEqual({ k: null });
     expect(next.q).toBe("12");
@@ -97,7 +136,54 @@ describe("plan input and stage specs", () => {
       b: false,
       missing: "fallback",
       bad: 7,
+      clamped: 0,
     });
+  });
+});
+
+describe("byte for byte with @tabframe/protocol", () => {
+  test("the magics the SDK writes are the protocol's", () => {
+    const spec = instantiate(module).planBytes(0, { n: 1 });
+    expect(String.fromCharCode(...spec.subarray(0, 4))).toBe("TFSS");
+    const payload = instantiate(module).run(8, 0, 1, barsInput([{ label: "a", value: 1 }]));
+    expect(String.fromCharCode(...payload.subarray(0, 4))).toBe("TFBR");
+  });
+
+  test("property: a table the protocol encodes comes back through the SDK as the same table and the same bytes", () => {
+    fc.assert(
+      fc.property(arbTable, (table) => {
+        const bytes = instantiate(module).planBytes(9, table);
+        const expected = JSON.parse(JSON.stringify(table)) as Record<string, unknown>;
+        expect(decodeStageSpec(bytes)).toEqual({ kind: "done", next: expected });
+        expect(bytes).toEqual(encodeStageSpec({ kind: "done", next: expected }));
+      }),
+      { numRuns: 60 },
+    );
+  });
+
+  test("property: a string param survives the SDK's quote and unquote", () => {
+    fc.assert(
+      fc.property(arbText, (s) => {
+        const spec = instantiate(module).plan(1, { s });
+        expect(spec.kind === "done" && spec.next?.s).toBe(s);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  test("property: the SDK's bars bytes are encodeBars's", () => {
+    const arbBars = fc.array(
+      fc.record({ label: arbText, value: fc.double({ noNaN: true, noDefaultInfinity: true }) }),
+      { maxLength: 30 },
+    );
+    fc.assert(
+      fc.property(arbBars, (list) => {
+        const out = instantiate(module).run(8, 0, 1, barsInput(list));
+        expect(out).toEqual(encodeBars(list));
+        expect(decodeBars(out)).toEqual(list);
+      }),
+      { numRuns: 60 },
+    );
   });
 });
 
@@ -113,6 +199,21 @@ describe("filesystem imports", () => {
     expect(new TextDecoder().decode(inst.writes.get("/out/range.txt"))).toBe("ell");
     // One task, one log: the SDK's `log` appends no separator, so the three calls run together.
     expect(inst.logs).toEqual(["listing: /in/a.txt,/in/z.txtstat missing: -1hint nodes: 5"]);
+  });
+
+  test("the SDK's RC values are the sandbox's, and the raw forms reach every code", () => {
+    const spec = instantiate(module).plan(7, {});
+    expect(spec.kind === "done" && spec.next).toEqual({
+      notFound: RC.notFound,
+      badArgs: RC.badArgs,
+      capExceeded: RC.capExceeded,
+      writeRelative: RC.badArgs,
+      writeOk: 0,
+      statMissing: RC.notFound,
+      readMissing: RC.notFound,
+      readBadOffset: RC.badArgs,
+      readOk: 3,
+    });
   });
 });
 

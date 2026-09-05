@@ -37,8 +37,6 @@ const MAX_K: i32 = 4096;
 /** Bytes read at a time past a range's end to finish a straddling word. */
 const TAIL_CHUNK: i32 = 4096;
 
-// ---- the word rule ----------------------------------------------------------------------------
-
 function isWordByte(b: u8): bool {
   return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 39;
 }
@@ -59,16 +57,10 @@ function partitionOf(word: string, partitions: i32): i32 {
   return <i32>(h % <u32>partitions);
 }
 
-function clamp(v: i32, lo: i32, hi: i32): i32 {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-// ---- plan ---------------------------------------------------------------------------------------
-
 export function plan(ptr: usize, len: i32): usize {
   const input = readPlanInput(ptr, len);
-  const k = clamp(input.params.getI32("k", 25), 1, MAX_K);
-  const mapTasks = clamp(input.params.getI32("mapTasks", 32), 1, MAX_MAP_TASKS);
+  const k = input.params.getI32In("k", 25, 1, MAX_K);
+  const mapTasks = input.params.getI32In("mapTasks", 32, 1, MAX_MAP_TASKS);
 
   if (input.stage == 0) {
     const size = fs.stat(CORPUS);
@@ -101,8 +93,6 @@ export function plan(ptr: usize, len: i32): usize {
   return emit(done(null));
 }
 
-// ---- run ----------------------------------------------------------------------------------------
-
 export function run(ptr: usize, len: i32): usize {
   const t = readRunInput(ptr, len);
   if (t.stage == 0) return emit(mapTask(t.input));
@@ -111,8 +101,6 @@ export function run(ptr: usize, len: i32): usize {
   abort("unexpected stage " + t.stage.toString());
   return 0;
 }
-
-// ---- stage 0: map -------------------------------------------------------------------------------
 
 function mustRead(offset: i32, length: i32): Uint8Array {
   const bytes = fs.readRange(CORPUS, offset, length);
@@ -226,8 +214,6 @@ function mapTask(input: Uint8Array): Uint8Array {
   return out.toBytes();
 }
 
-// ---- stage 1: reduce ----------------------------------------------------------------------------
-
 /** Parallel arrays the sort comparator reads (closures cannot capture locals). */
 let sortWords: string[] = [];
 let sortCounts: u32[] = [];
@@ -306,22 +292,18 @@ function reduceTask(input: Uint8Array): Uint8Array {
   return sortedPairs(counts);
 }
 
-// ---- stage 2: merge -----------------------------------------------------------------------------
-
 function mergeTask(input: Uint8Array): Uint8Array {
   const r = new ByteReader(input);
   const k = <i32>r.u32();
   const reduceCount = <i32>r.u32();
-  const files = fs.list("/out/1/");
-  if (files.length != reduceCount) {
-    abort("expected " + reduceCount.toString() + " reduce outputs, found " + files.length.toString());
+  const outputs = fs.outputs(1);
+  if (outputs.length != reduceCount) {
+    abort(
+      "expected " + reduceCount.toString() + " reduce outputs, found " + outputs.length.toString(),
+    );
   }
   const counts = new Map<string, u32>();
-  for (let f = 0; f < files.length; f++) {
-    const bytes = fs.read(files[f]);
-    if (bytes === null) abort("missing reduce output " + files[f]);
-    addPairs(new ByteReader(bytes as Uint8Array), counts);
-  }
+  for (let f = 0; f < outputs.length; f++) addPairs(new ByteReader(outputs[f]), counts);
   const order = rankOf(counts);
   let total: u64 = 0;
   for (let i = 0; i < sortCounts.length; i++) total += <u64>sortCounts[i];
