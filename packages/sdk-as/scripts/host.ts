@@ -13,12 +13,7 @@ import {
   type StageSpec,
   type TaskLimits,
 } from "@tabframe/protocol";
-import {
-  type BlobReader,
-  type MemoryLimits,
-  runTask,
-  validateModuleBytes,
-} from "@tabframe/sandbox";
+import { type BlobReader, compileValidated, type MemoryLimits, runTask } from "@tabframe/sandbox";
 
 /** The caps a node applies: the control plane's defaults (core's DEFAULT_TASK_LIMITS). */
 export const HOST_LIMITS: TaskLimits = {
@@ -207,13 +202,12 @@ export function loadProgram(
   wasm: Uint8Array,
   limits: TaskLimits = HOST_LIMITS,
 ): { module: WebAssembly.Module; imports: string[]; exports: string[]; memory: MemoryLimits } {
-  const v = validateModuleBytes(wasm, limits);
+  const v = compileValidated(wasm, limits);
   if (!v.ok) throw new ProgramError(v.reason);
-  const module = v.module as WebAssembly.Module;
   return {
-    module,
-    imports: WebAssembly.Module.imports(module).map((i) => `${i.module}.${i.name}`),
-    exports: WebAssembly.Module.exports(module).map((e) => e.name),
+    module: v.module,
+    imports: WebAssembly.Module.imports(v.module).map((i) => `${i.module}.${i.name}`),
+    exports: WebAssembly.Module.exports(v.module).map((e) => e.name),
     memory: v.memory,
   };
 }

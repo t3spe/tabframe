@@ -1,4 +1,7 @@
 import { LIMITS } from "@tabframe/protocol";
+import { type MemoryLimits, type ModuleShape, readModuleSections } from "./wasm-binary.ts";
+
+export type { MemoryLimits, ModuleShape } from "./wasm-binary.ts";
 
 /** The only imports a program may declare (design §5.3, §5.5). */
 export const ALLOWED_IMPORTS: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -8,264 +11,123 @@ export const ALLOWED_IMPORTS: Readonly<Record<string, ReadonlySet<string>>> = {
 
 export const REQUIRED_EXPORTS = ["memory", "alloc", "run", "plan"] as const;
 
-export interface MemoryLimits {
-  min: number;
-  max: number | null;
-  shared: boolean;
-  memory64: boolean;
-}
-
+export type Rejection = { ok: false; reason: string };
+/** What the bytes say about a module, without compiling it. */
+export type Inspection = { ok: true; memory: MemoryLimits } | Rejection;
+/** An inspected module, compiled. */
+export type Compiled = { ok: true; memory: MemoryLimits; module: WebAssembly.Module } | Rejection;
+/** `validateModuleBytes`'s result: `module` is null when compilation was not asked for. */
 export type Validation =
   | { ok: true; memory: MemoryLimits; module: WebAssembly.Module | null }
-  | { ok: false; reason: string };
+  | Rejection;
 
-/** An import or export read from the binary's own sections (WP8.2). */
-export interface ModuleShape {
-  imports: Array<{ module: string; name: string; kind: string }>;
-  exports: Array<{ name: string; kind: string }>;
+/**
+ * Everything a node checks before instantiating, read from the bytes alone: the size cap,
+ * well-formedness, one memory with a declared maximum under the cap, the import allowlist, and the
+ * required exports. Nothing is compiled: the control plane runs no program code (design §2), so a
+ * stranger's eight megabytes never reach V8's compiler on its event loop.
+ */
+export function inspectModuleBytes(
+  bytes: Uint8Array,
+  limits: { memoryPagesMax: number },
+): Inspection {
+  if (bytes.length > LIMITS.maxModuleBytes) {
+    return reject(`module is ${bytes.length} bytes, cap ${LIMITS.maxModuleBytes}`);
+  }
+  if (!WebAssembly.validate(asSource(bytes))) return reject("not a valid WebAssembly module");
+  const sections = readModuleSections(bytes);
+  if (!sections) return reject("malformed import or export section");
+  // One memory only: with multi-memory a module could declare a small first memory and grow an
+  // unbounded second one past the cap the design promises.
+  if (sections.memories.length > 1) {
+    return reject(`module declares ${sections.memories.length} memories; one is allowed`);
+  }
+  const memory = sections.memories[0];
+  if (!memory) return reject("module declares no memory");
+  if (memory.shared) return reject("shared memory is not allowed");
+  if (memory.memory64) return reject("memory64 is not allowed");
+  if (memory.max === null) return reject("a declared memory maximum is required");
+  if (memory.max > limits.memoryPagesMax) {
+    return reject(`memory maximum ${memory.max} pages exceeds the cap of ${limits.memoryPagesMax}`);
+  }
+  const shape = checkShape(sections);
+  if (!shape.ok) return shape;
+  return { ok: true, memory };
+}
+
+/** Inspect, then compile: the module is what `runTask` instantiates. */
+export function compileValidated(bytes: Uint8Array, limits: { memoryPagesMax: number }): Compiled {
+  const inspected = inspectModuleBytes(bytes, limits);
+  if (!inspected.ok) return inspected;
+  try {
+    return { ok: true, memory: inspected.memory, module: new WebAssembly.Module(asSource(bytes)) };
+  } catch (err) {
+    return reject(`compile failed: ${String(err)}`);
+  }
 }
 
 /**
- * Validate program bytes before anything is instantiated: size, well-formedness, a declared memory
- * maximum under the cap, the import allowlist, and the required exports.
+ * The older entry point, kept for its callers: `compile: false` is `inspectModuleBytes` with
+ * `module: null`; otherwise `compileValidated`.
  */
 export function validateModuleBytes(
   bytes: Uint8Array,
   limits: { memoryPagesMax: number },
   opts: { compile?: boolean } = {},
 ): Validation {
-  if (bytes.length > LIMITS.maxModuleBytes) {
-    return { ok: false, reason: `module is ${bytes.length} bytes, cap ${LIMITS.maxModuleBytes}` };
-  }
-  if (!WebAssembly.validate(asSource(bytes))) {
-    return { ok: false, reason: "not a valid WebAssembly module" };
-  }
-  // One memory only (WP8.1): with multi-memory a module could declare a small first memory and
-  // grow an unbounded second one past the cap the design promises.
-  const memories = countMemories(bytes);
-  if (memories > 1)
-    return { ok: false, reason: `module declares ${memories} memories; one is allowed` };
-  const memory = readMemoryLimits(bytes);
-  if (!memory) return { ok: false, reason: "module declares no memory" };
-  if (memory.shared) return { ok: false, reason: "shared memory is not allowed" };
-  if (memory.memory64) return { ok: false, reason: "memory64 is not allowed" };
-  if (memory.max === null) return { ok: false, reason: "a declared memory maximum is required" };
-  if (memory.max > limits.memoryPagesMax) {
-    return {
-      ok: false,
-      reason: `memory maximum ${memory.max} pages exceeds the cap of ${limits.memoryPagesMax}`,
-    };
-  }
   if (opts.compile === false) {
-    // The control plane runs no program code (design §2) and compiles none either (WP8.2): the
-    // import allowlist and the required exports are read from the binary's own sections, so
-    // eight megabytes of a stranger's bytes never reach V8's compiler on the event loop.
-    const parsed = readModuleShape(bytes);
-    if (!parsed) return { ok: false, reason: "malformed import or export section" };
-    const shape = checkShape(parsed);
-    if (!shape.ok) return shape;
-    return { ok: true, memory, module: null };
+    const inspected = inspectModuleBytes(bytes, limits);
+    return inspected.ok ? { ...inspected, module: null } : inspected;
   }
-  let module: WebAssembly.Module;
-  try {
-    module = new WebAssembly.Module(asSource(bytes));
-  } catch (err) {
-    return { ok: false, reason: `compile failed: ${String(err)}` };
-  }
-  const shape = validateCompiled(module);
-  if (!shape.ok) return shape;
-  return { ok: true, memory, module };
-}
-
-const KINDS = ["function", "table", "memory", "global", "tag"] as const;
-
-/** Read the import (2) and export (7) sections straight from the binary; null when malformed. */
-export function readModuleShape(bytes: Uint8Array): ModuleShape | null {
-  if (bytes.length < 8) return null;
-  if (bytes[0] !== 0x00 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) return null;
-  let pos = 8;
-  const leb = (): number => {
-    let result = 0;
-    let shift = 0;
-    for (;;) {
-      const b = bytes[pos++];
-      if (b === undefined) throw new RangeError("truncated");
-      result |= (b & 0x7f) << shift;
-      if ((b & 0x80) === 0) return result >>> 0;
-      shift += 7;
-      if (shift > 35) throw new RangeError("bad LEB128");
-    }
-  };
-  const name = (): string => {
-    const len = leb();
-    if (pos + len > bytes.length) throw new RangeError("truncated");
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(pos, pos + len));
-    pos += len;
-    return text;
-  };
-  const kindOf = (code: number): string => {
-    const k = KINDS[code];
-    if (k === undefined) throw new RangeError(`unknown kind ${code}`);
-    return k;
-  };
-  const shape: ModuleShape = { imports: [], exports: [] };
-  try {
-    while (pos < bytes.length) {
-      const id = bytes[pos++];
-      const size = leb();
-      const end = pos + size;
-      if (end > bytes.length) return null;
-      if (id === 2) {
-        const count = leb();
-        for (let i = 0; i < count; i++) {
-          const module = name();
-          const field = name();
-          const kind = kindOf(bytes[pos++] ?? 255);
-          // The descriptor is skipped by kind; only its presence matters here.
-          if (kind === "function") leb();
-          else if (kind === "table") {
-            pos++;
-            const flags = leb();
-            leb();
-            if (flags & 0x01) leb();
-          } else if (kind === "memory") {
-            const flags = leb();
-            leb();
-            if (flags & 0x01) leb();
-          } else if (kind === "global") {
-            pos += 2;
-          } else {
-            pos++;
-            leb();
-          }
-          shape.imports.push({ module, name: field, kind });
-        }
-      } else if (id === 7) {
-        const count = leb();
-        for (let i = 0; i < count; i++) {
-          const field = name();
-          const kind = kindOf(bytes[pos++] ?? 255);
-          leb();
-          shape.exports.push({ name: field, kind });
-        }
-      }
-      pos = end;
-    }
-  } catch {
-    return null;
-  }
-  return shape;
+  return compileValidated(bytes, limits);
 }
 
 /** The allowlist and the required exports, on a parsed shape. */
-export function checkShape(shape: ModuleShape): { ok: true } | { ok: false; reason: string } {
+export function checkShape(shape: ModuleShape): { ok: true } | Rejection {
   for (const imp of shape.imports) {
     const allowed = ALLOWED_IMPORTS[imp.module];
     if (!allowed?.has(imp.name) || imp.kind !== "function") {
-      return { ok: false, reason: `forbidden import ${imp.module}.${imp.name} (${imp.kind})` };
+      return reject(`forbidden import ${imp.module}.${imp.name} (${imp.kind})`);
     }
   }
   const exports = new Map(shape.exports.map((e) => [e.name, e.kind]));
   for (const name of REQUIRED_EXPORTS) {
     const kind = exports.get(name);
     const want = name === "memory" ? "memory" : "function";
-    if (kind !== want) return { ok: false, reason: `missing export ${name} (${want})` };
+    if (kind !== want) return reject(`missing export ${name} (${want})`);
   }
   return { ok: true };
+}
+
+/** The allowlist and the required exports of an already compiled module, through the JS API. */
+export function validateCompiled(module: WebAssembly.Module): { ok: true } | Rejection {
+  return checkShape({
+    imports: WebAssembly.Module.imports(module),
+    exports: WebAssembly.Module.exports(module),
+  });
+}
+
+/** How many memories the memory section declares; 0 when the bytes do not parse. */
+export function countMemories(bytes: Uint8Array): number {
+  return readModuleSections(bytes)?.memories.length ?? 0;
+}
+
+/** The first memory's limits, or null when the module declares none or does not parse. */
+export function readMemoryLimits(bytes: Uint8Array): MemoryLimits | null {
+  return readModuleSections(bytes)?.memories[0] ?? null;
+}
+
+/** The import and export sections; null when the bytes do not parse. */
+export function readModuleShape(bytes: Uint8Array): ModuleShape | null {
+  const sections = readModuleSections(bytes);
+  return sections ? { imports: sections.imports, exports: sections.exports } : null;
+}
+
+function reject(reason: string): Rejection {
+  return { ok: false, reason };
 }
 
 /** The WebAssembly API wants a view over a plain ArrayBuffer; our bytes may sit on any buffer. */
 function asSource(bytes: Uint8Array): BufferSource {
   return bytes as unknown as BufferSource;
-}
-
-/** Import allowlist and required exports of an already compiled module. */
-export function validateCompiled(
-  module: WebAssembly.Module,
-): { ok: true } | { ok: false; reason: string } {
-  for (const imp of WebAssembly.Module.imports(module)) {
-    const allowed = ALLOWED_IMPORTS[imp.module];
-    if (!allowed?.has(imp.name) || imp.kind !== "function") {
-      return { ok: false, reason: `forbidden import ${imp.module}.${imp.name} (${imp.kind})` };
-    }
-  }
-  const exports = new Map(WebAssembly.Module.exports(module).map((e) => [e.name, e.kind]));
-  for (const name of REQUIRED_EXPORTS) {
-    const kind = exports.get(name);
-    const want = name === "memory" ? "memory" : "function";
-    if (kind !== want) return { ok: false, reason: `missing export ${name} (${want})` };
-  }
-  return { ok: true };
-}
-
-/**
- * Read the memory section's limits straight from the binary; the JS API does not expose them.
- * Returns null when the module defines no memory of its own.
- */
-/** How many memories the module's memory section declares (imported memories are refused by the allowlist). */
-export function countMemories(bytes: Uint8Array): number {
-  let pos = 8;
-  const leb = (): number => {
-    let result = 0;
-    let shift = 0;
-    for (;;) {
-      const b = bytes[pos++];
-      if (b === undefined) throw new RangeError("truncated");
-      result |= (b & 0x7f) << shift;
-      if ((b & 0x80) === 0) return result >>> 0;
-      shift += 7;
-      if (shift > 35) throw new RangeError("bad LEB128");
-    }
-  };
-  try {
-    while (pos < bytes.length) {
-      const id = bytes[pos++];
-      const size = leb();
-      const end = pos + size;
-      if (id === 5) return leb();
-      pos = end;
-    }
-  } catch {
-    return 0;
-  }
-  return 0;
-}
-
-export function readMemoryLimits(bytes: Uint8Array): MemoryLimits | null {
-  if (bytes.length < 8) return null;
-  if (bytes[0] !== 0x00 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) return null;
-  let pos = 8;
-  const leb = (): number => {
-    let result = 0;
-    let shift = 0;
-    for (;;) {
-      const b = bytes[pos++];
-      if (b === undefined) throw new RangeError("truncated");
-      result |= (b & 0x7f) << shift;
-      if ((b & 0x80) === 0) return result >>> 0;
-      shift += 7;
-      if (shift > 35) throw new RangeError("bad LEB128");
-    }
-  };
-  try {
-    while (pos < bytes.length) {
-      const id = bytes[pos++];
-      const size = leb();
-      const end = pos + size;
-      if (id === 5) {
-        const count = leb();
-        if (count === 0) return null;
-        const flags = leb();
-        const memory64 = (flags & 0x04) !== 0;
-        const shared = (flags & 0x02) !== 0;
-        const min = leb();
-        const max = (flags & 0x01) !== 0 ? leb() : null;
-        return { min, max, shared, memory64 };
-      }
-      pos = end;
-    }
-  } catch {
-    return null;
-  }
-  return null;
 }

@@ -27,10 +27,20 @@ export {
 } from "./types.ts";
 export {
   ALLOWED_IMPORTS,
+  type Compiled,
+  checkShape,
+  compileValidated,
+  countMemories,
+  type Inspection,
+  inspectModuleBytes,
   type MemoryLimits,
+  type ModuleShape,
   REQUIRED_EXPORTS,
+  type Rejection,
   readMemoryLimits,
+  readModuleShape,
   type Validation,
   validateCompiled,
   validateModuleBytes,
 } from "./validate.ts";
+export { ByteCursor, type ModuleSections, readModuleSections } from "./wasm-binary.ts";

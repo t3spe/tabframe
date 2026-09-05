@@ -2,26 +2,31 @@ import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@tabframe/protocol";
 import {
   checkShape,
+  compileValidated,
   countMemories,
+  inspectModuleBytes,
   readMemoryLimits,
   readModuleShape,
   validateCompiled,
   validateModuleBytes,
 } from "../src/validate.ts";
+import { readModuleSections } from "../src/wasm-binary.ts";
 import { compileFixture } from "./compile.ts";
 import { limits } from "./helpers.ts";
 
-describe("validateModuleBytes", () => {
-  test("a well-formed program with a declared memory maximum passes", async () => {
+const wasm = (...tail: number[]) => new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...tail]);
+
+describe("compileValidated", () => {
+  test("a well-formed program with a declared memory maximum passes and is compiled", async () => {
     const bytes = await compileFixture("echo", { maximumMemory: 256 });
-    const v = validateModuleBytes(bytes, limits);
+    const v = compileValidated(bytes, limits);
     expect(v.ok).toBe(true);
     if (v.ok) {
       expect(v.memory.max).toBe(256);
       expect(v.memory.shared).toBe(false);
       expect(v.memory.memory64).toBe(false);
       expect(
-        WebAssembly.Module.exports(v.module as WebAssembly.Module)
+        WebAssembly.Module.exports(v.module)
           .map((e) => e.name)
           .sort(),
       ).toEqual(["alloc", "memory", "plan", "run"]);
@@ -30,43 +35,75 @@ describe("validateModuleBytes", () => {
 
   test("a forbidden import is named in the rejection", async () => {
     const bytes = await compileFixture("time", { maximumMemory: 256 });
-    const v = validateModuleBytes(bytes, limits);
-    expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.reason).toMatch(/forbidden import env\.(Date\.now|seed|.*)/);
+    const v = compileValidated(bytes, limits);
+    expect(!v.ok && v.reason).toBe("forbidden import env.Date.now (function)");
   });
 
   test("the allowed imports are accepted", async () => {
     const fs = await compileFixture("fs", { maximumMemory: 256 });
-    expect(validateModuleBytes(fs, limits).ok).toBe(true);
+    expect(compileValidated(fs, limits).ok).toBe(true);
     const trap = await compileFixture("trap", { maximumMemory: 256 });
-    const v = validateModuleBytes(trap, limits);
+    const v = compileValidated(trap, limits);
     expect(v.ok).toBe(true);
     if (v.ok) {
-      const imports = WebAssembly.Module.imports(v.module as WebAssembly.Module).map(
-        (i) => `${i.module}.${i.name}`,
-      );
+      const imports = WebAssembly.Module.imports(v.module).map((i) => `${i.module}.${i.name}`);
       expect(imports).toContain("env.abort");
     }
   });
 
   test("missing exports, missing or oversized memory maximum, size cap, garbage", async () => {
     const noplan = await compileFixture("noplan", { maximumMemory: 256 });
-    const v1 = validateModuleBytes(noplan, limits);
+    const v1 = compileValidated(noplan, limits);
     expect(!v1.ok && v1.reason).toBe("missing export plan (function)");
 
     const noMax = await compileFixture("echo");
-    const v2 = validateModuleBytes(noMax, limits);
+    const v2 = compileValidated(noMax, limits);
     expect(!v2.ok && v2.reason).toMatch(/memory maximum is required/);
 
     const tooBig = await compileFixture("echo", { maximumMemory: 1000 });
-    const v3 = validateModuleBytes(tooBig, limits);
+    const v3 = compileValidated(tooBig, limits);
     expect(!v3.ok && v3.reason).toMatch(/1000 pages exceeds the cap of 256/);
 
-    const v4 = validateModuleBytes(new Uint8Array(LIMITS.maxModuleBytes + 1), limits);
+    const v4 = compileValidated(new Uint8Array(LIMITS.maxModuleBytes + 1), limits);
     expect(!v4.ok && v4.reason).toMatch(/cap/);
 
-    const v5 = validateModuleBytes(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]), limits);
+    const v5 = compileValidated(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]), limits);
     expect(!v5.ok && v5.reason).toBe("not a valid WebAssembly module");
+  });
+});
+
+describe("inspectModuleBytes", () => {
+  test("says what compileValidated says, without a module", async () => {
+    const good = inspectModuleBytes(await compileFixture("echo", { maximumMemory: 256 }), limits);
+    expect(good).toMatchObject({ ok: true, memory: { max: 256, shared: false, memory64: false } });
+    expect("module" in good).toBe(false);
+    const bad = inspectModuleBytes(await compileFixture("time", { maximumMemory: 256 }), limits);
+    expect(!bad.ok && bad.reason).toContain("forbidden import");
+  });
+
+  test("a module with no memory section is refused", () => {
+    expect(inspectModuleBytes(wasm(), limits)).toEqual({
+      ok: false,
+      reason: "module declares no memory",
+    });
+  });
+});
+
+describe("validateModuleBytes keeps its older shape", () => {
+  test("compiles by default and returns module: null with compile: false", async () => {
+    const bytes = await compileFixture("echo", { maximumMemory: 256 });
+    const compiled = validateModuleBytes(bytes, limits);
+    expect(compiled.ok && compiled.module).toBeInstanceOf(WebAssembly.Module);
+    const inspected = validateModuleBytes(bytes, limits, { compile: false });
+    expect(inspected.ok && inspected.module).toBeNull();
+    const rejected = validateModuleBytes(
+      await compileFixture("time", { maximumMemory: 256 }),
+      limits,
+      {
+        compile: false,
+      },
+    );
+    expect(!rejected.ok && rejected.reason).toBe("forbidden import env.Date.now (function)");
   });
 });
 
@@ -82,9 +119,9 @@ describe("readMemoryLimits", () => {
     expect(readMemoryLimits(new Uint8Array([0, 0, 0]))).toBeNull();
     expect(readMemoryLimits(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))).toBeNull();
     // Magic + version and nothing else: a valid empty module with no memory.
-    expect(readMemoryLimits(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))).toBeNull();
+    expect(readMemoryLimits(wasm())).toBeNull();
     // A truncated section header must not throw.
-    expect(readMemoryLimits(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 0x80]))).toBeNull();
+    expect(readMemoryLimits(wasm(5, 0x80))).toBeNull();
   });
 });
 
@@ -97,19 +134,11 @@ describe("validateCompiled", () => {
   });
 });
 
-describe("one memory only (WP8.1)", () => {
-  // A module whose memory section declares two memories: the first small and capped, the second
-  // without a maximum. Multi-memory is on by default in current engines, so the second one could
-  // grow past the cap the design promises.
-  const twoMemories = new Uint8Array([
-    0x00,
-    0x61,
-    0x73,
-    0x6d,
-    0x01,
-    0x00,
-    0x00,
-    0x00, // magic, version
+describe("a second memory is refused", () => {
+  // A memory section declaring two memories: the first small and capped, the second without a
+  // maximum. Multi-memory is on by default in current engines, so the second one could grow past
+  // the cap the design promises.
+  const twoMemories = wasm(
     0x05,
     0x06,
     0x02, // memory section, 6 bytes, 2 memories
@@ -118,18 +147,22 @@ describe("one memory only (WP8.1)", () => {
     0x01, // memory 0: min 1, max 1
     0x00,
     0x01, // memory 1: min 1, no maximum
-  ]);
-  test("the memory section's count is read, and a second memory is refused", () => {
+  );
+  test("the memory section's count is read, and the module does not validate", () => {
     expect(countMemories(twoMemories)).toBe(2);
-    const v = validateModuleBytes(twoMemories, { memoryPagesMax: 1024 });
+    expect(readModuleSections(twoMemories)?.memories).toEqual([
+      { min: 1, max: 1, shared: false, memory64: false },
+      { min: 1, max: null, shared: false, memory64: false },
+    ]);
+    const v = inspectModuleBytes(twoMemories, { memoryPagesMax: 1024 });
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reason).toMatch(/memories; one is allowed|not a valid WebAssembly module/);
   });
 });
 
-describe("readModuleShape (WP8.2)", () => {
+describe("readModuleSections", () => {
   test("reads the imports and exports from the binary and agrees with the compiled module", async () => {
-    const bytes = await compileFixture("echo", { maximumMemory: 256 });
+    const bytes = await compileFixture("fs", { maximumMemory: 256 });
     const shape = readModuleShape(bytes);
     expect(shape).not.toBeNull();
     const compiled = new WebAssembly.Module(bytes as unknown as BufferSource);
@@ -146,22 +179,17 @@ describe("readModuleShape (WP8.2)", () => {
     expect(checkShape(shape as NonNullable<typeof shape>).ok).toBe(true);
   });
 
-  test("the no-compile validation names a forbidden import and returns no module", async () => {
-    const bytes = await compileFixture("time", { maximumMemory: 256 });
-    const v = validateModuleBytes(bytes, limits, { compile: false });
-    expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.reason).toContain("forbidden import");
-    const good = validateModuleBytes(await compileFixture("echo", { maximumMemory: 256 }), limits, {
-      compile: false,
-    });
-    expect(good.ok).toBe(true);
-    if (good.ok) expect(good.module).toBeNull();
-  });
-
-  test("a truncated import section is malformed, not a crash", () => {
-    // magic + version, then an import section claiming ten entries with one byte of payload
-    const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 2, 1, 10]);
-    expect(readModuleShape(bytes)).toBeNull();
-    expect(readModuleShape(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]))?.exports).toEqual([]);
+  test("a truncated or overrunning section is malformed, not a crash", () => {
+    // An import section claiming ten entries with one byte of payload.
+    expect(readModuleSections(wasm(2, 1, 10))).toBeNull();
+    // An export section whose one entry runs past the section's declared size.
+    expect(readModuleSections(wasm(7, 1, 1, 3, 0x61, 0x62, 0x63, 0, 0))).toBeNull();
+    // A section whose declared size runs past the buffer.
+    expect(readModuleSections(wasm(5, 20, 1, 0, 1))).toBeNull();
+    // Not a module at all.
+    expect(readModuleSections(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))).toBeNull();
+    expect(countMemories(new Uint8Array([5, 1, 1]))).toBe(0);
+    // The empty module: every section absent.
+    expect(readModuleSections(wasm())).toEqual({ imports: [], exports: [], memories: [] });
   });
 });
