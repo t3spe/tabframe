@@ -8,22 +8,23 @@ export {
   isBlobRequest,
   serviceBlobRequest,
 } from "./adapters/bridge.ts";
+export { CachingBlobReader } from "./blob-reader.ts";
 export { FsView, RC } from "./fs.ts";
 export {
   createSandboxHost,
   type ResultMessage,
   type SandboxHost,
+  type SandboxHostOptions,
   type TaskMessage,
   type WorkerLike,
 } from "./host.ts";
 export { runTask, SandboxAbort } from "./run.ts";
-export {
-  type BlobReader,
-  CachingBlobReader,
-  type HostRequest,
-  type TaskKind,
-  type TaskRequest,
-  type TaskResult,
+export type {
+  BlobReader,
+  HostRequest,
+  TaskKind,
+  TaskRequest,
+  TaskResult,
 } from "./types.ts";
 export {
   ALLOWED_IMPORTS,

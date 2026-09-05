@@ -33,7 +33,9 @@ export function createNodeSandboxHost(opts: NodeSandboxOptions): SandboxHost {
       },
     };
   };
-  return createSandboxHost(spawn, (msg) => {
-    if (isBlobRequest(msg)) void serviceBlobRequest(sab, msg, opts.fetchBlob);
+  return createSandboxHost(spawn, {
+    onOther: (msg) => {
+      if (isBlobRequest(msg)) void serviceBlobRequest(sab, msg, opts.fetchBlob);
+    },
   });
 }

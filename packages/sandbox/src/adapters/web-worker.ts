@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 // Web adapter, worker side: the dedicated worker a browser node spawns for its sandbox. Bytes come
-// from the store with synchronous requests, which dedicated workers are allowed to make
-// (design §4.2). Verified in preflight on 2026-09-01.
-import type { ResultMessage, TaskMessage } from "../host.ts";
-import { runTask } from "../run.ts";
-import { type BlobReader, CachingBlobReader } from "../types.ts";
+// from the store with synchronous requests, which dedicated workers may make (design §4.2).
+import { CachingBlobReader } from "../blob-reader.ts";
+import type { TaskMessage } from "../host.ts";
+import type { BlobReader } from "../types.ts";
+import { serveTasks } from "./serve.ts";
 
 class XhrBlobReader implements BlobReader {
   private readonly base: string;
@@ -32,19 +32,18 @@ class XhrBlobReader implements BlobReader {
   }
 }
 
+/** One caching reader per store base, so a node that changes stores keeps neither's blobs mixed. */
 const readers = new Map<string, CachingBlobReader>();
-const scope = self as unknown as DedicatedWorkerGlobalScope;
-
-scope.onmessage = (ev: MessageEvent<TaskMessage & { storeBase?: string }>) => {
-  const msg = ev.data;
-  if (msg?.type !== "task") return;
+function readerFor(msg: TaskMessage): BlobReader {
   const base = msg.storeBase ?? "/blob";
   let reader = readers.get(base);
   if (!reader) {
     reader = new CachingBlobReader(new XhrBlobReader(base));
     readers.set(base, reader);
   }
-  const result = runTask(msg.module, { ...msg.request, reader });
-  const reply: ResultMessage = { type: "result", id: msg.id, result };
-  scope.postMessage(reply);
-};
+  return reader;
+}
+
+const scope = self as unknown as DedicatedWorkerGlobalScope;
+const serve = serveTasks(readerFor, (reply) => scope.postMessage(reply));
+scope.onmessage = (ev: MessageEvent<unknown>) => serve(ev.data);

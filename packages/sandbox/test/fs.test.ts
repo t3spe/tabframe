@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { CachingBlobReader } from "../src/blob-reader.ts";
 import { FsView, RC } from "../src/fs.ts";
-import { CachingBlobReader } from "../src/types.ts";
 import { blobs, dec, enc, H1, limits, MapReader, manifest } from "./helpers.ts";
 
 describe("FsView", () => {
