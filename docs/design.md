@@ -88,38 +88,7 @@ and which stays correct while cores — and the control plane itself — come an
 
 ## 3. Runtime picture
 
-```
- One browser tab = one HOST                                  AWS (us-west-2)
- +--------------------------------------------+
- | Host page (main thread)                    |   HTTPS     +------------------------------+
- |  loads html + bundles                      |<----------- | CloudFront                   |
- |  calls session → {endpoint, token, ...}    |             |   /            S3 web assets |
- |  dashboard, controls, editor, queue,       |   GET blob  |   /blob/<hash> S3 blob store |
- |  programs panel, consent banner            |<----------- +------------------------------+
- |  observer socket  <----------------------->|--- WSS ---> +------------------------------+
- |  spawns node workers, relays visibility    |             | Control plane MicroVM (1 GB) |
- |                                            |             |  ledger · scheduler ·        |
- |  +---------------+  +---------------+      |             |  liveness · speculation ·    |
- |  | Node          |  | Node          | ...  |             |  verification · fold ·       |
- |  |  orchestrator |  |  orchestrator |      |             |  fan-out · presign · hooks   |
- |  |  + sandbox    |  |  + sandbox    | <--->|--- WSS ---> |  handover/adopt/drain        |
- |  +---------------+  +---------------+      |             +------------------------------+
- +--------------------------------------------+                    ^            ^
-        PUT blob (presigned) --------------------------------------+            |
-                                                                                 |
- +------------------------------+   +------------------------------+             |
- | Cloud core MicroVM (0.5 GB)  |   | Cloud core MicroVM (0.5 GB)  | --- WSS ----+
- |  same image, role=core       |   |  same image, role=core       |
- |  no ingress; outbound only   |   |  no ingress; outbound only   |
- +------------------------------+   +------------------------------+
-
- +------------------------------+   +------------------------------+   +-----------------+
- | Lambda: session (public URL) |   | Lambda: rotate (hourly,      |   | SSM parameter:  |
- |  vend {endpoint, token,      |   |  no reserved concurrency)     |   | active control  |
- |   storeBase, generation};    |   |  launch → handover → flip →  |   | plane + gen     |
- |  heal when none running      |   |  drain → terminate           |   +-----------------+
- +------------------------------+   +------------------------------+
-```
+![Runtime picture: one browser tab is one host. The page loads from CloudFront, fetches a session, opens an observer socket to the control plane MicroVM, and spawns node workers with sockets of their own; results go to S3 by presigned PUT and come back by hash through CloudFront. Two cloud core MicroVMs run the same image as cores, outbound only. The fleet is a session function, a rotate function, and an SSM parameter naming the active control plane.](diagrams/runtime-picture.svg)
 
 **When a visitor opens the URL:**
 
