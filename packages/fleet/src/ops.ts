@@ -1,5 +1,5 @@
-// Operator operations behind `mise run up` and `mise run down` (design D20). Logic only; the
-// scripts under scripts/ wire real clients and call these.
+// Operator operations behind `mise run up`, `down`, `rotate` and `rollback` (design D20). Logic
+// only; the scripts under scripts/ wire real clients, call these and print the result.
 import type { OpsConfig } from "./config.ts";
 import type { PointerStore } from "./pointer.ts";
 import type { Invoker, Logger, MicrovmClient, RuleControl, Sleeper } from "./types.ts";
@@ -14,11 +14,19 @@ export interface OpsDeps {
   config: OpsConfig;
 }
 
+/** One rotation now, by the deployed rotate function; its result comes back as it reported it. */
+export function rotateNow(
+  deps: Pick<OpsDeps, "invoker" | "config">,
+  reason: string,
+): Promise<unknown> {
+  return deps.invoker.invokeSync(deps.config.rotateFunctionName, { reason });
+}
+
 /** Clear the off state (keeping the generation) and ask rotate to launch a control plane. */
 export async function up(deps: OpsDeps): Promise<unknown> {
   const p = await deps.pointer.read();
-  // `up` ends every deploy, so it is where a rollback pin is cleared (WP8.3): the next launch is
-  // the image's latest version again.
+  // `up` ends every deploy, so it is where a rollback pin is cleared: the next launch is the
+  // image's latest version again.
   if (p.pinnedImageVersion)
     deps.log.info("up: clearing the image pin", { pinned: p.pinnedImageVersion });
   await deps.pointer.write({
@@ -29,7 +37,7 @@ export async function up(deps: OpsDeps): Promise<unknown> {
   });
   await deps.rules.enable(deps.config.ruleName);
   deps.log.info("up: pointer set to on, rotation schedule enabled, invoking rotate");
-  return deps.invoker.invokeSync(deps.config.rotateFunctionName, { reason: "up" });
+  return rotateNow(deps, "up");
 }
 
 /** Off: disable the schedule, terminate every MicroVM from our image, write the off state. */
@@ -44,7 +52,7 @@ export async function down(deps: OpsDeps): Promise<{ terminated: string[] }> {
     updatedAt: new Date().toISOString(),
   });
   const terminated: string[] = [];
-  // Two passes (WP8.3): a rotation racing `down` may launch a successor after the first list.
+  // Two passes: a rotation racing `down` may launch a successor after the first list.
   for (let pass = 0; pass < 2; pass++) {
     if (pass > 0) await deps.sleep.sleep(2_000);
     const all = await deps.microvms.list(deps.config.imageArn);
@@ -59,4 +67,17 @@ export async function down(deps: OpsDeps): Promise<{ terminated: string[] }> {
   }
   deps.log.info("down: machine is off", { terminated: terminated.length });
   return { terminated };
+}
+
+/**
+ * Pin every launch to an image version; null clears the pin. The pin lives in the pointer, so the
+ * hourly rotations honour it too, and `up` — which ends every deploy — is what clears it again.
+ */
+export async function pin(deps: Pick<OpsDeps, "pointer">, version: string | null): Promise<void> {
+  const p = await deps.pointer.read();
+  await deps.pointer.write({
+    ...p,
+    pinnedImageVersion: version,
+    updatedAt: new Date().toISOString(),
+  });
 }

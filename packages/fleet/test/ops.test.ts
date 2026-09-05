@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OpsConfig } from "../src/config.ts";
-import { down, up } from "../src/ops.ts";
+import { down, pin, rotateNow, up } from "../src/ops.ts";
 import {
   FakeInvoker,
   FakeLogger,
@@ -44,6 +44,14 @@ describe("up", () => {
       { functionName: "tabframe-rotate", payload: { reason: "up" }, mode: "sync" },
     ]);
   });
+
+  test("clears a rollback pin, so the next launch is the image's latest again", async () => {
+    const pointer = pointerStoreWith({ state: "on", generation: 5, pinnedImageVersion: "3" });
+    const d = deps(pointer);
+    await up(d);
+    expect(pointer.writes.at(-1)?.pinnedImageVersion).toBeNull();
+    expect(d.log.lines.some((l) => l.message === "up: clearing the image pin")).toBe(true);
+  });
 });
 
 describe("down", () => {
@@ -71,7 +79,35 @@ describe("down", () => {
     expect(d.rules.events).toEqual([{ rule: "tabframe-rotate-hourly", enabled: false }]);
     const written = pointer.writes.at(-1);
     expect(written).toMatchObject({ state: "off", microvmId: null, endpoint: null, generation: 2 });
-    // Two passes (WP8.3): a rotation racing `down` may launch after the first list.
+    // Two passes: a rotation racing `down` may launch after the first list.
     expect(d.sleep.slept).toEqual([150, 150, 2_000]);
+  });
+});
+
+describe("pin", () => {
+  test("writes the version into the pointer and clears it with null", async () => {
+    const pointer = pointerStoreWith({ state: "on", generation: 5, microvmId: "cp-1" });
+    const d = deps(pointer);
+    await pin(d, "3");
+    expect(pointer.writes.at(-1)).toMatchObject({
+      pinnedImageVersion: "3",
+      generation: 5,
+      microvmId: "cp-1",
+      state: "on",
+    });
+    await pin(d, null);
+    expect(pointer.writes.at(-1)?.pinnedImageVersion).toBeNull();
+    expect(d.invoker.calls).toEqual([]);
+  });
+});
+
+describe("rotateNow", () => {
+  test("invokes the rotate function synchronously with the reason and returns its answer", async () => {
+    const d = deps(pointerStoreWith({ state: "on" }));
+    d.invoker.syncResult = { action: "rotated", generation: 9 };
+    expect(await rotateNow(d, "operator")).toEqual({ action: "rotated", generation: 9 });
+    expect(d.invoker.calls).toEqual([
+      { functionName: "tabframe-rotate", payload: { reason: "operator" }, mode: "sync" },
+    ]);
   });
 });

@@ -1,38 +1,24 @@
-// WP6.7: what a dashboard sees across a rotation on a *busy* machine — two real dashboards with
-// spawned nodes, the page-visible machine state sampled four times a second, and the rotate
-// function's own log for the same window. Chasing the "asleep" banner the demo saw at the start
-// of a rotation.
+// What a dashboard sees across a rotation on a *busy* machine: two real dashboards with spawned
+// nodes, the page-visible machine state sampled four times a second, and the window to read the
+// rotate function's log for.
 //   node packages/infra/scripts/rotation-probe-busy.ts
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
-import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { chromium, type Page } from "@playwright/test";
-import { maskAccount } from "./mask.ts";
+import { maskMicrovmIds, maskSecrets } from "../../fleet/src/mask.ts";
+import { operatorClients, stackOutputs } from "../../fleet/src/operator.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-const cfn = new CloudFormationClient({ region });
-const out = async (stack: string) =>
-  Object.fromEntries(
-    (
-      (await cfn.send(new DescribeStacksCommand({ StackName: stack }))).Stacks?.[0]?.Outputs ?? []
-    ).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-  );
-const core = await out("TabframeCore");
-const fleet = await out("TabframeFleet");
+const core = await stackOutputs("TabframeCore");
+const fleet = await stackOutputs("TabframeFleet");
 const origin = core.WebOrigin ?? "";
 const t0 = Date.now();
 const stamp = () => `${((Date.now() - t0) / 1000).toFixed(2)}s`;
-const mask = (s: string) => maskAccount(s).replace(/microvm-[0-9a-f-]{36}/g, "<microvm-id>");
+const mask = (s: string) => maskMicrovmIds(maskSecrets(s));
 
 type Sample = { gen: string; machine: string; banner: string | null; exec: string; state: unknown };
 async function sample(page: Page): Promise<Sample> {
   return page.evaluate(() => {
     const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? "";
     const banner = document.getElementById("machineBanner");
-    const tf = (
-      window as unknown as {
-        tabframe?: { state: { machine: unknown; sleeping: unknown; rotation: unknown } };
-      }
-    ).tabframe;
+    const tf = window.tabframe;
     return {
       gen: text("#gen"),
       machine: text("#machine"),
@@ -83,19 +69,13 @@ const sampler = setInterval(() => {
 }, 250);
 
 const rotateStarted = new Date();
-const lambda = new LambdaClient({ region });
-const invoked = lambda.send(
-  new InvokeCommand({
-    FunctionName: fleet.RotateFunctionName ?? "tabframe-rotate",
-    InvocationType: "RequestResponse",
-    Payload: new TextEncoder().encode(JSON.stringify({ reason: "probe-busy" })),
-  }),
-);
+const { invoker } = operatorClients();
+const invoked = invoker.invokeSync(fleet.RotateFunctionName ?? "tabframe-rotate", {
+  reason: "probe-busy",
+});
 console.log(`${stamp()} rotate invoked`);
 const result = await invoked;
-console.log(
-  `${stamp()} rotate returned: ${mask(new TextDecoder().decode(result.Payload ?? new Uint8Array())).slice(0, 200)}`,
-);
+console.log(`${stamp()} rotate returned: ${mask(JSON.stringify(result)).slice(0, 200)}`);
 await page.waitForTimeout(40_000);
 clearInterval(sampler);
 for (const l of log) console.log(mask(l));

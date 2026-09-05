@@ -1,19 +1,13 @@
 // What a dashboard sees across a rotation: the first snapshot from the successor, as a browser
-// would receive it (used to chase an "asleep" banner the demo saw after every rotation, WP4.4).
+// would receive it.
 //   node packages/infra/scripts/rotation-probe.ts
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
-import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
+import { maskSecrets } from "../../fleet/src/mask.ts";
+import { operatorClients, stackOutputs } from "../../fleet/src/operator.ts";
 import { fetchSession, socketProtocols } from "../../node/src/session.ts";
-import { maskAccount } from "./mask.ts";
+import { sleep } from "./_runbook.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-const cfn = new CloudFormationClient({ region });
-const r = await cfn.send(new DescribeStacksCommand({ StackName: "TabframeFleet" }));
-const out = Object.fromEntries(
-  (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-);
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+const out = await stackOutputs("TabframeFleet");
 const t0 = Date.now();
 const stamp = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
 
@@ -40,7 +34,7 @@ async function watch(label: string): Promise<{ generation: number; close: () => 
     }
   };
   ws.onclose = (ev) =>
-    console.log(`${stamp()} [${label}] closed ${ev.code} ${maskAccount(ev.reason)}`);
+    console.log(`${stamp()} [${label}] closed ${ev.code} ${maskSecrets(ev.reason)}`);
   const ping = setInterval(() => {
     if (ws.readyState === ws.OPEN)
       ws.send(JSON.stringify({ t: "ping", v: PROTOCOL_VERSION, gen: session.generation }));
@@ -57,14 +51,10 @@ async function watch(label: string): Promise<{ generation: number; close: () => 
 const before = await watch("before");
 await sleep(3000);
 console.log(`${stamp()} invoking rotate`);
-const lambda = new LambdaClient({ region });
-const invoked = lambda.send(
-  new InvokeCommand({
-    FunctionName: out.RotateFunctionName ?? "tabframe-rotate",
-    InvocationType: "RequestResponse",
-    Payload: new TextEncoder().encode(JSON.stringify({ reason: "probe" })),
-  }),
-);
+const { invoker } = operatorClients();
+const invoked = invoker.invokeSync(out.RotateFunctionName ?? "tabframe-rotate", {
+  reason: "probe",
+});
 // Reconnect as a browser would once told to, and keep asking the session until it moves on.
 await sleep(8000);
 for (let i = 0; i < 12; i++) {

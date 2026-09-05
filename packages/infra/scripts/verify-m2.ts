@@ -1,24 +1,27 @@
-// M2 verification runbook (plan WP2.7): the machine as a general-purpose computer, on AWS. A
-// reviewer's path, driven by a browser: edit the Mandelbrot source in the page, compile it there,
-// launch it, and watch the cluster run it; run word count over Moby-Dick and check the top-K
-// against the goldens; make a program fault and watch the execution fail and the machine carry on.
+// M2 verification runbook: the machine as a general-purpose computer, on AWS. A reviewer's path,
+// driven by a browser: edit the Mandelbrot source in the page, compile it there, launch it, and
+// watch the cluster run it; run word count over Moby-Dick and check the top-K against the goldens;
+// make a program fault and watch the execution fail and the machine carry on.
 //   node packages/infra/scripts/verify-m2.ts [--tabs 3] [--timeout 900]
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { type Browser, chromium, type Page } from "@playwright/test";
-import { decodeBars, PROTOCOL_VERSION } from "@tabframe/protocol";
-import { fetchSession, type Session, socketProtocols } from "../../node/src/session.ts";
-import { maskAccount } from "./mask.ts";
+import { decodeBars } from "@tabframe/protocol";
+import { stackOutputs } from "../../fleet/src/operator.ts";
+import {
+  argNumber,
+  awaitSession,
+  type Ev,
+  observe,
+  openLendingTabs,
+  record,
+  sleep,
+  summary,
+  until,
+} from "./_runbook.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-const arg = (name: string, fallback: number): number => {
-  const i = process.argv.indexOf(name);
-  const v = i > 0 ? Number(process.argv[i + 1]) : Number.NaN;
-  return Number.isFinite(v) ? v : fallback;
-};
-const tabs = arg("--tabs", 3);
-const timeoutS = arg("--timeout", 900);
+const tabs = argNumber("--tabs", 3);
+const timeoutS = argNumber("--timeout", 900);
 const root = path.resolve(import.meta.dirname, "../../..");
 const wordGoldens = JSON.parse(
   readFileSync(path.join(root, "programs/wordcount/goldens.json"), "utf8"),
@@ -26,68 +29,20 @@ const wordGoldens = JSON.parse(
   params: Record<string, unknown>;
   final: { hash: string; bars: Array<{ label: string; value: number }> };
 };
-
-const results: Array<{ check: string; result: string; pass: boolean | null }> = [];
-function record(check: string, result: string, pass: boolean | null = null): void {
-  results.push({ check, result, pass });
-  console.log(`${pass === null ? "·" : pass ? "✓" : "✗"} ${check}: ${maskAccount(result)}`);
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 
-const cfn = new CloudFormationClient({ region });
-async function outputs(stack: string): Promise<Record<string, string>> {
-  const r = await cfn.send(new DescribeStacksCommand({ StackName: stack }));
-  return Object.fromEntries(
-    (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-  );
-}
-const fleet = await outputs("TabframeFleet");
-const core = await outputs("TabframeCore");
+const fleet = await stackOutputs("TabframeFleet");
+const core = await stackOutputs("TabframeCore");
 const webOrigin = core.WebOrigin ?? "";
 const sessionUrl = fleet.SessionUrl ?? "";
 if (!webOrigin || !sessionUrl) throw new Error("stack outputs missing; deploy first");
 
-async function session(): Promise<Session & { kind: "on" }> {
-  for (let i = 0; i < 60; i++) {
-    const s = await fetchSession(sessionUrl, (u) => fetch(u));
-    if (s.kind === "on") return s;
-    if (s.kind === "off") throw new Error("the machine is off; run `mise run up`");
-    await sleep(s.retryAfterMs);
-  }
-  throw new Error("no control plane came up");
-}
-const on = await session();
+const on = await awaitSession(sessionUrl);
 record("session", `generation ${on.generation}`, true);
 
 // ---- watch the machine ---------------------------------------------------------------------------
-type Ev = { t: string; [k: string]: unknown };
-const events: Ev[] = [];
-const ws = new WebSocket(`${on.endpoint}/observer`, socketProtocols(on.token));
-await new Promise<void>((resolve, reject) => {
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ t: "subscribe", v: PROTOCOL_VERSION, gen: on.generation }));
-    resolve();
-  };
-  ws.onerror = () => reject(new Error("observer socket failed"));
-});
-ws.onmessage = (m) => events.push(JSON.parse(String(m.data)) as Ev);
-const ping = setInterval(() => {
-  if (ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify({ t: "ping", v: PROTOCOL_VERSION, gen: on.generation }));
-  }
-}, 1_500);
-const until = async (pred: () => boolean, ms: number, what: string): Promise<boolean> => {
-  const deadline = Date.now() + ms;
-  while (!pred()) {
-    if (Date.now() > deadline) {
-      record(what, "timed out", false);
-      return false;
-    }
-    await sleep(500);
-  }
-  return true;
-};
+const obs = await observe(on);
+const { events } = obs;
 const started = () =>
   events.filter((e) => e.t === "executionStarted") as Array<
     Ev & { execution: { executionId: string; programName: string; human: boolean } }
@@ -96,7 +51,7 @@ const started = () =>
 // ---- the page: tabs lending CPU ---------------------------------------------------------------------
 const browser: Browser = await chromium.launch();
 // A killed run must not leave headless browsers lending nodes: they hold sockets the endpoint
-// counts, and the next run cannot connect (found the hard way, WP2.7).
+// counts, and the next run cannot connect.
 function closeAndExit(code: number, why: unknown): void {
   if (why) console.error(`  [verify-m2] ${String(why).slice(0, 300)}`);
   void browser.close().finally(() => process.exit(code));
@@ -106,29 +61,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 process.on("uncaughtException", (err) => closeAndExit(1, err));
 process.on("unhandledRejection", (err) => closeAndExit(1, err));
-const pages: Page[] = [];
-for (let i = 0; i < tabs; i++) {
-  const page = await browser.newPage();
-  page.on("pageerror", (err) => console.log(`  [tab] ${String(err).slice(0, 140)}`));
-  // The machine rotates on its own every hour; a tab that opens mid-rotation waits for the new
-  // control plane, so give it room and reload once rather than failing the run.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await page.goto(webOrigin, { waitUntil: "domcontentloaded" });
-    try {
-      await page.waitForFunction(
-        () => (document.querySelector("#machine")?.textContent ?? "").includes("live"),
-        undefined,
-        { timeout: 120_000 },
-      );
-      break;
-    } catch (err) {
-      if (attempt === 1) throw err;
-      console.log("  [verify-m2] the page was not live; reloading");
-    }
-  }
-  await page.locator("#spawn1").click({ timeout: 30_000 });
-  pages.push(page);
-}
+const pages: Page[] = await openLendingTabs(browser, webOrigin, tabs, {
+  liveTimeoutMs: 120_000,
+  reloadOnce: true,
+  label: "verify-m2",
+  onPageError: (_, err) => console.log(`  [tab] ${String(err).slice(0, 140)}`),
+});
 const editor = pages[0] as Page;
 await until(() => events.filter((e) => e.t === "nodeJoined").length >= tabs, 60_000, "tabs joined");
 record("tabs lending CPU", `${tabs} tabs, ${tabs * 2} nodes`, true);
@@ -344,12 +282,6 @@ record(
   movedOn,
 );
 
-clearInterval(ping);
-ws.close();
+obs.close();
 await browser.close();
-const passed = results.filter((r) => r.pass === true).length;
-const failedChecks = results.filter((r) => r.pass === false).length;
-console.log(
-  `\n${passed} passed, ${failedChecks} failed, ${results.length - passed - failedChecks} informational; ${((Date.now() - t0) / 1000).toFixed(1)} s`,
-);
-process.exit(failedChecks ? 1 : 0);
+summary(t0);

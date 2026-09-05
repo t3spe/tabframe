@@ -1,44 +1,31 @@
-// M3 verification runbook (plan WP3.5): a real rotation on the deployed machine with a render in
-// flight and a few hundred simulated clients, measuring the churn — how long the cluster is
-// short-handed — and checking the session function stayed under the account's concurrency with no
-// throttles. Tokens and account ids never reach stdout.
+// M3 verification runbook: a real rotation on the deployed machine with a render in flight and a
+// few hundred simulated clients, measuring the churn — how long the cluster is short-handed — and
+// checking the session function stayed under the account's concurrency with no throttles. Tokens
+// and account ids never reach stdout.
 //   node packages/infra/scripts/verify-m3.ts [--clients 250] [--tabs 2] [--timeout 900]
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
-import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { chromium } from "@playwright/test";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import WebSocketImpl from "ws";
-import { fetchSession, type Session, socketProtocols } from "../../node/src/session.ts";
-import { maskAccount } from "./mask.ts";
+import { operatorClients, stackOutputs } from "../../fleet/src/operator.ts";
+import { socketProtocols } from "../../node/src/session.ts";
+import {
+  argNumber,
+  awaitSession,
+  observe,
+  openLendingTabs,
+  record,
+  sleep,
+  summary,
+} from "./_runbook.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-const arg = (name: string, fallback: number): number => {
-  const i = process.argv.indexOf(name);
-  const v = i > 0 ? Number(process.argv[i + 1]) : Number.NaN;
-  return Number.isFinite(v) ? v : fallback;
-};
-const clientCount = arg("--clients", 250);
-const tabCount = arg("--tabs", 2);
-const timeoutS = arg("--timeout", 900);
-
-const results: Array<{ check: string; result: string; pass: boolean | null }> = [];
-function record(check: string, result: string, pass: boolean | null = null): void {
-  results.push({ check, result, pass });
-  console.log(`${pass === null ? "·" : pass ? "✓" : "✗"} ${check}: ${maskAccount(result)}`);
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const clientCount = argNumber("--clients", 250);
+const tabCount = argNumber("--tabs", 2);
+const timeoutS = argNumber("--timeout", 900);
 const t0 = Date.now();
 
-const cfn = new CloudFormationClient({ region });
-async function outputs(stack: string): Promise<Record<string, string>> {
-  const r = await cfn.send(new DescribeStacksCommand({ StackName: stack }));
-  return Object.fromEntries(
-    (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-  );
-}
-const fleet = await outputs("TabframeFleet");
-const core = await outputs("TabframeCore");
+const fleet = await stackOutputs("TabframeFleet");
+const core = await stackOutputs("TabframeCore");
 const sessionUrl = fleet.SessionUrl ?? "";
 const rotateFunction = fleet.RotateFunctionName ?? "";
 const sessionFunction = fleet.SessionFunctionName ?? "";
@@ -46,43 +33,15 @@ const webOrigin = core.WebOrigin ?? "";
 if (!sessionUrl || !rotateFunction) throw new Error("stack outputs missing; deploy first");
 
 // ---- 1. the machine is up ------------------------------------------------------------------------
-async function session(): Promise<Session & { kind: "on" }> {
-  for (let i = 0; i < 60; i++) {
-    const s = await fetchSession(sessionUrl, (u) => fetch(u));
-    if (s.kind === "on") return s;
-    if (s.kind === "off") throw new Error("the machine is off; run `mise run up`");
-    await sleep(s.retryAfterMs);
-  }
-  throw new Error("no control plane came up");
-}
-const before = await session();
+const before = await awaitSession(sessionUrl);
 record("session before", `generation ${before.generation}`, true);
 
 // ---- 2. a render in flight, from real browser tabs -------------------------------------------------
 const browser = await chromium.launch();
-for (let i = 0; i < tabCount; i++) {
-  const page = await browser.newPage();
-  await page.goto(webOrigin, { waitUntil: "domcontentloaded" });
-  await page.locator("#machine").filter({ hasText: /live/ }).waitFor({ timeout: 60_000 });
-  await page.locator("#spawn1").click({ timeout: 30_000 });
-}
+await openLendingTabs(browser, webOrigin, tabCount);
 
-type Ev = { t: string; [k: string]: unknown };
-const events: Ev[] = [];
-const observer = new WebSocket(`${before.endpoint}/observer`, socketProtocols(before.token));
-await new Promise<void>((resolve, reject) => {
-  observer.onopen = () => {
-    observer.send(JSON.stringify({ t: "subscribe", v: PROTOCOL_VERSION, gen: before.generation }));
-    resolve();
-  };
-  observer.onerror = () => reject(new Error("observer socket failed"));
-});
-observer.onmessage = (m) => events.push(JSON.parse(String(m.data)) as Ev);
-const ping = setInterval(() => {
-  if (observer.readyState === observer.OPEN) {
-    observer.send(JSON.stringify({ t: "ping", v: PROTOCOL_VERSION, gen: before.generation }));
-  }
-}, 1_500);
+const watching = await observe(before);
+const { events } = watching;
 
 const tiles = () => events.filter((e) => e.t === "taskDone").length;
 const deadline = Date.now() + timeoutS * 1_000;
@@ -91,16 +50,13 @@ record("render in flight", `${tiles()} tiles landed before the rotation`, tiles(
 
 // ---- 3. a few hundred simulated clients ------------------------------------------------------------
 // Paced at four a second: the endpoint throttles bursts of upgrades (M0 verification).
-const sockets: WebSocket[] = [];
+const sockets: WebSocketImpl[] = [];
 const closes: Array<{ at: number; code: number; delayMs: number }> = [];
-const beats = new Map<WebSocket, ReturnType<typeof setInterval>>();
+const beats = new Map<WebSocketImpl, ReturnType<typeof setInterval>>();
 let opened = 0;
 let socketErrors = 0;
 for (let i = 0; i < clientCount; i++) {
-  const ws = new WebSocketImpl(
-    `${before.endpoint}/node`,
-    socketProtocols(before.token),
-  ) as unknown as WebSocket;
+  const ws = new WebSocketImpl(`${before.endpoint}/node`, socketProtocols(before.token));
   ws.onopen = () => {
     opened++;
     ws.send(
@@ -118,7 +74,7 @@ for (let i = 0; i < clientCount; i++) {
     beats.set(
       ws,
       setInterval(() => {
-        if (ws.readyState !== ws.OPEN) return;
+        if (ws.readyState !== WebSocketImpl.OPEN) return;
         ws.send(
           JSON.stringify({
             t: "heartbeat",
@@ -151,7 +107,7 @@ for (let i = 0; i < clientCount; i++) {
   if (i % 4 === 3) await sleep(1_000);
 }
 await sleep(3_000);
-const live = sockets.filter((ws) => ws.readyState === ws.OPEN).length;
+const live = sockets.filter((ws) => ws.readyState === WebSocketImpl.OPEN).length;
 // The endpoint answers 429 beyond a concurrency ceiling; what matters for the drain measurement
 // is how many clients are actually connected when the rotation starts, not how many we asked for.
 record(
@@ -161,18 +117,10 @@ record(
 );
 
 // ---- 4. the rotation --------------------------------------------------------------------------------
-const lambda = new LambdaClient({ region });
+const { invoker } = operatorClients();
 const rotatedAt = Date.now();
-const invocation = await lambda.send(
-  new InvokeCommand({
-    FunctionName: rotateFunction,
-    InvocationType: "RequestResponse",
-    Payload: new TextEncoder().encode(JSON.stringify({ reason: "verify-m3" })),
-  }),
-);
-const rotateResult = JSON.parse(
-  new TextDecoder().decode(invocation.Payload ?? new Uint8Array()),
-) as {
+const rotateResult = ((await invoker.invokeSync(rotateFunction, { reason: "verify-m3" })) ??
+  {}) as {
   action?: string;
   generation?: number;
   drained?: number;
@@ -198,31 +146,17 @@ record(
   live === 0 ? (rotateResult.drained ?? 0) > 0 : rotating.length >= live * 0.9 && spread > 0,
 );
 for (const ws of sockets) ws.close();
-clearInterval(ping);
-observer.close();
+watching.close();
 
 // ---- 5. the churn: how long until the render is running again ----------------------------------------
-const after = await session();
+const after = await awaitSession(sessionUrl);
 record(
   "session after",
   `generation ${after.generation} (was ${before.generation})`,
   after.generation > before.generation,
 );
-const watching = new WebSocket(`${after.endpoint}/observer`, socketProtocols(after.token));
-const afterEvents: Ev[] = [];
-await new Promise<void>((resolve, reject) => {
-  watching.onopen = () => {
-    watching.send(JSON.stringify({ t: "subscribe", v: PROTOCOL_VERSION, gen: after.generation }));
-    resolve();
-  };
-  watching.onerror = () => reject(new Error("observer socket failed after the rotation"));
-});
-watching.onmessage = (m) => afterEvents.push(JSON.parse(String(m.data)) as Ev);
-const ping2 = setInterval(() => {
-  if (watching.readyState === watching.OPEN) {
-    watching.send(JSON.stringify({ t: "ping", v: PROTOCOL_VERSION, gen: after.generation }));
-  }
-}, 1_500);
+const watchingAfter = await observe(after);
+const afterEvents = watchingAfter.events;
 const churnDeadline = Date.now() + 180_000;
 while (!afterEvents.some((e) => e.t === "taskDone") && Date.now() < churnDeadline) await sleep(250);
 const firstTileAfter = afterEvents.find((e) => e.t === "taskDone");
@@ -240,12 +174,11 @@ record(
   `${snapshot?.nodes?.length ?? 0} nodes on the new control plane (the browser tabs came back)`,
   (snapshot?.nodes?.length ?? 0) > 0,
 );
-clearInterval(ping2);
-watching.close();
+watchingAfter.close();
 await browser.close();
 
 // ---- 6. what CloudWatch says about the session function ------------------------------------------
-const cw = new CloudWatchClient({ region });
+const cw = new CloudWatchClient({});
 async function stat(metric: string, statistic: "Maximum" | "Sum"): Promise<number> {
   const r = await cw.send(
     new GetMetricStatisticsCommand({
@@ -273,9 +206,4 @@ record(
   concurrent < 10 && throttles === 0,
 );
 
-const passed = results.filter((r) => r.pass === true).length;
-const failed = results.filter((r) => r.pass === false).length;
-console.log(
-  `\n${passed} passed, ${failed} failed, ${results.length - passed - failed} informational; ${((Date.now() - t0) / 1000).toFixed(1)} s`,
-);
-process.exit(failed ? 1 : 0);
+summary(t0);

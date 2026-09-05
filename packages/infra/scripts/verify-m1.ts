@@ -1,28 +1,30 @@
-// M1 verification runbook (plan WP1.10): the deployed machine renders a Mandelbrot frame with
-// browser tabs only, survives "kill half" mid-frame, and every tile hashes to the golden. Also
-// checks that tab uploads reached the bucket (a tile reads back through CloudFront with the right
-// hash) and that the control plane wrote its snapshot to S3. Prints one line per check; tokens
-// and account ids never reach stdout. Results are printed for the operator.
+// M1 verification runbook: the deployed machine renders a Mandelbrot frame with browser tabs only,
+// survives "kill half" mid-frame, and every tile hashes to the golden. Also checks that tab uploads
+// reached the bucket (a tile reads back through CloudFront with the right hash) and that the
+// control plane wrote its snapshot to S3. Prints one line per check; tokens and account ids never
+// reach stdout.
 //   node packages/infra/scripts/verify-m1.ts [--tabs 3] [--kill-at 120] [--timeout 600]
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { chromium } from "@playwright/test";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
-import { fetchSession, type Session, socketProtocols } from "../../node/src/session.ts";
-import { maskAccount } from "./mask.ts";
+import { stackOutputs } from "../../fleet/src/operator.ts";
+import {
+  argNumber,
+  awaitSession,
+  type Ev,
+  observe,
+  openLendingTabs,
+  record,
+  sleep,
+  summary,
+} from "./_runbook.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-const arg = (name: string, fallback: string): string => {
-  const i = process.argv.indexOf(name);
-  return i > 0 ? (process.argv[i + 1] ?? fallback) : fallback;
-};
-const tabs = Number(arg("--tabs", "3"));
-const killAt = Number(arg("--kill-at", "120"));
-const timeoutS = Number(arg("--timeout", "600"));
+const tabs = argNumber("--tabs", 3);
+const killAt = argNumber("--kill-at", 120);
+const timeoutS = argNumber("--timeout", 600);
 const root = path.resolve(import.meta.dirname, "../../..");
 const golden = JSON.parse(
   readFileSync(path.join(root, "programs/mandelbrot/goldens.json"), "utf8"),
@@ -31,26 +33,12 @@ const golden = JSON.parse(
   taskCount: number;
   hashes: string[];
 };
-
-const results: Array<{ check: string; result: string; pass: boolean | null }> = [];
-function record(check: string, result: string, pass: boolean | null = null): void {
-  results.push({ check, result, pass });
-  console.log(`${pass === null ? "·" : pass ? "✓" : "✗"} ${check}: ${maskAccount(result)}`);
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
 
 // ---- outputs -------------------------------------------------------------------------------------
-const cfn = new CloudFormationClient({ region });
-async function outputs(stack: string): Promise<Record<string, string>> {
-  const r = await cfn.send(new DescribeStacksCommand({ StackName: stack }));
-  return Object.fromEntries(
-    (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-  );
-}
-const fleet = await outputs("TabframeFleet");
-const core = await outputs("TabframeCore");
+const fleet = await stackOutputs("TabframeFleet");
+const core = await stackOutputs("TabframeCore");
 const sessionUrl = fleet.SessionUrl ?? "";
 const webOrigin = core.WebOrigin ?? "";
 const snapshotBucket = core.SnapshotBucketName ?? "";
@@ -58,65 +46,16 @@ if (!sessionUrl || !webOrigin || !snapshotBucket)
   throw new Error("stack outputs missing; deploy first");
 
 // ---- 1. session ----------------------------------------------------------------------------------
-let session: Session = { kind: "off" };
-for (let i = 0; i < 60; i++) {
-  session = await fetchSession(sessionUrl, (u) => fetch(u));
-  if (session.kind === "on") break;
-  if (session.kind === "off") throw new Error("the machine is off; run `mise run up`");
-  await sleep(session.retryAfterMs);
-}
-if (session.kind !== "on") throw new Error("control plane did not come up");
+const on = await awaitSession(sessionUrl);
 record(
   "session",
-  `on, generation ${session.generation}, endpoint assigned, store base ${session.storeBase.includes("/blob") ? "under the web origin" : "elsewhere"}`,
+  `on, generation ${on.generation}, endpoint assigned, store base ${on.storeBase.includes("/blob") ? "under the web origin" : "elsewhere"}`,
   true,
 );
 
 // ---- 2. observer socket through the proxy --------------------------------------------------------
-type Ev = { t: string; [k: string]: unknown };
-const events: Ev[] = [];
-const waiters: Array<{ pred: (e: Ev) => boolean; resolve: (e: Ev) => void }> = [];
-const on = session;
-const ws = await new Promise<WebSocket>((resolve, reject) => {
-  const s = new WebSocket(`${on.endpoint}/observer`, socketProtocols(on.token));
-  s.onopen = () => {
-    s.send(JSON.stringify({ t: "subscribe", v: PROTOCOL_VERSION, gen: on.generation }));
-    resolve(s);
-  };
-  s.onerror = () => reject(new Error("observer socket failed"));
-  s.onmessage = (m) => {
-    const ev = JSON.parse(String(m.data)) as Ev;
-    events.push(ev);
-    for (const w of waiters.splice(0)) w.pred(ev) ? w.resolve(ev) : waiters.push(w);
-  };
-});
-const ping = setInterval(() => {
-  if (ws.readyState === ws.OPEN)
-    ws.send(JSON.stringify({ t: "ping", v: PROTOCOL_VERSION, gen: on.generation }));
-}, 1_500);
-const waitFor = (pred: (e: Ev) => boolean, ms: number, what: string) =>
-  new Promise<Ev>((resolve, reject) => {
-    const found = events.find(pred);
-    if (found) return resolve(found);
-    const timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `timed out waiting for ${what} (${events.length} events, last ${events.at(-1)?.t})`,
-          ),
-        ),
-      ms,
-    );
-    waiters.push({
-      pred,
-      resolve: (e) => {
-        clearTimeout(timer);
-        resolve(e);
-      },
-    });
-  });
-const send = (msg: Record<string, unknown>) =>
-  ws.send(JSON.stringify({ ...msg, v: PROTOCOL_VERSION, gen: on.generation }));
+const obs = await observe(on);
+const { events, waitFor, send } = obs;
 
 const snapshot = (await waitFor((e) => e.t === "snapshot", 15_000, "snapshot")) as Ev & {
   programs?: Array<{ name: string; view: string; bundle: string; addedAt?: number }>;
@@ -131,18 +70,9 @@ record(
 
 // ---- 3. browser tabs -----------------------------------------------------------------------------
 const browser = await chromium.launch();
-const pages = [];
-for (let i = 0; i < tabs; i++) {
-  const page = await browser.newPage();
-  page.on("pageerror", (err) =>
-    console.log(`  [tab ${i}] page error: ${String(err).slice(0, 120)}`),
-  );
-  await page.goto(webOrigin, { waitUntil: "domcontentloaded" });
-  // The page spawns one node once it is live; one more per tab makes two.
-  await page.locator("#machine").filter({ hasText: /live/ }).waitFor({ timeout: 60_000 });
-  await page.locator("#spawn1").click({ timeout: 30_000 });
-  pages.push(page);
-}
+await openLendingTabs(browser, webOrigin, tabs, {
+  onPageError: (i, err) => console.log(`  [tab ${i}] page error: ${String(err).slice(0, 120)}`),
+});
 const wanted = tabs * 2;
 const joinedAt = Date.now();
 while (events.filter((e) => e.t === "nodeJoined").length < wanted && Date.now() - joinedAt < 60_000)
@@ -227,8 +157,7 @@ if (outcome.t === "executionFailed") {
     `execution failed: ${String(outcome.reason)}; task failures: ${reasons.join(" | ") || "none"}`,
     false,
   );
-  clearInterval(ping);
-  ws.close();
+  obs.close();
   await browser.close();
   process.exit(1);
 }
@@ -267,7 +196,7 @@ record(
 // ---- 6. the snapshot in S3 -----------------------------------------------------------------------
 // The bucket holds a snapshot every five seconds for a day, so a plain listing pages; ask for the
 // pointer and this generation's prefix directly.
-const s3 = new S3Client({ region });
+const s3 = new S3Client({});
 let latestSize = 0;
 let ageS = Number.NaN;
 try {
@@ -309,12 +238,6 @@ try {
   record("back to the default loop", String(err), false);
 }
 
-clearInterval(ping);
-ws.close();
+obs.close();
 await browser.close();
-const passed = results.filter((r) => r.pass === true).length;
-const failedChecks = results.filter((r) => r.pass === false).length;
-console.log(
-  `\n${passed} passed, ${failedChecks} failed, ${results.length - passed - failedChecks} informational; ${elapsed()}`,
-);
-process.exit(failedChecks ? 1 : 0);
+summary(t0);
