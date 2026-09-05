@@ -2,14 +2,21 @@
 // virtual nodes and observers, with a fake store and the real Mandelbrot program running through
 // the sandbox. `process.ts` is the process around the core, `properties.ts` the checks, and this
 // file the world they share and the phases of a run: chaos, calm, and the optional fleet drill.
+
+import type { Effect, Event } from "@tabframe/core";
+import {
+  type ConnRole,
+  DEFAULT_TASK_LIMITS,
+  type ExecutionRecord,
+  type Harness,
+  harness,
+  type Ledger,
+  seededRng,
+  stageTasks,
+  wanted,
+  YIELD_IDLE_MS,
+} from "@tabframe/core/testing";
 import type { FsManifest, TaskLimits } from "@tabframe/protocol";
-import type { Effect, Event } from "../src/events.ts";
-import { type Harness, harness } from "../src/harness.ts";
-import { seededRng } from "../src/interfaces.ts";
-import type { ConnRole, ExecutionRecord, Ledger } from "../src/ledger.ts";
-import { DEFAULT_TASK_LIMITS, YIELD_IDLE_MS } from "../src/policy.ts";
-import { wanted } from "../src/scheduler.ts";
-import { stageTasks } from "../src/tasks.ts";
 import {
   Chaos,
   type ChaosWorld,

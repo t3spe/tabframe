@@ -16,9 +16,9 @@ export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
 }
 
 /**
- * A task released at its deadline gets a longer one next time (WP8.3): doubled per release, three
- * times at most (eight times the first) and never past ten minutes — so a legitimately slow program
- * is not killed at the floor on every node for ever, while a program that never returns still fails
+ * A task released at its deadline gets a longer one next time: doubled per release, three times at
+ * most (eight times the first) and never past ten minutes — so a legitimately slow program is not
+ * killed at the floor on every node for ever, while a program that never returns still fails
  * within about a minute (2 + 4 + 8 + 16 + 16 + 16 s at the floor) rather than after ten.
  */
 export function deadlineFor(task: TaskRecord, base: number): number {
@@ -85,8 +85,8 @@ function eligible(ledger: Ledger, task: TaskRecord, nodeId: string): boolean {
   if (holds(task, nodeId) || answered(task, nodeId)) return false;
   if (task.contestedRounds > 0 && reported(task, nodeId) && freshNodeFree(ledger, task))
     return false;
-  // Work a node released at its deadline goes to someone else while someone else is free (WP8.1):
-  // fill runs from the releasing node's own report, and would hand the task straight back.
+  // Work a node released at its deadline goes to someone else while someone else is free: fill
+  // runs from the releasing node's own report, and would hand the task straight back.
   if (releasedBy(task, nodeId) && otherNodeFree(ledger, task, nodeId)) return false;
   return true;
 }
@@ -135,7 +135,7 @@ export function pickTask(
 /** Give every node with a free slot its next task (design §6.3). Deterministic: nodes by id. */
 export function fill(ledger: Ledger, now: number): Effect[] {
   // A control plane that has handed its ledger over must not assign anything (design §9.4), and
-  // a paused one assigns nothing new while the editor tab holding it lives (WP6.4).
+  // a paused one assigns nothing new while the editor tab holding it lives.
   if (ledger.meta.phase !== "active" || ledger.session.pausedBy !== null) return [];
   const effects: Effect[] = [];
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;

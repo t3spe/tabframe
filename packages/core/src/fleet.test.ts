@@ -89,8 +89,8 @@ describe("the cloud-core fleet", () => {
     ]);
     expect(h.ledger.cores.has("microvm-a")).toBe(false);
     expect(h.ledger.cores.has("microvm-b")).toBe(true);
-    // The replacement is asked for in the same tick and counted until it is acknowledged (WP8.1):
-    // a slow RunMicrovm used to be asked twice, a tick apart.
+    // The replacement is asked for in the same tick and counted until it is acknowledged, so a
+    // slow RunMicrovm is not asked twice, a tick apart.
     expect(kinds(effects)).toContain("launchCore");
     h.advance(CLOUD_CORE_LAUNCH_GAP_MS);
     expect(kinds(h.tick())).not.toContain("launchCore");

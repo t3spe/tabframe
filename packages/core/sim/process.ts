@@ -3,6 +3,8 @@
 // and presign against the fake store, hands launchCore and terminateCore to the fake fleet, and
 // feeds every event through the harness, hashing the event and its effects into the trace.
 import { createHash } from "node:crypto";
+import { beginHandover, drain, type Effect, type Event } from "@tabframe/core";
+import type { ConnRole, FetchPurpose, Harness, Ledger } from "@tabframe/core/testing";
 import {
   decodeStageSpec,
   encode,
@@ -10,10 +12,6 @@ import {
   PROTOCOL_VERSION,
   type StageSpec,
 } from "@tabframe/protocol";
-import type { Effect, Event } from "../src/events.ts";
-import { beginHandover, drain } from "../src/handover.ts";
-import type { Harness } from "../src/harness.ts";
-import type { ConnRole, FetchPurpose, Ledger } from "../src/ledger.ts";
 import type { Timeline } from "./clock.ts";
 import type { FakeStore } from "./store.ts";
 import { type Client, count, type Realism, type SimStats, type Socket } from "./types.ts";

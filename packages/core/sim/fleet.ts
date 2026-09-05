@@ -3,9 +3,12 @@
 // — virtual machines that take a couple of seconds to boot, dial in as ordinary nodes named
 // `core-<microvmId>`, and stop existing when their VM is destroyed. packages/control-plane/src/cores.ts
 // is the real thing. The §6.8 policy checks live in properties.ts.
-import type { Event } from "../src/events.ts";
-import type { Ledger } from "../src/ledger.ts";
-import { DESIRED_CLOUD_CORES, SLEEP_AFTER_NO_OBSERVER_MS } from "../src/policy.ts";
+import type { Event } from "@tabframe/core";
+import {
+  DESIRED_CLOUD_CORES,
+  type Ledger,
+  SLEEP_AFTER_NO_OBSERVER_MS,
+} from "@tabframe/core/testing";
 import type { NodeProfile, VirtualNode } from "./node.ts";
 import type { VirtualObserver } from "./observer.ts";
 import type { WorldApi } from "./types.ts";

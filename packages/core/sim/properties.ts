@@ -1,19 +1,27 @@
 // The properties of design §6.10 and §6.8 as checks over the ledger, each event, and its effects:
 // after every event, at the end of every frame, and at the end of the run. The fleet policy's
 // bookkeeping (sleep transitions, launch gaps, cores adrift) lives here too.
-import { canonicalStringify, type FsManifest, LIMITS } from "@tabframe/protocol";
-import type { Effect, Event } from "../src/events.ts";
-import { checkInvariants } from "../src/invariants.ts";
-import type { ExecutionRecord, Ledger, TaskRecord } from "../src/ledger.ts";
+
+import {
+  adoptLedger,
+  deserializeLedger,
+  type Effect,
+  type Event,
+  serializeLedger,
+} from "@tabframe/core";
 import {
   CLOUD_CORE_LAUNCH_GAP_MS,
+  checkInvariants,
   DESIRED_CLOUD_CORES,
+  type ExecutionRecord,
+  type Ledger,
   SLEEP_AFTER_NO_INTERACTION_MS,
   SLEEP_AFTER_NO_OBSERVER_MS,
-} from "../src/policy.ts";
-import { wanted } from "../src/scheduler.ts";
-import { adoptLedger, deserializeLedger, serializeLedger } from "../src/snapshot.ts";
-import { stageTasks } from "../src/tasks.ts";
+  stageTasks,
+  type TaskRecord,
+  wanted,
+} from "@tabframe/core/testing";
+import { canonicalStringify, type FsManifest, LIMITS } from "@tabframe/protocol";
 import type { LoadedProgram } from "./program.ts";
 import type { FakeStore } from "./store.ts";
 import { count, type SimStats } from "./types.ts";

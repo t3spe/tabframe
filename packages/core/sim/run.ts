@@ -4,7 +4,7 @@
 //                                 [--liar | --honest] [--drill] [--verbose] [--keep-going]
 //
 // Default: seeds 1..3 of the normal scenario over whole frames. `--long` runs the long scenario
-// over seeds 1..1000 (the WP1.9 acceptance). `--tiles N` keeps only the N outermost tiles of each
+// over seeds 1..1000 (the long-run acceptance). `--tiles N` keeps only the N outermost tiles of each
 // frame, which is what the test suite uses. Exit status 1 names the first failing seed.
 import { computeCacheStats } from "./program.ts";
 import { runSim, type SimReport } from "./sim.ts";

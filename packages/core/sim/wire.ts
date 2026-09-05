@@ -1,7 +1,8 @@
 // What the simulation prints about the wire: close codes by name, and one line per event and
 // effect for the trace and the verbose log.
+
+import type { Effect, Event } from "@tabframe/core";
 import { CLOSE } from "@tabframe/protocol";
-import type { Effect, Event } from "../src/events.ts";
 
 export const closeName = (code: number): string =>
   Object.entries(CLOSE).find(([, c]) => c === code)?.[0] ?? String(code);

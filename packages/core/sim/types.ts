@@ -1,6 +1,7 @@
 // What the simulation's virtual clients see of the world, and the counters every run reports.
+
+import type { ConnRole } from "@tabframe/core/testing";
 import type { TaskLimits } from "@tabframe/protocol";
-import type { ConnRole } from "../src/ledger.ts";
 import type { LoadedProgram } from "./program.ts";
 import type { FakeStore } from "./store.ts";
 

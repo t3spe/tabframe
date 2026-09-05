@@ -5,6 +5,8 @@
 // the design names: clean leave, silent crash, freeze (no heartbeat, no compute), hidden tab, slow
 // hardware, the four commands, and a liar that returns consistent wrong bytes. With
 // `deadlineEnforced` it also gives a task back at its deadline, as the real orchestrator does.
+
+import { fromBase64 } from "@tabframe/core/testing";
 import {
   type Assign,
   byteLength,
@@ -18,7 +20,6 @@ import {
   RELEASED,
 } from "@tabframe/protocol";
 import { CachingBlobReader } from "@tabframe/sandbox";
-import { fromBase64 } from "../src/bytes.ts";
 import { compute } from "./program.ts";
 import { sha256 } from "./store.ts";
 import type { Client, Socket, Timer, WorldApi } from "./types.ts";
@@ -26,7 +27,7 @@ import { closeName } from "./wire.ts";
 
 export interface NodeProfile {
   hostId: string;
-  /** The launch token a cloud core shows in its hello (WP8.3). */
+  /** The launch token a cloud core shows in its hello. */
   coreToken?: string;
   kind: "tab" | "core";
   /** Compute-time multiplier: 1 is the reference machine, 3 is a slow one. */
