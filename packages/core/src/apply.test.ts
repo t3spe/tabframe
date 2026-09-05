@@ -1,64 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
 import fc from "fast-check";
-import { apply } from "./apply.ts";
 import type { Effect } from "./events.ts";
-import { createLedger, type Ledger } from "./ledger.ts";
-import { SOLICITED_RATE } from "./policy.ts";
+import { H, harness } from "./harness.ts";
+import type { Ledger } from "./ledger.ts";
+import { PRESIGN_BYTES_PER_MIN, SOLICITED_RATE } from "./policy.ts";
+
+/** The wire gate (design §6.2, §6.4, §8.4): handshakes, liveness, refusals, and budgets. */
 
 const GEN = 3;
-
-function harness() {
-  const ledger = createLedger(GEN, { storeBase: "https://cdn.test/blob" });
-  let now = 1_000_000;
-  const env = { v: PROTOCOL_VERSION, gen: GEN };
-  const api = {
-    ledger,
-    get now() {
-      return now;
-    },
-    advance(ms: number) {
-      now += ms;
-    },
-    connect(connId: string, role: "node" | "observer") {
-      return apply(ledger, { kind: "connected", connId, role }, now);
-    },
-    send(connId: string, body: Record<string, unknown>) {
-      return apply(
-        ledger,
-        { kind: "message", connId, raw: JSON.stringify({ ...env, ...body }) },
-        now,
-      );
-    },
-    raw(connId: string, raw: unknown) {
-      return apply(ledger, { kind: "message", connId, raw }, now);
-    },
-    disconnect(connId: string) {
-      return apply(ledger, { kind: "disconnected", connId }, now);
-    },
-    tick() {
-      return apply(ledger, { kind: "tick" }, now);
-    },
-    hello(connId: string, hostId = "h1", kind: "tab" | "core" = "tab") {
-      api.connect(connId, "node");
-      return api.send(connId, { t: "hello", hostId, kind, cores: 8, sandboxVersion: "1" });
-    },
-    subscribe(connId: string) {
-      api.connect(connId, "observer");
-      return api.send(connId, { t: "subscribe" });
-    },
-    heartbeat(connId: string, visible = true) {
-      return api.send(connId, {
-        t: "heartbeat",
-        visible,
-        queue: 0,
-        lastTaskMs: null,
-        tasksDone: 0,
-      });
-    },
-  };
-  return api;
-}
 
 const sends = (effects: Effect[], connId?: string) =>
   effects.filter((e) => e.kind === "send" && (connId === undefined || e.connId === connId));
@@ -181,7 +131,7 @@ describe("health from visibility", () => {
     expect(h.ledger.nodes.get("n1")?.health).toBe("throttled");
     expect(h.heartbeat("c1", false)).toEqual([]);
     // Health is announced at most every two seconds per node, and heartbeats faster than half the
-    // period are dropped (WP8.3): the flip back is announced once the window has passed.
+    // period are dropped: the flip back is announced once the window has passed.
     h.advance(2_000);
     expect(types(h.heartbeat("c1", true))).toEqual(["nodeHealth"]);
     expect(h.ledger.nodes.get("n1")?.health).toBe("fast");
@@ -230,7 +180,7 @@ describe("refusals", () => {
     }
   });
 
-  test("results and presigns have a bucket of their own: a burst passes, a flood does not (WP8.1)", () => {
+  test("results and presigns have a bucket of their own: a burst passes, a flood does not", () => {
     // A fast node on small tiles reports dozens of results a second, each after a presign; the
     // solicited bucket is wide enough for that and bounded for a node that floods presigns.
     const h = harness();
@@ -270,6 +220,65 @@ describe("refusals", () => {
       closedObserver = closes(g.send("o1", { t: "ping" }))[0];
     }
     expect(closedObserver).toMatchObject({ code: CLOSE.rateLimited });
+  });
+});
+
+describe("presign budgets", () => {
+  test("a connection's presigned bytes are a refilling budget", () => {
+    const h = harness();
+    h.hello("c1", "h1");
+    const hash = "b".repeat(64);
+    // Each item is at the protocol's cap; the minute's budget runs out after a bounded number of
+    // them, and comes back with the next minute — so an honest core rendering all day is never closed.
+    const perItem = LIMITS.maxOutputBytes;
+    const allowed = Math.floor(PRESIGN_BYTES_PER_MIN / perItem);
+    let closedAt = -1;
+    for (let i = 0; i < allowed + 2 && closedAt < 0; i++) {
+      const fx = h.send("c1", { t: "presign", items: [{ hash, size: perItem }] });
+      if (fx.some((e) => e.kind === "close")) closedAt = i;
+      else expect(fx.some((e) => e.kind === "presign")).toBe(true);
+    }
+    expect(closedAt).toBe(allowed);
+    h.hello("c2", "h2");
+    for (let i = 0; i < allowed; i++) {
+      expect(
+        h
+          .send("c2", { t: "presign", items: [{ hash, size: perItem }] })
+          .some((e) => e.kind === "presign"),
+      ).toBe(true);
+    }
+    h.advance(60_000);
+    expect(
+      h
+        .send("c2", { t: "presign", items: [{ hash, size: perItem }] })
+        .some((e) => e.kind === "presign"),
+    ).toBe(true);
+  });
+
+  test("a node over the machine budget gets an empty presign and stays connected; an observer gets an error", () => {
+    const h = harness();
+    h.subscribe("o1");
+    h.hello("c1", "h1");
+    h.ledger.session.presignItems.tokens = 0;
+    h.ledger.session.presignItems.refilledAt = h.now;
+    const node = h.send("c1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
+    expect(node).toEqual([
+      {
+        kind: "send",
+        connId: "c1",
+        msg: { t: "presigned", v: PROTOCOL_VERSION, gen: h.gen, urls: [] },
+      },
+    ]);
+    expect(node.some((e) => e.kind === "close")).toBe(false);
+    const obs = h.send("o1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
+    expect(obs.some((e) => e.kind === "send" && e.msg.t === "error")).toBe(true);
+    expect(obs.some((e) => e.kind === "close")).toBe(false);
+    // A connection over its own budget is still closed.
+    h.ledger.session.presignItems.tokens = 10_000;
+    const conn = h.ledger.conns.get("c1");
+    if (conn) conn.presignBytes.tokens = 0;
+    const closed = h.send("c1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
+    expect(closed.some((e) => e.kind === "close" && e.code === CLOSE.rateLimited)).toBe(true);
   });
 });
 

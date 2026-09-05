@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { CLOSE, type RotatingReason } from "@tabframe/protocol";
 import { beginHandover, drain, jitterWindowMs } from "./handover.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
-import { JITTER_FLOOR_MS } from "./policy.ts";
+import { HANDOVER_LEASE_MS, JITTER_FLOOR_MS } from "./policy.ts";
 import { adoptLedger, deserializeLedger } from "./snapshot.ts";
 
 /** The control plane's half of a rotation (design §9.4). */
@@ -51,6 +51,22 @@ describe("handover", () => {
     const second = beginHandover(h.ledger);
     expect(second.json).toBe(first.json);
     expect(second.generation).toBe(first.generation);
+  });
+
+  test("a control plane that handed over acts on nothing until drained, and comes back when the lease runs out", () => {
+    const h = harness({ defaultLoop: { bundle: BUNDLE, params: { preset: 0 } } });
+    h.subscribe("o1");
+    h.hello("c1", "h1");
+    h.addProgram("tiles");
+    expect(h.ledger.running).toBe("e1");
+    beginHandover(h.ledger, h.now);
+    expect(h.ledger.meta.phase).toBe("handing-over");
+    h.advance(1_000);
+    const quiet = h.tick();
+    expect(quiet.filter((e) => e.kind === "send" || e.kind === "launchCore")).toEqual([]);
+    h.advance(HANDOVER_LEASE_MS + 1);
+    h.tick();
+    expect(h.ledger.meta.phase).toBe("active");
   });
 });
 
