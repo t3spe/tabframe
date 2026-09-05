@@ -12,7 +12,7 @@ const env = { account: "123456789012", region: "us-west-2" };
 const PLACEHOLDER_EMAIL = "budget@example.invalid";
 
 function synth(budgetEmail?: string) {
-  const { app, core, image, fleet, web } = buildApp(
+  const { app, foundation, image, fleet, web } = buildApp(
     {
       env,
       budgetEmail: budgetEmail ?? null,
@@ -26,17 +26,17 @@ function synth(budgetEmail?: string) {
   );
   const assembly = app.synth();
   return {
-    core: Template.fromStack(core),
+    core: Template.fromStack(foundation),
     image: Template.fromStack(image),
     fleet: Template.fromStack(fleet),
     web: Template.fromStack(web),
     assembly,
-    coreStack: core,
+    foundationStack: foundation,
   };
 }
 
-describe("Core stack", () => {
-  const { core, coreStack } = synth();
+describe("Foundation stack (TabframeCore)", () => {
+  const { core, foundationStack } = synth();
 
   test("four private buckets, one with a one-year lifecycle and browser PUT CORS", () => {
     core.resourceCountIs("AWS::S3::Bucket", 4);
@@ -87,7 +87,7 @@ describe("Core stack", () => {
   test("without an address the budget is skipped with a warning and no placeholder leaks", () => {
     core.resourceCountIs("AWS::Budgets::Budget", 0);
     expect(JSON.stringify(core.toJSON())).not.toContain("@");
-    const warnings = Annotations.fromStack(coreStack).findWarning(
+    const warnings = Annotations.fromStack(foundationStack).findWarning(
       "*",
       Match.stringLikeRegexp("TABFRAME_BUDGET_EMAIL"),
     );

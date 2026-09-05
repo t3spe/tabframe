@@ -5,8 +5,8 @@ import type { Construct } from "constructs";
 import type { EnvOf, ROTATE_ENV, SESSION_ENV } from "../../fleet/src/env.ts";
 import { NAMES } from "../../fleet/src/names.ts";
 import { Canary } from "./canary.ts";
-import type { CoreStack } from "./core-stack.ts";
 import { fleetFunction } from "./fleet-function.ts";
+import type { FoundationStack } from "./foundation-stack.ts";
 import { grantMicrovmLauncher, grantMicrovmTokens, grantPassRole, grantPointer } from "./grants.ts";
 import type { ImageStack } from "./image-stack.ts";
 import { anyImageArn, functionArn, parameterArn, ruleArn } from "./names.ts";
@@ -14,7 +14,7 @@ import { anyImageArn, functionArn, parameterArn, ruleArn } from "./names.ts";
 export interface FleetStackProps extends cdk.StackProps {
   /** Where the alarms mail: the budget address, when configured. */
   alarmEmail?: string;
-  core: CoreStack;
+  foundation: FoundationStack;
   image: ImageStack;
   /** Directory holding packages/fleet (for the Lambda entry files). */
   fleetDir: string;
@@ -28,7 +28,7 @@ export class FleetStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: FleetStackProps) {
     super(scope, id, props);
-    const { core, image } = props;
+    const { foundation, image } = props;
     const iam = cdk.aws_iam;
     const pointerArn = parameterArn(this, NAMES.pointerParam);
 
@@ -36,8 +36,8 @@ export class FleetStack extends cdk.Stack {
     // needs the session URL, session needs only rotate's ARN.
     const sessionEnv: EnvOf<typeof SESSION_ENV> = {
       TABFRAME_POINTER_PARAM: NAMES.pointerParam,
-      TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
-      TABFRAME_WEB_ORIGIN: core.webOrigin,
+      TABFRAME_STORE_BASE: `${foundation.webOrigin}/blob`,
+      TABFRAME_WEB_ORIGIN: foundation.webOrigin,
       TABFRAME_ROTATE_FUNCTION: NAMES.rotateFunction,
     };
     // No reserved concurrency anywhere: the account's Lambda concurrency default of 10 must stay
@@ -70,9 +70,9 @@ export class FleetStack extends cdk.Stack {
       TABFRAME_IMAGE_ARN: image.imageArn,
       TABFRAME_CP_ROLE_ARN: image.controlPlaneRole.roleArn,
       TABFRAME_SESSION_URL: this.sessionUrl.url,
-      TABFRAME_STORE_BASE: `${core.webOrigin}/blob`,
-      TABFRAME_FLEET_SECRET_ARN: core.fleetSecret.secretArn,
-      TABFRAME_SNAPSHOT_BUCKET: core.snapshotBucket.bucketName,
+      TABFRAME_STORE_BASE: `${foundation.webOrigin}/blob`,
+      TABFRAME_FLEET_SECRET_ARN: foundation.fleetSecret.secretArn,
+      TABFRAME_SNAPSHOT_BUCKET: foundation.snapshotBucket.bucketName,
     };
     this.rotate = fleetFunction(this, "Rotate", {
       functionName: NAMES.rotateFunction,
@@ -92,8 +92,8 @@ export class FleetStack extends cdk.Stack {
     });
     grantPointer(this.rotate, pointerArn, "readwrite");
     grantPassRole(this.rotate, image.controlPlaneRole);
-    core.fleetSecret.grantRead(this.rotate);
-    core.snapshotBucket.grantRead(this.rotate);
+    foundation.fleetSecret.grantRead(this.rotate);
+    foundation.snapshotBucket.grantRead(this.rotate);
     // The rule ARN comes from the fixed name: referencing the Rule construct here would close a
     // cycle (function → policy → rule → function).
     this.rotate.addToRolePolicy(
@@ -153,7 +153,7 @@ export class FleetStack extends cdk.Stack {
     );
     new Canary(this, {
       fleetDir: props.fleetDir,
-      webOrigin: core.webOrigin,
+      webOrigin: foundation.webOrigin,
       sessionUrl: this.sessionUrl.url,
       alarms,
     });

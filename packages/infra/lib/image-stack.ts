@@ -3,12 +3,12 @@
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { NAMES, PORTS } from "../../fleet/src/names.ts";
-import type { CoreStack } from "./core-stack.ts";
+import type { FoundationStack } from "./foundation-stack.ts";
 import { grantMicrovmLauncher, grantPassRole, grantPointer, logsStatement } from "./grants.ts";
 import { anyImageArn, baseImageArn, imageArn, managedConnectorArn, parameterArn } from "./names.ts";
 
 export interface ImageStackProps extends cdk.StackProps {
-  core: CoreStack;
+  foundation: FoundationStack;
   /** Version of the managed al2023-1 base image; resolved by scripts/base-image-version.ts. */
   baseImageVersion: string;
   /** Directory zipped as the code artifact: Dockerfile, main.js, programs/. */
@@ -25,12 +25,13 @@ export class ImageStack extends cdk.Stack {
   readonly imageArn: string;
   readonly buildRole: cdk.aws_iam.Role;
   readonly controlPlaneRole: cdk.aws_iam.Role;
-  readonly coreRole: cdk.aws_iam.Role;
+  /** The cloud cores' execution role; its construct id and output keep the deployed name "CoreRole". */
+  readonly cloudCoreRole: cdk.aws_iam.Role;
   readonly logGroup: cdk.aws_logs.LogGroup;
 
   constructor(scope: Construct, id: string, props: ImageStackProps) {
     super(scope, id, props);
-    const { core } = props;
+    const { foundation } = props;
     const iam = cdk.aws_iam;
 
     this.logGroup = new cdk.aws_logs.LogGroup(this, "MicrovmLogs", {
@@ -49,30 +50,30 @@ export class ImageStack extends cdk.Stack {
     artifact.grantRead(this.buildRole);
     this.buildRole.addToPolicy(logs);
 
-    this.coreRole = new iam.Role(this, "CoreRole", {
+    this.cloudCoreRole = new iam.Role(this, "CoreRole", {
       assumedBy: microvmServicePrincipal(),
       description: "Tabframe cloud core: logs only",
     });
-    this.coreRole.addToPolicy(logs);
+    this.cloudCoreRole.addToPolicy(logs);
 
     this.controlPlaneRole = new iam.Role(this, "ControlPlaneRole", {
       assumedBy: microvmServicePrincipal(),
       description: "Tabframe control plane: presign blobs, snapshots, pointer, manage cores",
     });
     this.controlPlaneRole.addToPolicy(logs);
-    core.blobBucket.grantPut(this.controlPlaneRole);
-    core.blobBucket.grantRead(this.controlPlaneRole);
+    foundation.blobBucket.grantPut(this.controlPlaneRole);
+    foundation.blobBucket.grantRead(this.controlPlaneRole);
     // Put and read, never delete: a compromised control plane must not be able to erase the
     // lineage a heal boots from.
-    core.snapshotBucket.grantPut(this.controlPlaneRole);
-    core.snapshotBucket.grantRead(this.controlPlaneRole);
+    foundation.snapshotBucket.grantPut(this.controlPlaneRole);
+    foundation.snapshotBucket.grantRead(this.controlPlaneRole);
     grantPointer(this.controlPlaneRole, parameterArn(this, NAMES.pointerParam), "read");
     grantMicrovmLauncher(this.controlPlaneRole, {
       launchImageArn: imageArn(this),
       anyImageArn: anyImageArn(this),
       mintsTokens: false,
     });
-    grantPassRole(this.controlPlaneRole, this.coreRole);
+    grantPassRole(this.controlPlaneRole, this.cloudCoreRole);
 
     this.imageArn = imageArn(this);
     this.image = new cdk.aws_lambda.CfnMicrovmImage(this, "Image", {
@@ -87,10 +88,10 @@ export class ImageStack extends cdk.Stack {
       egressNetworkConnectors: [managedConnectorArn(this, "INTERNET_EGRESS")],
       additionalOsCapabilities: [],
       environmentVariables: [
-        { key: "TABFRAME_BLOB_BUCKET", value: core.blobBucket.bucketName },
-        { key: "TABFRAME_SNAPSHOT_BUCKET", value: core.snapshotBucket.bucketName },
+        { key: "TABFRAME_BLOB_BUCKET", value: foundation.blobBucket.bucketName },
+        { key: "TABFRAME_SNAPSHOT_BUCKET", value: foundation.snapshotBucket.bucketName },
         { key: "TABFRAME_POINTER_PARAM", value: NAMES.pointerParam },
-        { key: "TABFRAME_CORE_ROLE_ARN", value: this.coreRole.roleArn },
+        { key: "TABFRAME_CORE_ROLE_ARN", value: this.cloudCoreRole.roleArn },
         { key: "TABFRAME_IMAGE_ARN", value: this.imageArn },
         { key: "TABFRAME_PUBLIC_PORT", value: String(PORTS.public) },
         { key: "TABFRAME_PRIVATE_PORT", value: String(PORTS.private) },
@@ -128,6 +129,6 @@ export class ImageStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ImageArn", { value: this.imageArn });
     new cdk.CfnOutput(this, "ImageRef", { value: this.image.ref });
     new cdk.CfnOutput(this, "ControlPlaneRoleArn", { value: this.controlPlaneRole.roleArn });
-    new cdk.CfnOutput(this, "CoreRoleArn", { value: this.coreRole.roleArn });
+    new cdk.CfnOutput(this, "CoreRoleArn", { value: this.cloudCoreRole.roleArn });
   }
 }
