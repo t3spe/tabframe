@@ -183,14 +183,3 @@ export function previewOf(bytes: Uint8Array, tile: { w: number; h: number } | nu
 export function hexHead(bytes: Uint8Array, n = 64): string {
   return [...bytes.subarray(0, n)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
 }
-
-export function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-export function fmtValue(v: number): string {
-  if (Number.isInteger(v)) return v.toLocaleString("en-US");
-  return v.toLocaleString("en-US", { maximumFractionDigits: 3 });
-}

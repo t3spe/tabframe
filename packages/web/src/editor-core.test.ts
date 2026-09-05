@@ -13,17 +13,16 @@ import {
   buildManifest,
   ENTRY,
   examples,
-  fmtBytes,
   formatDiagnostic,
   guideMarkdown,
   inspectModule,
   looksLikeWasm,
   MANDELBROT_SOURCE,
-  parseParams,
   SDK_ROOT,
   shippedManifest,
   shortPath,
 } from "./editor-core.ts";
+import { parseParams } from "./params.ts";
 
 const root = path.resolve(import.meta.dir, "../../..");
 const out = path.join(root, "packages/web/dist-test/mandelbrot.wasm");
@@ -114,7 +113,7 @@ describe("params and manifest", () => {
   });
 });
 
-describe("buildBundle with a source and input references (WP7.6)", () => {
+describe("buildBundle with a source and input references", () => {
   test("the source is uploaded but not a file; referenced inputs are files but not uploaded", async () => {
     const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
     const source = new TextEncoder().encode("export function plan(): void {}");
@@ -232,14 +231,9 @@ describe("formatting", () => {
     expect(shortPath("program/assembly/index")).toBe("assembly/index.ts");
     expect(shortPath("other/file.ts")).toBe("other/file.ts");
   });
-  test("byte sizes", () => {
-    expect(fmtBytes(512)).toBe("512 B");
-    expect(fmtBytes(18746)).toBe("18.3 KB");
-    expect(fmtBytes(3 * 1024 * 1024)).toBe("3.0 MB");
-  });
 });
 
-describe("examples and the guide (WP6.6)", () => {
+describe("examples and the guide", () => {
   test("three examples, each with a parsed manifest, a note, and distinct sources", () => {
     const all = examples();
     expect(all.map((e) => e.key)).toEqual(["mandelbrot", "hello", "wordcount"]);
@@ -259,7 +253,7 @@ describe("examples and the guide (WP6.6)", () => {
     expect(md).toContain("# @tabframe/sdk-as");
     expect(md).toContain("## Writing a program");
     expect(md).toContain("fs.read");
-    // The repository-only sections stay out of the page (WP8.1).
+    // The repository-only sections stay out of the page.
     expect(md).not.toContain("## Compiling");
     expect(md).not.toContain("## Tooling");
   });

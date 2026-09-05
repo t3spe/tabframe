@@ -9,5 +9,9 @@
     "@tabframe/protocol": "workspace:*",
     "@tabframe/store": "workspace:*",
     "@tabframe/sandbox": "workspace:*"
+  },
+  "devDependencies": {
+    "@tabframe/sdk-as": "workspace:*",
+    "assemblyscript": "0.28.20"
   }
 }

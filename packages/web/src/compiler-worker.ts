@@ -2,19 +2,9 @@
 // The compiler worker (design §5.6): AssemblyScript's asc, bundled for the browser, loaded only
 // when the editor opens. Binaryen arrives as its own asset next to this script. One compile at a
 // time; the page waits.
-import { COMPILER_VERSION, compileInMemory } from "./compiler.ts";
-import type { CompileResult, VirtualFs } from "./editor-core.ts";
 
-export interface CompileRequest {
-  type: "compile";
-  id: number;
-  fs: VirtualFs;
-  flags: string[];
-}
-export type WorkerRequest = CompileRequest;
-export type WorkerReply =
-  | { type: "ready"; version: string }
-  | ({ type: "compiled"; id: number } & CompileResult);
+import { COMPILER_VERSION, compileInMemory } from "./compiler.ts";
+import type { WorkerReply, WorkerRequest } from "./compiler-types.ts";
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 

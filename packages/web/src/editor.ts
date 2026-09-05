@@ -1,20 +1,17 @@
-// The in-page editor (design §5.6): the Mandelbrot source prefilled, the compiler in a lazily
-// loaded worker, diagnostics with line numbers, a manifest and params form, compile → bundle →
-// launch through the observer socket, and the drop-a-`.wasm` door. Loaded by host.ts on demand,
-// so the dashboard never pays for it.
-import { BUNDLE_PATHS, fsManifest, programManifest } from "@tabframe/protocol";
+// The editor (design §5.6): the Mandelbrot source prefilled, the compiler in a lazily loaded
+// worker, diagnostics with line numbers, a manifest and params form, compile → bundle → launch
+// through the observer socket, and the drop-a-`.wasm` door. Mounted by the editor page only, so
+// the dashboard never pays for it.
 import { type PresignRequester, StoreClient } from "@tabframe/store/client";
 import { sha256Hex } from "@tabframe/store/hash";
-import type { WorkerReply, WorkerRequest } from "./compiler-worker.ts";
+import type { ClusterState, ProgramInfo } from "./cluster-state.ts";
+import { CompilerClient, type StatusTone } from "./compiler-client.ts";
+import type { CompileResult, Diagnostic } from "./compiler-types.ts";
+import { $, code, line } from "./dom.ts";
 import {
-  ASC_FLAGS,
-  assembleSources,
   buildBundle,
   buildManifest,
-  type CompileResult,
-  type Diagnostic,
   examples,
-  fmtBytes,
   formatDiagnostic,
   type InputRef,
   inspectModule,
@@ -22,25 +19,26 @@ import {
   MANDELBROT_SOURCE,
   MAX_MODULE_BYTES,
   type ModuleInfo,
-  parseParams,
   shippedManifest,
 } from "./editor-core.ts";
-import { type ClusterState, type ProgramInfo, programList } from "./state.ts";
+import { fmtBytes } from "./format.ts";
+import { parseParams } from "./params.ts";
+import { fetchBlob, loadBundle } from "./program-loader.ts";
+import { programList } from "./selectors.ts";
 
 /** What the page gives the editor: the socket's upload and launch paths, and the cluster feed. */
 export interface EditorHost {
   connected(): boolean;
   storeBase(): string | null;
   presign: PresignRequester["presign"];
-  launch(bundle: string, params: Record<string, unknown>): boolean;
+  /** Send the launch: out now, held for the next socket, or refused because there is no machine. */
+  launch(bundle: string, params: Record<string, unknown>): "sent" | "held" | "refused";
   subscribe(listener: (state: ClusterState) => void): () => void;
   /** Where the compiler worker script lives; defaults to `compiler-worker.js` next to this module. */
   workerUrl?: string;
-  /** A demo page: the compile is real, launching needs the live machine (WP7.7). */
+  /** A demo page: the compile is real, launching needs the live machine. */
   demo?: boolean;
-  /** Whether the last control went out or is held for the next socket (WP8.2). */
-  launchStatus?: () => "sent" | "held";
-  /** The machine acknowledged the launch (queued or running): the pause has really ended (WP8.2). */
+  /** The machine acknowledged the launch (queued or running): the pause has really ended. */
   onLaunched?: () => void;
 }
 
@@ -54,42 +52,54 @@ export interface EditorHandle {
   close(): void;
 }
 
-const $ = <T extends Element>(root: ParentNode, sel: string): T => {
-  const el = root.querySelector<T>(sel);
-  if (!el) throw new Error(`editor: missing element ${sel}`);
-  return el;
-};
+/** The module a launch would upload: compiled here (with its source), dropped as a `.wasm`, or none. */
+type LoadedModule =
+  | { kind: "none" }
+  | { kind: "compiled"; bytes: Uint8Array; source: string }
+  | { kind: "dropped"; bytes: Uint8Array };
+
+/** A launch waiting for the machine's answer; `acknowledged` once the machine has it. */
+type Launch = { bundle: string; name: string; at: number; acknowledged: boolean } | null;
+
+/** What the source box holds: an embedded example, or a program opened from the machine. */
+type Loaded =
+  | { kind: "example"; key: string }
+  | { kind: "machine"; bundle: string; name: string; inputRefs: InputRef[]; hasSource: boolean };
+
+const noResult = (stderr: string): CompileResult => ({
+  ok: false,
+  wasm: null,
+  diagnostics: [],
+  stderr,
+  ms: 0,
+});
 
 /** Mount the editor into its section. Idempotent per section: a second call returns the first handle. */
-/** A compile the worker never answers is failed after this long (WP8.1). */
-export const COMPILE_TIMEOUT_MS = 120_000;
-
 export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   const existing = (root as HTMLElement & { __editor?: EditorHandle }).__editor;
   if (existing) return existing;
 
   const els = {
-    status: $<HTMLSpanElement>(root, "#editorStatus"),
-    source: $<HTMLTextAreaElement>(root, "#source"),
-    compile: $<HTMLButtonElement>(root, "#compile"),
-    launch: $<HTMLButtonElement>(root, "#launch"),
-    reset: $<HTMLButtonElement>(root, "#resetSource"),
+    status: $<HTMLSpanElement>("#editorStatus", root),
+    source: $<HTMLTextAreaElement>("#source", root),
+    compile: $<HTMLButtonElement>("#compile", root),
+    launch: $<HTMLButtonElement>("#launch", root),
+    reset: $<HTMLButtonElement>("#resetSource", root),
     example: root.querySelector<HTMLSelectElement>("#example"),
     exampleNote: root.querySelector<HTMLSpanElement>("#exampleNote"),
-    note: $<HTMLSpanElement>(root, "#compileNote"),
-    diagnostics: $<HTMLUListElement>(root, "#diagnostics"),
-    name: $<HTMLInputElement>(root, "#programName"),
-    view: $<HTMLSelectElement>(root, "#programView"),
-    description: $<HTMLInputElement>(root, "#programDescription"),
-    params: $<HTMLTextAreaElement>(root, "#programParams"),
-    drop: $<HTMLDivElement>(root, "#editorDrop"),
-    file: $<HTMLInputElement>(root, "#wasmFile"),
-    moduleInfo: $<HTMLDivElement>(root, "#moduleInfo"),
-    launchInfo: $<HTMLDivElement>(root, "#launchInfo"),
-    close: $<HTMLButtonElement>(root, "#closeEditor"),
+    note: $<HTMLSpanElement>("#compileNote", root),
+    diagnostics: $<HTMLUListElement>("#diagnostics", root),
+    name: $<HTMLInputElement>("#programName", root),
+    view: $<HTMLSelectElement>("#programView", root),
+    description: $<HTMLInputElement>("#programDescription", root),
+    params: $<HTMLTextAreaElement>("#programParams", root),
+    drop: $<HTMLDivElement>("#editorDrop", root),
+    file: $<HTMLInputElement>("#wasmFile", root),
+    moduleInfo: $<HTMLDivElement>("#moduleInfo", root),
+    launchInfo: $<HTMLDivElement>("#launchInfo", root),
+    close: $<HTMLButtonElement>("#closeEditor", root),
   };
 
-  // ---- prefill ---------------------------------------------------------------------------------
   const shipped = shippedManifest();
   if (!els.source.value) els.source.value = MANDELBROT_SOURCE;
   els.name.value = shipped.name;
@@ -97,113 +107,29 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   els.description.value = shipped.description ?? "";
   els.params.value = JSON.stringify(shipped.defaultParams);
 
-  let module: Uint8Array | null = null;
-  let moduleFrom: "compiled" | "dropped" | null = null;
-  /** The text the module was compiled from: it is what a launch uploads as the program's source. */
-  let compiledSource: string | null = null;
-  /** What the source box holds: an embedded example, or a program opened from the machine (WP7.6). */
-  type Loaded =
-    | { kind: "example"; key: string }
-    | { kind: "machine"; bundle: string; name: string; inputRefs: InputRef[]; hasSource: boolean };
+  let module: LoadedModule = { kind: "none" };
   let loaded: Loaded = { kind: "example", key: "mandelbrot" };
-  /** The machine's programs, from the snapshot the pause subscription brings (WP7.6). */
+  /** The machine's programs, from the snapshot the pause subscription brings. */
   let machinePrograms: ProgramInfo[] = [];
   let machineListSig = "";
   let lastCompile: CompileResult | null = null;
-  let compilerLoadMs: number | null = null;
   let busy = false;
+  let launch: Launch = null;
+  let unsubscribe: (() => void) | null = null;
 
-  const status = (text: string, tone: "wait" | "live" | "off" | "" = "") => {
+  const status = (text: string, tone: StatusTone = "") => {
     els.status.textContent = text;
     els.status.className = `pill ${tone}`;
   };
-  const info = (el: HTMLElement, text: string, bad = false) => {
-    el.textContent = text;
-    el.className = bad ? "bad" : "muted";
+  const info = (target: HTMLElement, text: string, bad = false) => {
+    target.textContent = text;
+    target.className = bad ? "bad" : "muted";
   };
+  const compiler = new CompilerClient(
+    host.workerUrl ?? new URL("./compiler-worker.js", import.meta.url).href,
+    { onStatus: status },
+  );
 
-  // ---- the compiler worker, loaded on first use --------------------------------------------------
-  let worker: Worker | null = null;
-  let ready: Promise<string> | null = null;
-  let nextId = 1;
-  const pending = new Map<number, (r: CompileResult) => void>();
-
-  function ensureWorker(): Promise<string> {
-    if (ready) return ready;
-    const started = performance.now();
-    status("compiler: loading…", "wait");
-    ready = new Promise<string>((resolve, reject) => {
-      const url = host.workerUrl ?? new URL("./compiler-worker.js", import.meta.url).href;
-      const w = new Worker(url, { type: "module", name: "tabframe-compiler" });
-      worker = w;
-      w.onmessage = (ev: MessageEvent<WorkerReply>) => {
-        const msg = ev.data;
-        if (msg.type === "ready") {
-          compilerLoadMs = Math.round(performance.now() - started);
-          status(
-            `compiler ${msg.version} ready in ${(compilerLoadMs / 1000).toFixed(1)} s`,
-            "live",
-          );
-          resolve(msg.version);
-          return;
-        }
-        if (msg.type === "compiled") {
-          const settle = pending.get(msg.id);
-          pending.delete(msg.id);
-          const { type: _t, id: _id, ...result } = msg;
-          settle?.(result);
-        }
-      };
-      const died = (message: string) => {
-        // The worker died or misbehaved (WP8.1): every compile it owed is rejected — the compile
-        // button used to stay disabled for the life of the tab — and the next compile gets a fresh worker.
-        status(`compiler failed: ${message}`, "off");
-        w.terminate();
-        ready = null;
-        worker = null;
-        for (const [, settle] of pending)
-          settle({ ok: false, wasm: null, diagnostics: [], stderr: message, ms: 0 });
-        pending.clear();
-        reject(new Error(message));
-      };
-      w.onerror = (e) => died(e.message || "worker error");
-      w.onmessageerror = () => died("the compiler sent an unreadable message");
-    });
-    return ready;
-  }
-
-  function compileInWorker(source: string): Promise<CompileResult> {
-    return new Promise((resolve, reject) => {
-      const w = worker;
-      if (!w) return reject(new Error("no compiler worker"));
-      const id = nextId++;
-      // A compile that never answers (WP8.1) is failed after two minutes rather than for ever, and
-      // the hung worker goes with it (WP8.2): the next compile starts a fresh one.
-      const timer = setTimeout(() => {
-        if (!pending.has(id)) return;
-        pending.delete(id);
-        if (worker === w) {
-          w.terminate();
-          worker = null;
-          ready = null;
-        }
-        reject(new Error("the compiler did not answer within two minutes"));
-      }, COMPILE_TIMEOUT_MS);
-      pending.set(id, (r) => {
-        clearTimeout(timer);
-        resolve(r);
-      });
-      const req: WorkerRequest = {
-        type: "compile",
-        id,
-        fs: assembleSources(source),
-        flags: [...ASC_FLAGS],
-      };
-      w.postMessage(req);
-    });
-  }
-
-  // ---- compile ------------------------------------------------------------------------------------
   function renderDiagnostics(list: Diagnostic[]): void {
     els.diagnostics.replaceChildren(
       ...list.map((d) => {
@@ -220,36 +146,35 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     );
   }
 
-  function jumpTo(line: number, column: number): void {
+  function jumpTo(lineNo: number, column: number): void {
     const lines = els.source.value.split("\n");
     let pos = 0;
-    for (let i = 0; i < line - 1 && i < lines.length; i++) pos += (lines[i] as string).length + 1;
+    for (let i = 0; i < lineNo - 1 && i < lines.length; i++) pos += (lines[i] as string).length + 1;
     pos += Math.max(0, column - 1);
     els.source.focus();
     els.source.setSelectionRange(pos, pos);
   }
 
-  async function showModule(bytes: Uint8Array, from: "compiled" | "dropped"): Promise<ModuleInfo> {
-    const m = inspectModule(bytes);
-    const hash = await sha256Hex(bytes);
+  /** Inspect a module and make it the one a launch would upload, or refuse it and keep none. */
+  async function showModule(next: Exclude<LoadedModule, { kind: "none" }>): Promise<ModuleInfo> {
+    const m = inspectModule(next.bytes);
+    const hash = await sha256Hex(next.bytes);
     if (!m.ok) {
-      module = null;
-      moduleFrom = null;
+      module = { kind: "none" };
       els.launch.disabled = true;
       els.moduleInfo.replaceChildren();
       const p = document.createElement("span");
       p.className = "bad";
-      p.textContent = `${from} module refused: ${m.reason}`;
+      p.textContent = `${next.kind} module refused: ${m.reason}`;
       els.moduleInfo.append(p);
       return m;
     }
-    module = bytes;
-    moduleFrom = from;
+    module = next;
     els.launch.disabled = host.demo === true;
     if (host.demo) els.launch.title = "demo: the compile is real; launching needs the live machine";
     els.moduleInfo.className = "";
     els.moduleInfo.replaceChildren(
-      line(`${from} module · ${fmtBytes(m.size)} (${m.size} bytes)`),
+      line(`${next.kind} module · ${fmtBytes(m.size)} (${m.size} bytes)`),
       line("sha256 ", code(hash, "moduleHash")),
       line(`imports ${m.imports.join(", ") || "none"}`),
       line(`exports ${m.exports.join(", ")}`),
@@ -259,28 +184,26 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   }
 
   async function compile(): Promise<CompileResult> {
-    if (busy) return lastCompile ?? { ok: false, wasm: null, diagnostics: [], stderr: "", ms: 0 };
+    if (busy) return lastCompile ?? noResult("");
     busy = true;
     els.compile.disabled = true;
     try {
-      await ensureWorker();
+      await compiler.warm();
       status("compiling…", "wait");
       const text = els.source.value;
-      const result = await compileInWorker(text);
-      compiledSource = text;
+      const result = await compiler.compile(text);
       lastCompile = result;
       renderDiagnostics(result.diagnostics);
       const errors = result.diagnostics.filter((d) => d.level === "error").length;
       if (result.ok && result.wasm) {
         status(`compiled in ${result.ms} ms`, "live");
         info(els.note, `${result.wasm.length} bytes${errors ? "" : ", no diagnostics"}`);
-        await showModule(result.wasm, "compiled");
+        await showModule({ kind: "compiled", bytes: result.wasm, source: text });
       } else {
         status(`${errors} error${errors === 1 ? "" : "s"}`, "off");
         info(els.note, "no module produced", true);
-        if (moduleFrom === "compiled") {
-          module = null;
-          moduleFrom = null;
+        if (module.kind === "compiled") {
+          module = { kind: "none" };
           els.launch.disabled = true;
           info(els.moduleInfo, "the previous module was discarded");
         }
@@ -289,23 +212,15 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       status(`compile failed: ${message}`, "off");
-      return { ok: false, wasm: null, diagnostics: [], stderr: message, ms: 0 };
+      return noResult(message);
     } finally {
       busy = false;
       els.compile.disabled = false;
     }
   }
 
-  // ---- launch -------------------------------------------------------------------------------------
-  let awaitingAnswer = false;
-  let acknowledged = false;
-  let launchedAt = 0;
-  let launchedName = "";
-  let launchedBundle = "";
-  let unsubscribe: (() => void) | null = null;
-
-  async function launch(): Promise<boolean> {
-    if (!module) {
+  async function launchModule(): Promise<boolean> {
+    if (module.kind === "none") {
       info(els.launchInfo, "compile the program or drop a .wasm first", true);
       return false;
     }
@@ -314,12 +229,9 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       info(els.launchInfo, params.error, true);
       return false;
     }
-    // A compiled module travels with its source (WP7.6): the manifest names the source blob's hash,
-    // so this program can be reopened in the editor from any browser. A dropped module has none.
-    const sourceBytes =
-      moduleFrom === "compiled" && compiledSource !== null
-        ? new TextEncoder().encode(compiledSource)
-        : null;
+    // A compiled module travels with its source: the manifest names the source blob's hash, so
+    // this program can be reopened in the editor from any browser. A dropped module has none.
+    const sourceBytes = module.kind === "compiled" ? new TextEncoder().encode(module.source) : null;
     const sourceHash = sourceBytes ? await sha256Hex(sourceBytes) : undefined;
     const manifest = buildManifest({
       name: els.name.value,
@@ -338,25 +250,22 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       return false;
     }
     els.launch.disabled = true;
-    launchedAt = Date.now();
-    acknowledged = false;
+    const at = Date.now();
     try {
-      const bundle = await buildBundle(module, manifest.value, [], {
+      const bundle = await buildBundle(module.bytes, manifest.value, [], {
         ...(sourceBytes ? { source: sourceBytes } : {}),
         inputRefs: loaded.kind === "machine" ? loaded.inputRefs : [],
       });
       info(els.launchInfo, `uploading ${bundle.blobs.length} blobs…`);
       const store = new StoreClient(base, { presign: (items) => host.presign(items) });
       await store.putMany(bundle.blobs);
-      awaitingAnswer = true;
-      launchedName = manifest.value.name;
-      launchedBundle = bundle.bundle;
+      launch = { bundle: bundle.bundle, name: manifest.value.name, at, acknowledged: false };
       const sent = host.launch(bundle.bundle, params.value);
-      if (!sent) {
+      if (sent === "refused") {
         info(els.launchInfo, "the socket closed before the launch was sent", true);
         return false;
       }
-      if (host.launchStatus?.() === "held")
+      if (sent === "held")
         info(
           els.launchInfo,
           "the socket is reconnecting; the launch is held for it and goes out when it is back",
@@ -378,50 +287,53 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       );
       return false;
     } finally {
-      els.launch.disabled = module === null;
+      els.launch.disabled = !hasModule();
     }
+  }
+
+  /** Read through a call: `module` moves while a launch awaits, which a narrowing would miss. */
+  function hasModule(): boolean {
+    return module.kind !== "none";
   }
 
   /** Every cluster state: the machine's program list for the select, then a launch's answer. */
   function onCluster(state: ClusterState): void {
     machinePrograms = programList(state);
     rebuildSelect();
-    if (!awaitingAnswer) return;
-    const err = state.activity.filter((a) => a.kind === "error" && a.at >= launchedAt).at(-1);
+    const mine = launch;
+    if (!mine) return;
+    const err = state.activity.filter((a) => a.kind === "error" && a.at >= mine.at).at(-1);
     if (err) {
       info(els.launchInfo, `the control plane answered: ${err.text}`, true);
-      awaitingAnswer = false;
+      launch = null;
       return;
     }
-    // Matched on the bundle hash (WP8.3), not the name: another visitor's namesake program, or
-    // the person's own previous run, used to be reported as this launch.
+    // Matched on the bundle hash, not the name: another visitor's namesake program, or the
+    // person's own previous run, must not be reported as this launch.
     const running =
-      state.execution?.human && state.execution.program === launchedBundle ? state.execution : null;
-    const mine = [...state.queue]
+      state.execution?.human && state.execution.program === mine.bundle ? state.execution : null;
+    const queued = [...state.queue]
       .reverse()
-      .find(
-        (q) => q.human && (q.bundle ? q.bundle === launchedBundle : q.programName === launchedName),
-      );
+      .find((q) => q.human && (q.bundle ? q.bundle === mine.bundle : q.programName === mine.name));
     if (running) {
       info(els.launchInfo, `running as ${running.executionId} · ${running.phase}`);
-      if (running.phase === "done" || running.phase === "failed") awaitingAnswer = false;
-      if (!acknowledged) {
-        acknowledged = true;
-        host.onLaunched?.();
-      }
-    } else if (mine) {
+      acknowledge(mine);
+      if (running.phase === "done" || running.phase === "failed") launch = null;
+    } else if (queued) {
       info(
         els.launchInfo,
-        `queued as ${mine.executionId}; a person's launch goes ahead of the machine's own loop`,
+        `queued as ${queued.executionId}; a person's launch goes ahead of the machine's own loop`,
       );
-      if (!acknowledged) {
-        acknowledged = true;
-        host.onLaunched?.();
-      }
+      acknowledge(mine);
     }
   }
 
-  // ---- the drop-a-.wasm door ---------------------------------------------------------------------
+  function acknowledge(mine: NonNullable<Launch>): void {
+    if (mine.acknowledged) return;
+    mine.acknowledged = true;
+    host.onLaunched?.();
+  }
+
   async function takeFile(file: File): Promise<void> {
     if (file.size > MAX_MODULE_BYTES) {
       info(
@@ -436,23 +348,30 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
       info(els.moduleInfo, `${file.name} is not a WebAssembly module (no \\0asm magic)`, true);
       return;
     }
-    const m = await showModule(bytes, "dropped");
+    const m = await showModule({ kind: "dropped", bytes });
     if (m.ok) {
       const stem = file.name
         .replace(/\.wasm$/i, "")
         .replace(/[^A-Za-z0-9._-]/g, "-")
         .slice(0, 64);
       if (stem && els.name.value === shipped.name) els.name.value = stem;
-      // The text in the box is not this module's source (WP7.7): say so, and stop compiling it.
+      // The text in the box is not this module's source: say so, and stop compiling it.
       els.source.value = `// ${file.name}: a module dropped as a .wasm has no source here.\n// It is loaded below; launch runs it as it is with the params on the right.\n// Pick an example or a program on the machine to edit source again.`;
       els.compile.disabled = true;
-      compiledSource = null;
       renderDiagnostics([]);
       status(`${file.name} accepted`, "live");
     } else {
       status(`${file.name} refused`, "off");
     }
   }
+  const takeFileOrSay = (file: File): void =>
+    void takeFile(file).catch((err) =>
+      info(
+        els.moduleInfo,
+        `could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      ),
+    );
   els.drop.ondragover = (e) => {
     e.preventDefault();
     els.drop.classList.add("over");
@@ -462,33 +381,18 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     e.preventDefault();
     els.drop.classList.remove("over");
     const file = e.dataTransfer?.files?.[0];
-    if (file)
-      void takeFile(file).catch((err) =>
-        info(
-          els.moduleInfo,
-          `could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
-          true,
-        ),
-      );
+    if (file) takeFileOrSay(file);
   };
   els.file.onchange = () => {
     const file = els.file.files?.[0];
-    if (file)
-      void takeFile(file).catch((err) =>
-        info(
-          els.moduleInfo,
-          `could not read ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
-          true,
-        ),
-      );
+    if (file) takeFileOrSay(file);
     els.file.value = "";
   };
 
-  // ---- wiring -------------------------------------------------------------------------------------
   els.compile.onclick = () => void compile();
-  els.launch.onclick = () => void launch();
-  // The select (WP6.6, WP7.6): every program on the machine first — opened from the store, source
-  // and all — then the embedded examples. Reset goes back to whichever is loaded.
+  els.launch.onclick = () => void launchModule();
+  // The select: every program on the machine first — opened from the store, source and all — then
+  // the embedded examples. Reset goes back to whichever is loaded.
   const all = examples();
   const loadExample = (key: string, say: boolean): void => {
     const ex = all.find((e) => e.key === key);
@@ -504,36 +408,19 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
     renderDiagnostics([]);
     if (say) info(els.note, `loaded ${ex.manifest.name}`);
   };
-  const fetchBlob = async (hash: string): Promise<Uint8Array> => {
-    const base = host.storeBase();
-    if (!base) throw new Error("not connected to the machine");
-    const r = await fetch(`${base.replace(/\/$/, "")}/${hash}`);
-    if (!r.ok) throw new Error(`${hash.slice(0, 8)}…: HTTP ${r.status}`);
-    return new Uint8Array(await r.arrayBuffer());
-  };
-  const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
   /**
-   * A program from the machine (WP7.6, D5): its bundle names its manifest, its module, and its
-   * inputs; the manifest names its source when it has one. With a source, the box gets the text
-   * and a launch of the edited copy keeps the inputs by hash; without one, the module itself is
-   * loaded and a launch runs it as it is with the params on the right.
+   * A program from the machine (D5). With a source, the box gets the text and a launch of the
+   * edited copy keeps the inputs by hash; without one, the module itself is loaded and a launch
+   * runs it as it is with the params on the right.
    */
   const loadMachineProgram = async (bundle: string): Promise<void> => {
     const p = machinePrograms.find((x) => x.bundle === bundle);
     if (!p) return;
     status(`loading ${p.name} from the store…`, "wait");
     try {
-      const fs = fsManifest.parse(JSON.parse(decode(await fetchBlob(bundle))));
-      const manifestEntry = fs.files[BUNDLE_PATHS.manifest];
-      const moduleEntry = fs.files[BUNDLE_PATHS.module];
-      if (!manifestEntry || !moduleEntry)
-        throw new Error("the bundle lacks its manifest or module");
-      const manifest = programManifest.parse(
-        JSON.parse(decode(await fetchBlob(manifestEntry.hash))),
-      );
-      const inputRefs: InputRef[] = Object.entries(fs.files)
-        .filter(([path]) => path.startsWith(BUNDLE_PATHS.inputs))
-        .map(([path, e]) => ({ path, hash: e.hash, size: e.size }));
+      const base = host.storeBase();
+      if (!base) throw new Error("not connected to the machine");
+      const { manifest, moduleHash, inputRefs } = await loadBundle(base, bundle);
       els.name.value = `${manifest.name}-edit`.slice(0, 64);
       els.view.value = manifest.view;
       els.description.value = manifest.description ?? "";
@@ -543,23 +430,20 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
         ? ` · ${inputRefs.length} input ${inputRefs.length === 1 ? "file" : "files"} kept by hash, nothing to re-upload`
         : "";
       if (manifest.source) {
-        const source = await fetchBlob(manifest.source);
-        els.source.value = decode(source);
+        const source = await fetchBlob(base, manifest.source);
+        els.source.value = new TextDecoder().decode(source);
         els.compile.disabled = false;
-        module = null;
-        moduleFrom = null;
-        compiledSource = null;
+        module = { kind: "none" };
         els.launch.disabled = true;
         info(els.moduleInfo, "compile to get a module, then launch");
         if (els.exampleNote)
           els.exampleNote.textContent = `from the machine · source loaded (${fmtBytes(source.length)})${inputsNote} · edit, compile, launch as ${els.name.value}`;
         status(`${p.name} loaded from the store`, "live");
       } else {
-        const wasm = await fetchBlob(moduleEntry.hash);
+        const wasm = await fetchBlob(base, moduleHash);
         els.source.value = `// ${manifest.name} has no source: it was dropped as a .wasm.\n// Its module is loaded; launch runs it as it is with the params on the right.`;
         els.compile.disabled = true;
-        compiledSource = null;
-        await showModule(wasm, "dropped");
+        await showModule({ kind: "dropped", bytes: wasm });
         if (els.exampleNote)
           els.exampleNote.textContent = `from the machine · no source (a dropped .wasm)${inputsNote} · launch runs the module as it is`;
         status(`${p.name}'s module loaded from the store`, "live");
@@ -637,19 +521,19 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   };
   // The machine's programs arrive with the first snapshot; subscribe from the start.
   if (!unsubscribe) unsubscribe = host.subscribe(onCluster);
-  // Editing after a compile (WP7.7): the module no longer matches the text, so launch waits for a
-  // fresh compile and the module line says why.
+  // Editing after a compile: the module no longer matches the text, so launch waits for a fresh
+  // compile and the module line says why.
   els.source.oninput = () => {
-    if (moduleFrom !== "compiled" || compiledSource === null) return;
-    const stale = els.source.value !== compiledSource;
+    if (module.kind !== "compiled") return;
+    const stale = els.source.value !== module.source;
     els.launch.disabled = stale || host.demo === true;
     if (stale)
       info(els.moduleInfo, "the source changed since the compile; compile again to launch it");
-    else if (module) void showModule(module, "compiled");
+    else void showModule(module);
   };
   els.source.onkeydown = (e) => {
-    // Tab inserts two spaces; Shift+Tab leaves the field backwards and Escape leaves it forwards
-    // (WP8.2): a keyboard user must be able to get out of the box.
+    // Tab inserts two spaces; Shift+Tab leaves the field backwards and Escape leaves it forwards,
+    // so a keyboard user can get out of the box.
     if (e.key === "Escape") {
       els.compile.focus();
       return;
@@ -663,20 +547,21 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   };
   els.close.onclick = () => handle.close();
   status("compiler: idle (loads on first compile)");
-  void ensureWorker().catch(() => undefined);
+  // Preloaded so the first compile is quick; a failure here is reported again by that compile.
+  void compiler.warm().catch(() => undefined);
 
   const handle: EditorHandle = {
     get module() {
-      return module;
+      return module.kind === "none" ? null : module.bytes;
     },
     get lastCompile() {
       return lastCompile;
     },
     get compilerLoadMs() {
-      return compilerLoadMs;
+      return compiler.loadMs;
     },
     compile,
-    launch,
+    launch: launchModule,
     close() {
       root.hidden = true;
       unsubscribe?.();
@@ -686,18 +571,4 @@ export function mountEditor(root: HTMLElement, host: EditorHost): EditorHandle {
   };
   (root as HTMLElement & { __editor?: EditorHandle }).__editor = handle;
   return handle;
-}
-
-function line(text: string, ...rest: Node[]): HTMLDivElement {
-  const div = document.createElement("div");
-  div.append(text, ...rest);
-  return div;
-}
-
-function code(text: string, id?: string): HTMLElement {
-  const c = document.createElement("code");
-  c.textContent = text;
-  if (id) c.id = id;
-  c.style.overflowWrap = "anywhere";
-  return c;
 }

@@ -1,35 +1,16 @@
-// The web sandbox adapter in a real browser (plan WP2.6). The money shot proves the happy path —
-// tabs compute tiles that hash to goldens — so what is left is the paths a healthy frame never
-// takes: a program that spins forever must be killed at the deadline without wedging the cluster
-// or the tab, and a program that traps must fail its execution visibly.
+// The web sandbox adapter in a real browser. The money shot proves the happy path — tabs compute
+// tiles that hash to goldens — so what is left is the paths a healthy frame never takes: a program
+// that spins forever must be killed at the deadline without wedging the cluster or the tab, and a
+// program that traps must fail its execution visibly.
 import { expect, type Page, test } from "@playwright/test";
-
-/** Collect the machine's own events from a second observer socket inside the page. */
-function watch(): void {
-  const w = window as unknown as { __seen: string[] };
-  if (w.__seen) return;
-  w.__seen = [];
-  void (async () => {
-    const config = (await (await fetch("/config.json")).json()) as { sessionUrl: string };
-    const session = (await (await fetch(config.sessionUrl)).json()) as {
-      endpoint?: string;
-      generation?: number;
-    };
-    if (!session.endpoint) return;
-    const gen = session.generation ?? 1;
-    const ws = new WebSocket(`${session.endpoint}/observer`);
-    ws.onopen = () => ws.send(JSON.stringify({ t: "subscribe", v: 1, gen }));
-    ws.onmessage = (m) => {
-      const e = JSON.parse(String(m.data)) as { t: string; reason?: string };
-      w.__seen.push(e.reason ? `${e.t}:${e.reason.slice(0, 80)}` : e.t);
-    };
-    setInterval(() => {
-      if (ws.readyState === 1) ws.send(JSON.stringify({ t: "ping", v: 1, gen }));
-    }, 1_500);
-  })();
-}
-
-const seenBy = () => (window as unknown as { __seen?: string[] }).__seen ?? [];
+import {
+  ACCEPTED,
+  installWatcher,
+  killRunning,
+  launchFromEditor,
+  openEditorTab,
+  watched,
+} from "./helpers.ts";
 
 const SPINNER = `import { emit, readRunInput, stage } from "@tabframe/sdk-as/assembly/index";
 export { alloc } from "@tabframe/sdk-as/assembly/index";
@@ -66,22 +47,19 @@ export function run(ptr: usize, len: i32): usize {
 }
 `;
 
-/** The editor is its own page (WP6.4): open it beside the dashboard, launch, close it. */
+/** The machine's events as the in-page watcher saw them. */
+const seenBy = (page: Page): Promise<string[]> => page.evaluate(watched).then((w) => w.seen);
+
+/** The editor is its own page: open it beside the dashboard, compile, launch, close it. */
 async function compileAndLaunch(page: Page, source: string, name: string): Promise<void> {
-  const editor = await page.context().newPage();
-  await editor.goto("/editor.html");
-  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
+  const editor = await openEditorTab(page.context());
   await editor.locator("#source").fill(source);
   await editor.locator("#programName").fill(name);
   await editor.click("#compile");
   await expect(editor.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
     timeout: 180_000,
   });
-  await editor.locator("#programParams").fill("{}");
-  await editor.click("#launch");
-  await expect(editor.locator("#launchInfo")).toContainText(/queued as|running as/, {
-    timeout: 60_000,
-  });
+  await launchFromEditor(editor, { params: "{}" }, ACCEPTED);
   await editor.close();
 }
 
@@ -91,7 +69,7 @@ test("a program that never returns is killed at the deadline and its task is giv
   test.setTimeout(300_000);
   await page.goto("/");
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
-  await page.evaluate(watch);
+  await page.evaluate(installWatcher);
   // Three nodes: the spinner holds one, the others must carry the rest.
   await page.click("#spawn1");
   await page.click("#spawn1");
@@ -102,26 +80,23 @@ test("a program that never returns is killed at the deadline and its task is giv
   // The control plane notices the overdue attempt and offers a twin (tier three); the tab that is
   // stuck is killed at its own deadline and carries on. Either way the cluster is not wedged.
   await expect
-    .poll(async () => page.evaluate(seenBy), { timeout: 120_000, intervals: [1_000] })
+    .poll(() => seenBy(page), { timeout: 120_000, intervals: [1_000] })
     .toEqual(expect.arrayContaining([expect.stringMatching(/taskSpeculated|taskReassigned/)]));
   // The instant task finished, so the stage was not blocked by the spinning one.
-  const seen = await page.evaluate(seenBy);
+  const seen = await seenBy(page);
   expect(seen).toEqual(expect.arrayContaining(["taskDone"]));
   // Every node is still there: a deadline kill terminates a sandbox worker, not a tab.
   await expect(page.locator("#counts")).toHaveText(/3 nodes/);
   await expect(page.locator("#mine .row").first()).toContainText(/idle|busy/, { timeout: 30_000 });
   // Leave the machine as we found it.
-  await page.click("#killExecution");
-  await expect(page.locator("#failure")).toContainText("cancelled by an operator", {
-    timeout: 30_000,
-  });
+  await killRunning(page, 30_000);
 });
 
 test("a planner that traps fails its execution with the trap message", async ({ page }) => {
   test.setTimeout(300_000);
   await page.goto("/");
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
-  await page.evaluate(watch);
+  await page.evaluate(installWatcher);
   await expect(page.locator("#counts")).toHaveText(/[1-9] nodes/, { timeout: 30_000 });
 
   await compileAndLaunch(page, TRAP, "trapper");
@@ -130,14 +105,14 @@ test("a planner that traps fails its execution with the trap message", async ({ 
   // fails with it rather than hanging.
   try {
     await expect
-      .poll(async () => page.evaluate(seenBy), { timeout: 120_000, intervals: [1_000] })
+      .poll(() => seenBy(page), { timeout: 120_000, intervals: [1_000] })
       .toEqual(
         expect.arrayContaining([expect.stringMatching(/executionFailed:.*refuses to plan/)]),
       );
   } catch (err) {
-    // The whole event list, untruncated, beside the failure (WP8.3): the reporter cuts arrays.
+    // The whole event list, untruncated, beside the failure: the reporter cuts arrays.
     await test.info().attach("seen", {
-      body: JSON.stringify(await page.evaluate(seenBy), null, 1),
+      body: JSON.stringify(await seenBy(page), null, 1),
       contentType: "application/json",
     });
     await test.info().attach("mine", {

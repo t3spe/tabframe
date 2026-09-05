@@ -5,8 +5,6 @@ import {
   comparePaths,
   decodeText,
   finalOutput,
-  fmtBytes,
-  fmtValue,
   groupFiles,
   hexHead,
   listFiles,
@@ -125,12 +123,5 @@ describe("previews", () => {
     expect(previewOf(tile, { w: 64, h: 64 })).toEqual({ kind: "image", w: 64, h: 64 });
     expect(previewOf(tile, null)).toMatchObject({ kind: "bytes" });
     expect(hexHead(new Uint8Array([0, 255, 16]))).toBe("00 ff 10");
-  });
-  test("formatting", () => {
-    expect(fmtBytes(512)).toBe("512 B");
-    expect(fmtBytes(2048)).toBe("2.0 KiB");
-    expect(fmtBytes(3 * 1024 * 1024)).toBe("3.0 MiB");
-    expect(fmtValue(14529)).toBe("14,529");
-    expect(fmtValue(0.12345)).toBe("0.123");
   });
 });

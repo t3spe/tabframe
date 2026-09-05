@@ -1,30 +1,23 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
+import { sha256Hex } from "../packages/store/src/hash.ts";
+import { killRunningFromNewTab, openEditor, WASM_PATH } from "./helpers.ts";
 
-// WP2.4: the in-page editor against the real local control plane. The compiler loads in a worker
-// and compiles the prefilled Mandelbrot; the module must hash to what the build produced (the
-// web server built programs/mandelbrot/dist first). The drop door validates a real module and
-// refuses junk. A launch uploads the bundle over the observer socket and the control plane
-// answers — a refusal until WP2.3 teaches the core to take uploaded bundles, a queued execution
-// after; either way the round trip is what this test pins.
+// The editor against the real local control plane. The compiler loads in a worker and compiles
+// the prefilled Mandelbrot; the module must hash to what the build produced (the web server built
+// programs/mandelbrot/dist first). The drop door validates a real module and refuses junk. A
+// launch uploads the bundle over the observer socket and the control plane answers; the round
+// trip is what this test pins.
 
-const wasmPath = path.resolve(
-  fileURLToPath(new URL(".", import.meta.url)),
-  "../programs/mandelbrot/dist/program.wasm",
-);
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+/** The built module's hash, as the editor must report it. */
+const builtModuleHash = () => sha256Hex(new Uint8Array(readFileSync(WASM_PATH)));
 
-// The editor is a page of its own since WP6.4: the dashboard's button opens it in a new tab, and
-// the tab holds the machine paused while it lives. The suites go there directly.
-async function openEditor(page: Page): Promise<void> {
-  await page.goto("/editor.html");
-  await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
+// The editor is a page of its own: the dashboard's button opens it in a new tab, and the tab holds
+// the machine paused while it lives. The suites go there directly, and find the shipped source.
+async function openShippedEditor(page: Page): Promise<void> {
+  await openEditor(page);
   await expect(page.locator("#editor")).toBeVisible();
   await expect(page.locator("#source")).toHaveValue(/Mandelbrot/);
-  await expect(page.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 120_000 });
 }
 
 test("the editor opens from the dashboard in its own tab and holds the machine paused while it lives", async ({
@@ -61,7 +54,7 @@ test("the compiler loads in a worker and the page compile is byte-identical to t
   page,
 }) => {
   test.setTimeout(240_000);
-  await openEditor(page);
+  await openShippedEditor(page);
   const loaded = await page.locator("#editorStatus").textContent();
   await page.click("#compile");
   await expect(page.locator("#editorStatus")).toHaveText(/compiled in \d+ ms/, {
@@ -69,8 +62,7 @@ test("the compiler loads in a worker and the page compile is byte-identical to t
   });
   const compiled = await page.locator("#editorStatus").textContent();
   console.log(`[editor.e2e] ${loaded}; ${compiled}`);
-  const expected = sha256(new Uint8Array(readFileSync(wasmPath)));
-  await expect(page.locator("#moduleHash")).toHaveText(expected);
+  await expect(page.locator("#moduleHash")).toHaveText(await builtModuleHash());
   await expect(page.locator("#moduleInfo")).toContainText("imports env.abort");
   for (const name of ["alloc", "memory", "plan", "run"])
     await expect(page.locator("#moduleInfo")).toContainText(name);
@@ -83,7 +75,7 @@ test("a broken edit shows diagnostics with the line; reset restores the shipped 
   page,
 }) => {
   test.setTimeout(240_000);
-  await openEditor(page);
+  await openShippedEditor(page);
   const source = await page.locator("#source").inputValue();
   const lines = source.split("\n");
   const at = lines.findIndex((l) => l.startsWith("const TILE"));
@@ -101,12 +93,10 @@ test("a broken edit shows diagnostics with the line; reset restores the shipped 
 
 test("the drop door accepts a real module and refuses junk", async ({ page }) => {
   test.setTimeout(240_000);
-  await openEditor(page);
-  await page.locator("#wasmFile").setInputFiles(wasmPath);
+  await openShippedEditor(page);
+  await page.locator("#wasmFile").setInputFiles(WASM_PATH);
   await expect(page.locator("#moduleInfo")).toContainText("dropped module", { timeout: 15_000 });
-  await expect(page.locator("#moduleHash")).toHaveText(
-    sha256(new Uint8Array(readFileSync(wasmPath))),
-  );
+  await expect(page.locator("#moduleHash")).toHaveText(await builtModuleHash());
   await expect(page.locator("#programName")).toHaveValue("program");
   await expect(page.locator("#launch")).toBeEnabled();
   await page.locator("#wasmFile").setInputFiles({
@@ -129,8 +119,8 @@ test("launch uploads the bundle through the observer socket and the control plan
   request,
 }) => {
   test.setTimeout(240_000);
-  await openEditor(page);
-  await page.locator("#wasmFile").setInputFiles(wasmPath);
+  await openShippedEditor(page);
+  await page.locator("#wasmFile").setInputFiles(WASM_PATH);
   await expect(page.locator("#launch")).toBeEnabled({ timeout: 15_000 });
   await page.locator("#programParams").fill('{"preset": 2, "palette": "ocean"}');
   await page.click("#launch");
@@ -138,10 +128,10 @@ test("launch uploads the bundle through the observer socket and the control plan
   const bundle = await page.locator("#bundleHash").textContent();
   expect(bundle).toMatch(/^[0-9a-f]{64}$/);
   // The blobs went to the store: the module and the bundle manifest read back by hash.
-  const moduleHash = sha256(new Uint8Array(readFileSync(wasmPath)));
+  const moduleHash = await builtModuleHash();
   const mod = await request.get(`/blob/${moduleHash}`);
   expect(mod.status()).toBe(200);
-  expect((await mod.body()).length).toBe(readFileSync(wasmPath).length);
+  expect((await mod.body()).length).toBe(readFileSync(WASM_PATH).length);
   const manifest = await request.get(`/blob/${bundle}`);
   expect(manifest.status()).toBe(200);
   const files = (await manifest.json()) as { version: number; files: Record<string, unknown> };
@@ -152,25 +142,16 @@ test("launch uploads the bundle through the observer socket and the control plan
     timeout: 30_000,
   });
   console.log(`[editor.e2e] ${await page.locator("#launchInfo").textContent()}`);
-  // Since WP2.3 the launch is real: the execution would plan forever here (no nodes in observe
-  // mode) and then run on the next suite's nodes. Kill it from a dashboard tab so the suites that
-  // follow find the machine idle; the failure banner names the reason.
-  const dash = await page.context().newPage();
-  await dash.goto("/?observe");
-  await expect(dash.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
-  const kill = dash.locator("#killExecution");
-  await expect(kill).toBeVisible({ timeout: 15_000 });
-  await kill.click();
-  await expect(dash.locator("#failure")).toContainText("cancelled by an operator", {
-    timeout: 15_000,
-  });
-  await dash.close();
+  // The launch is real: the execution would plan forever here (no nodes in observe mode) and then
+  // run on the next suite's nodes. Kill it from a dashboard tab so the suites that follow find the
+  // machine idle; the failure banner names the reason.
+  await killRunningFromNewTab(page.context());
   // Params that are not an object never leave the page.
   await page.locator("#programParams").fill("[1, 2]");
   await page.click("#launch");
   await expect(page.locator("#launchInfo")).toContainText("params must be a JSON object");
   // The machine lists the upload; opened from there it has no source (a dropped .wasm), so the
-  // module itself is loaded, compile is off, and launch would run it as it is (WP7.6).
+  // module itself is loaded, compile is off, and launch would run it as it is.
   await page.reload();
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
   const option = page.locator(`#example option[value="machine:${bundle}"]`);
@@ -184,11 +165,11 @@ test("launch uploads the bundle through the observer socket and the control plan
   await expect(page.locator("#moduleHash")).toHaveText(moduleHash);
 });
 
-test("a program compiled and launched here can be reopened from the machine with its source (WP7.6)", async ({
+test("a program compiled and launched here can be reopened from the machine with its source", async ({
   page,
 }) => {
   test.setTimeout(300_000);
-  await openEditor(page);
+  await openShippedEditor(page);
   await page.locator("#example").selectOption("hello");
   await expect(page.locator("#source")).toHaveValue(/hello, \$\{who\}/);
   await page.locator("#programName").fill("hello-src");
@@ -203,16 +184,7 @@ test("a program compiled and launched here can be reopened from the machine with
     timeout: 30_000,
   });
   // Leave the machine idle for the suites that follow.
-  const dash = await page.context().newPage();
-  await dash.goto("/?observe");
-  await expect(dash.locator("#machine")).toHaveText(/live/, { timeout: 30_000 });
-  const kill = dash.locator("#killExecution");
-  await expect(kill).toBeVisible({ timeout: 15_000 });
-  await kill.click();
-  await expect(dash.locator("#failure")).toContainText("cancelled by an operator", {
-    timeout: 15_000,
-  });
-  await dash.close();
+  await killRunningFromNewTab(page.context());
   // A fresh editor lists it under "on the machine"; opening it brings the very text back from the
   // store, the manifest's fields, and a name for the copy; compile is on, launch waits for it.
   await page.reload();
@@ -239,8 +211,8 @@ test("the editor explains itself: a guide from the SDK's README, the machine's l
   page,
 }) => {
   test.setTimeout(240_000);
-  await openEditor(page);
-  // The guide is a page of its own behind a link at the top (WP7.5); the editor keeps two lines.
+  await openShippedEditor(page);
+  // The guide is a page of its own behind a link at the top; the editor keeps two lines.
   await expect(page.locator("#editorIntro")).toContainText("two entry points");
   await expect(page.locator("#guideLink")).toHaveAttribute("href", "/guide.html");
   await expect(page.locator("#guide")).toHaveCount(0);
@@ -276,7 +248,7 @@ test("the editor explains itself: a guide from the SDK's README, the machine's l
   await expect(page.locator("#source")).toHaveValue(/three stages/);
 });
 
-test("the editor fills the viewport: the source takes the height, nothing scrolls sideways (WP7.5)", async ({
+test("the editor fills the viewport: the source takes the height, nothing scrolls sideways", async ({
   page,
 }) => {
   for (const [w, h] of [
