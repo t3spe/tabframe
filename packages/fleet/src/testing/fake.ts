@@ -95,21 +95,25 @@ export interface FakeRun {
   microvmId: string;
 }
 
+/**
+ * How the fake answers one `run()`: a throttle, a client token that replays a MicroVM already gone,
+ * or a boot that reports PENDING for `pendingPolls` polls and then `endsIn`.
+ */
+export type RunPlan =
+  | { throttle: true }
+  | { replayTerminated: true }
+  | { pendingPolls: number; endsIn: "RUNNING" | "TERMINATED" };
+
 export class FakeMicrovmClient implements MicrovmClient {
   readonly vms = new Map<string, MicrovmInfo>();
   readonly runs: FakeRun[] = [];
   readonly terminated: string[] = [];
   readonly tokenMints: { microvmId: string; expirationInMinutes: number; ports: PortSpec[] }[] = [];
-  /** How many `run` calls fail with ThrottlingException before one succeeds. */
-  throttleRuns = 0;
-  /** How many `get` calls a freshly run VM reports PENDING before becoming RUNNING. */
-  pendingPolls = 0;
-  /** When true, a freshly run VM is TERMINATED on its first `get` (a failed boot). */
-  terminateAfterRun = false;
-  /** This many runs come back already TERMINATED (WP8.2): a client token replayed onto a dead VM. */
-  terminateNextRuns = 0;
+  /** Consumed one per `run()`, in order; `defaultPlan` answers once it is empty. */
+  readonly plan: RunPlan[] = [];
+  defaultPlan: RunPlan = { pendingPolls: 0, endsIn: "RUNNING" };
   private counter = 0;
-  private readonly pendingLeft = new Map<string, number>();
+  private readonly boots = new Map<string, { pendingPolls: number; endsIn: MicrovmState }>();
 
   add(info: Partial<MicrovmInfo> & { microvmId: string }): MicrovmInfo {
     const full: MicrovmInfo = {
@@ -131,23 +135,22 @@ export class FakeMicrovmClient implements MicrovmClient {
   }
 
   async run(params: RunMicrovmParams): Promise<MicrovmInfo> {
-    if (this.throttleRuns > 0) {
-      this.throttleRuns--;
+    const plan = this.plan.shift() ?? this.defaultPlan;
+    if ("throttle" in plan) {
       const error = new Error("Rate exceeded");
       error.name = "ThrottlingException";
       throw error;
     }
     this.counter++;
     const microvmId = `mvm-${this.counter}`;
-    const replayed = this.terminateNextRuns > 0;
-    if (replayed) this.terminateNextRuns--;
-    const info = this.add({
-      microvmId,
-      state: replayed ? "TERMINATED" : "PENDING",
-      imageArn: params.imageArn,
-      imageVersion: params.imageVersion ?? "1",
-    });
-    this.pendingLeft.set(microvmId, this.pendingPolls);
+    const base = { microvmId, imageArn: params.imageArn, imageVersion: params.imageVersion ?? "1" };
+    let info: MicrovmInfo;
+    if ("replayTerminated" in plan) {
+      info = this.add({ ...base, state: "TERMINATED" });
+    } else {
+      info = this.add({ ...base, state: "PENDING" });
+      this.boots.set(microvmId, { pendingPolls: plan.pendingPolls, endsIn: plan.endsIn });
+    }
     this.runs.push({ params, microvmId });
     return { ...info };
   }
@@ -155,11 +158,10 @@ export class FakeMicrovmClient implements MicrovmClient {
   async get(microvmId: string): Promise<MicrovmInfo | null> {
     const vm = this.vms.get(microvmId);
     if (!vm) return null;
-    const left = this.pendingLeft.get(microvmId);
-    if (left !== undefined && vm.state === "PENDING") {
-      if (this.terminateAfterRun) vm.state = "TERMINATED";
-      else if (left <= 0) vm.state = "RUNNING";
-      else this.pendingLeft.set(microvmId, left - 1);
+    const boot = this.boots.get(microvmId);
+    if (boot && vm.state === "PENDING") {
+      if (boot.pendingPolls <= 0) vm.state = boot.endsIn;
+      else boot.pendingPolls--;
     }
     return { ...vm };
   }

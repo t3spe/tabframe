@@ -5,6 +5,7 @@
 // TABFRAME_PUBLIC_PORT / TABFRAME_PRIVATE_PORT (defaults 4080/4081; 0 picks free ports).
 import { type ChildProcess, spawn } from "node:child_process";
 import path from "node:path";
+import { spawnPrefixed } from "./_proc.ts";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const watch = !process.argv.includes("--no-watch");
@@ -12,7 +13,7 @@ const cores = Number(process.env.TABFRAME_LOCAL_CORES ?? "2");
 const children = new Map<string, ChildProcess>();
 let shuttingDown = false;
 
-function say(event: string, fields: Record<string, unknown> = {}): void {
+function say(event: string, fields: object = {}): void {
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`);
 }
 
@@ -23,27 +24,13 @@ function run(
   env: Record<string, string>,
   onLine?: (line: string) => void,
 ): ChildProcess {
-  const child = spawn(cmd, args, {
+  const child = spawnPrefixed(name, cmd, args, {
     cwd: root,
-    env: { ...process.env, ...env },
-    stdio: ["ignore", "pipe", "pipe"],
+    env,
+    stderr: "prefix",
+    ...(onLine ? { onLine } : {}),
   });
   children.set(name, child);
-  const prefix = (stream: NodeJS.ReadableStream | null, isErr: boolean) => {
-    let buf = "";
-    stream?.on("data", (d: Buffer) => {
-      buf += d.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line) continue;
-        (isErr ? process.stderr : process.stdout).write(`[${name}] ${line}\n`);
-        onLine?.(line);
-      }
-    });
-  };
-  prefix(child.stdout, false);
-  prefix(child.stderr, true);
   child.on("exit", (code, signal) => {
     children.delete(name);
     if (shuttingDown) return;

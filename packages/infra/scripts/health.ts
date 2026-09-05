@@ -1,79 +1,33 @@
-// `mise run health`: the active control plane's /health and /diag through the MicroVM proxy on
-// the private port, the way the fleet reaches it — a fleet token for port 8081 plus the fleet
-// secret from Secrets Manager. Output is masked; nothing here reaches a browser.
-import { GetFunctionConfigurationCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import {
-  CreateMicrovmAuthTokenCommand,
-  GetMicrovmCommand,
-  LambdaMicrovmsClient,
-} from "@aws-sdk/client-lambda-microvms";
-import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { maskAccount } from "./mask.ts";
+// `mise run health`: the active control plane's /health and /diag through the MicroVM proxy on the
+// private port, the way the fleet reaches it — a fleet token for that port plus the fleet secret.
+// Output is masked; nothing here reaches a browser.
+import { HttpControlPlaneClient, PRIVATE_PORT } from "../../fleet/src/cp-client.ts";
+import { maskMicrovmIds, maskSecrets } from "../../fleet/src/mask.ts";
+import { operatorClients, stackResourceId } from "../../fleet/src/operator.ts";
+import { normalizeEndpoint } from "../../fleet/src/types.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
-// The secret's ARN is not a stack output; the rotate function carries it in its environment,
-// which is exactly what the control plane was handed in its run payload.
-const rotateConfig = await new LambdaClient({ region }).send(
-  new GetFunctionConfigurationCommand({ FunctionName: "tabframe-rotate" }),
-);
-const secretArn = rotateConfig.Environment?.Variables?.TABFRAME_FLEET_SECRET_ARN;
-const pointerRaw = (
-  (await new SSMClient({ region }).send(
-    new GetParameterCommand({ Name: "/tabframe/pointer" }),
-  )) as {
-    Parameter?: { Value?: string };
-  }
-).Parameter?.Value;
-const pointer = JSON.parse(pointerRaw ?? "{}") as {
-  state?: string;
-  microvmId?: string;
-  endpoint?: string;
-  generation?: number;
-  imageVersion?: string | null;
-  pinnedImageVersion?: string | null;
-};
+const { pointer, microvms, secrets } = operatorClients();
+const p = await pointer.read();
 console.log(
-  `pointer: generation ${pointer.generation ?? "?"}, image version ${pointer.imageVersion ?? "unknown"}${pointer.pinnedImageVersion ? ` (pinned to ${pointer.pinnedImageVersion})` : ""}`,
+  `pointer: generation ${p.generation}, image version ${p.imageVersion ?? "unknown"}${p.pinnedImageVersion ? ` (pinned to ${p.pinnedImageVersion})` : ""}`,
 );
-if (pointer.state !== "on" || !pointer.microvmId || !pointer.endpoint) {
-  console.log(`pointer: ${pointer.state ?? "unset"} — nothing to ask`);
+if (p.state !== "on" || !p.microvmId || !p.endpoint) {
+  console.log(`pointer: ${p.state} — nothing to ask`);
   process.exit(0);
 }
-const mv = new LambdaMicrovmsClient({ region });
-const tok = await mv.send(
-  new CreateMicrovmAuthTokenCommand({
-    microvmIdentifier: pointer.microvmId,
-    expirationInMinutes: 1,
-    allowedPorts: [{ port: 8081 }],
-  }),
-);
-const token = tok.authToken?.["X-aws-proxy-auth"] ?? "";
-let secret = "";
-if (secretArn) {
-  const sv = await new SecretsManagerClient({ region }).send(
-    new GetSecretValueCommand({ SecretId: secretArn }),
-  );
-  secret = sv.SecretString ?? "";
-}
-const host = pointer.endpoint.replace(/^https?:\/\//, "").replace(/\/$/, "");
-const mask = (text: string) => maskAccount(text).replace(/microvm-[0-9a-f-]{36}/g, "<microvm-id>");
+// The secret's ARN is not a stack output; the Core stack's FleetSecret resource names it.
+const secret = await secrets.read(await stackResourceId("TabframeCore", "FleetSecret"));
+const cp = new HttpControlPlaneClient({ microvms, secret });
+const target = { microvmId: p.microvmId, endpoint: normalizeEndpoint(p.endpoint) };
+const mask = (text: string) => maskMicrovmIds(maskSecrets(text));
 let cores: Array<{ microvmId: string; ageMs: number; linked: boolean }> = [];
 for (const path of ["/health", "/diag"]) {
-  const res = await fetch(`https://${host}${path}`, {
-    method: path === "/diag" ? "POST" : "GET",
-    headers: {
-      "X-aws-proxy-auth": token,
-      "X-aws-proxy-port": "8081",
-      "x-tabframe-fleet-secret": secret,
-    },
-  });
-  const text = await res.text();
-  console.log(`${path} ${res.status} (generation ${pointer.generation ?? "?"})`);
-  console.log(mask(text));
-  if (path === "/health" && res.ok) {
+  const { status, body } = await cp.probe(target, path);
+  console.log(`${path} ${status} (generation ${p.generation})`);
+  console.log(mask(body));
+  if (path === "/health" && status >= 200 && status < 300) {
     try {
-      cores = (JSON.parse(text) as { cores?: typeof cores }).cores ?? [];
+      cores = (JSON.parse(body) as { cores?: typeof cores }).cores ?? [];
     } catch {
       /* not json */
     }
@@ -85,26 +39,19 @@ for (const path of ["/health", "/diag"]) {
 // dead one. Each MicroVM needs a token of its own.
 if (process.argv.includes("--cores")) {
   for (const core of cores) {
-    const t = await mv.send(
-      new CreateMicrovmAuthTokenCommand({
-        microvmIdentifier: core.microvmId,
-        expirationInMinutes: 1,
-        allowedPorts: [{ port: 8081 }],
-      }),
-    );
-    const coreToken = t.authToken?.["X-aws-proxy-auth"] ?? "";
-    const g = await mv.send(new GetMicrovmCommand({ microvmIdentifier: core.microvmId }));
-    const coreHost = (g.endpoint ?? "").replace(/^https?:\/\//, "").replace(/\/$/, "");
-    let line = `state ${g.state}, no endpoint`;
-    if (coreHost) {
+    const coreToken = await microvms.createAuthToken(core.microvmId, 1, [{ port: PRIVATE_PORT }]);
+    const g = await microvms.get(core.microvmId);
+    const state = g?.state ?? "not-found";
+    let line = `state ${state}, no endpoint`;
+    if (g?.endpoint) {
       try {
-        const res = await fetch(`https://${coreHost}/health`, {
-          headers: { "X-aws-proxy-auth": coreToken, "X-aws-proxy-port": "8081" },
+        const res = await fetch(`https://${g.endpoint}/health`, {
+          headers: { "X-aws-proxy-auth": coreToken, "X-aws-proxy-port": String(PRIVATE_PORT) },
           signal: AbortSignal.timeout(10_000),
         });
-        line = `state ${g.state}, /health ${res.status}: ${mask(await res.text()).slice(0, 400)}`;
+        line = `state ${state}, /health ${res.status}: ${mask(await res.text()).slice(0, 400)}`;
       } catch (err) {
-        line = `state ${g.state}, /health unreachable: ${String(err).slice(0, 120)}`;
+        line = `state ${state}, /health unreachable: ${String(err).slice(0, 120)}`;
       }
     }
     console.log(

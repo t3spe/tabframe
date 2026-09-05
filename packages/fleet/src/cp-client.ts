@@ -1,9 +1,10 @@
 // Talking to a control plane's private port through the MicroVM proxy (design §9.3, §9.4). Every
-// call mints a short-lived token scoped to that MicroVM and port 8081, and carries the fleet
-// secret from the run payload; browser tokens are scoped to 8080 and cannot reach any of this.
+// call mints a short-lived token scoped to that MicroVM and the private port, and carries the fleet
+// secret from the run payload; browser tokens are scoped to the public port and reach none of this.
+import { PORTS } from "./names.ts";
 import type { MicrovmClient } from "./types.ts";
 
-export const PRIVATE_PORT = 8081;
+export const PRIVATE_PORT = PORTS.private;
 /** Tokens for a fleet call live as briefly as the API allows. */
 export const FLEET_TOKEN_MINUTES = 1;
 /**
@@ -53,8 +54,14 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
   }) {
     this.microvms = opts.microvms;
     this.secret = opts.secret;
-    this.fetchImpl = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+  }
+
+  /** One request, no retries: the status and body as the control plane answered them. */
+  async probe(target: ControlPlaneTarget, path: string): Promise<{ status: number; body: string }> {
+    const res = await this.request(target, path);
+    return { status: res.status, body: res.text };
   }
 
   private async call(target: ControlPlaneTarget, path: string, body?: unknown): Promise<string> {
@@ -74,6 +81,22 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
     path: string,
     body?: unknown,
   ): Promise<string> {
+    const res = await this.request(target, path, body);
+    if (!res.ok) {
+      const error = new Error(`${path} on ${target.microvmId} answered ${res.status}`) as Error & {
+        status?: number;
+      };
+      error.status = res.status;
+      throw error;
+    }
+    return res.text;
+  }
+
+  private async request(
+    target: ControlPlaneTarget,
+    path: string,
+    body?: unknown,
+  ): Promise<{ ok: boolean; status: number; text: string }> {
     const token = await this.microvms.createAuthToken(target.microvmId, FLEET_TOKEN_MINUTES, [
       { port: PRIVATE_PORT },
     ]);
@@ -94,17 +117,7 @@ export class HttpControlPlaneClient implements ControlPlaneClient {
           : { body: typeof body === "string" ? body : JSON.stringify(body) }),
         signal: controller.signal,
       });
-      const text = await res.text();
-      if (!res.ok) {
-        const error = new Error(
-          `${path} on ${target.microvmId} answered ${res.status}`,
-        ) as Error & {
-          status?: number;
-        };
-        error.status = res.status;
-        throw error;
-      }
-      return text;
+      return { ok: res.ok, status: res.status, text: await res.text() };
     } finally {
       clearTimeout(timer);
     }

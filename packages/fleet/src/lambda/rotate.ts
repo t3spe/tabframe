@@ -1,6 +1,5 @@
-// Lambda entry point for the rotate function. Wires real AWS clients; all logic is in ../rotate.ts.
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import { SecretsManagerReader, SsmPointerStore } from "../aws.ts";
+// Lambda entry point for the rotate function. Wires real AWS clients; the logic is in ../rotate/.
+import { S3SnapshotIndex, SecretsManagerReader, SsmPointerStore } from "../aws.ts";
 import { loadRotateConfig } from "../config.ts";
 import { HttpControlPlaneClient } from "../cp-client.ts";
 import { SdkMicrovmClient } from "../microvm-client.ts";
@@ -9,25 +8,6 @@ import { consoleLogger, realClock, realSleeper } from "../types.ts";
 
 const config = loadRotateConfig(process.env);
 const microvms = new SdkMicrovmClient();
-const snapshotBucket = process.env.TABFRAME_SNAPSHOT_BUCKET ?? "";
-const s3 = new S3Client({});
-
-/**
- * The pointer the control plane keeps fresh (design §9.4). A successor is told about it at boot so
- * it is useful even if the handover never happens.
- */
-async function latestSnapshotKey(): Promise<string | null> {
-  if (!snapshotBucket) return null;
-  try {
-    const out = await s3.send(
-      new ListObjectsV2Command({ Bucket: snapshotBucket, Prefix: "latest.json.gz", MaxKeys: 1 }),
-    );
-    return out.Contents?.[0]?.Key ?? null;
-  } catch (error) {
-    consoleLogger.warn("rotate: could not read the latest snapshot key", { reason: String(error) });
-    return null;
-  }
-}
 
 const rotate = createRotateHandler({
   pointer: new SsmPointerStore(config.pointerParam),
@@ -38,13 +18,12 @@ const rotate = createRotateHandler({
   log: consoleLogger,
   config,
   controlPlane: (secret) => new HttpControlPlaneClient({ microvms, secret }),
-  latestSnapshotKey,
+  ...(config.snapshotBucket ? { snapshots: new S3SnapshotIndex(config.snapshotBucket) } : {}),
 });
 
 /**
- * A rotation that failed is an invocation that failed (WP8.1): before, `{ action: "failed" }`
- * returned as a success and the function's Errors metric never moved, so nothing could alarm.
- * The rotation is idempotent, so the platform's retries are safe.
+ * A rotation that failed is an invocation that failed, so the function's Errors metric moves and
+ * the alarm can fire. The rotation is idempotent, so the platform's retries are safe.
  */
 export const handler = async (event?: unknown) => {
   const result = await rotate(event);

@@ -1,6 +1,6 @@
 // `mise run up`: clear the off state, enable the schedule, launch a control plane.
+import { maskSecrets } from "../src/mask.ts";
+import { operatorDeps } from "../src/operator.ts";
 import { up } from "../src/ops.ts";
-import { mask, operatorDeps } from "./_deps.ts";
 
-const result = await up(await operatorDeps());
-console.log(mask(JSON.stringify(result)));
+console.log(maskSecrets(JSON.stringify(await up(await operatorDeps()))));

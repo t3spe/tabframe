@@ -1,24 +1,21 @@
-// `mise run dev:rotate`: a real handover on a laptop (design §12). It starts a control plane,
-// lets nodes and a browser attach, then runs the **real** rotate handler with a local driver: a
-// MicroVM client that spawns control-plane processes instead of MicroVMs, and a control-plane
-// client that talks to their private ports over plain HTTP. Everything else — the five steps, the
-// pointer, the failure paths — is the code that runs on AWS.
+// `mise run dev:rotate`: a real handover on a laptop (design §12). It starts a control plane, lets
+// nodes attach, then runs the **real** rotate handler with a local driver: a MicroVM client that
+// spawns control-plane processes instead of MicroVMs, and a control-plane client that talks to
+// their private ports over plain HTTP. Everything else — the five steps, the pointer, the failure
+// paths — is the code that runs on AWS.
 //
 // Flags: --cores N (default 2), --rotations N (default 1), --interval MS between rotations.
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import path from "node:path";
-import { HttpControlPlaneClient } from "@tabframe/fleet/cp-client";
-import { InMemoryPointerStore } from "@tabframe/fleet/pointer";
-import { createRotateHandler, type RotateResult } from "@tabframe/fleet/rotate";
-import type {
-  MicrovmClient,
-  MicrovmInfo,
-  MicrovmState,
-  PortSpec,
-  RunMicrovmParams,
-} from "@tabframe/fleet/types";
+import { type FetchLike, HttpControlPlaneClient } from "@tabframe/fleet/cp-client";
+import { HOOK_BASE } from "@tabframe/fleet/names";
+import { EMPTY_POINTER, InMemoryPointerStore } from "@tabframe/fleet/pointer";
+import { createRotateHandler } from "@tabframe/fleet/rotate";
+import type { SessionBody } from "@tabframe/fleet/session";
+import type { MicrovmClient, MicrovmInfo, PortSpec, RunMicrovmParams } from "@tabframe/fleet/types";
 import { consoleLogger, realClock, realSleeper } from "@tabframe/fleet/types";
+import { spawnPrefixed } from "./_proc.ts";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const arg = (name: string, fallback: number): number => {
@@ -30,13 +27,19 @@ const cores = arg("--cores", 2);
 const rotations = arg("--rotations", 1);
 const interval = arg("--interval", 8_000);
 
-function say(event: string, fields: Record<string, unknown> = {}): void {
+function say(event: string, fields: object = {}): void {
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`);
 }
 
 interface LocalVm {
   info: MicrovmInfo;
   child: ChildProcess;
+  publicPort: number;
+  privatePort: number;
+}
+
+interface Listening {
+  host: string;
   publicPort: number;
   privatePort: number;
 }
@@ -57,36 +60,33 @@ class LocalMicrovms implements MicrovmClient {
   async run(params: RunMicrovmParams): Promise<MicrovmInfo> {
     const microvmId = `microvm-local-${++this.counter}`;
     const payload = JSON.parse(params.runHookPayload) as { generation: number };
-    const child = spawn("node", [path.join(root, "packages/control-plane/src/main.ts")], {
-      cwd: root,
-      env: {
-        ...process.env,
-        TABFRAME_MODE: "local",
-        TABFRAME_PUBLIC_PORT: "0",
-        TABFRAME_PRIVATE_PORT: "0",
-        TABFRAME_WEB_DIR: "packages/web/dist",
-        TABFRAME_GENERATION: String(payload.generation),
-        TABFRAME_TICK_MS: "200",
-        TABFRAME_LOCAL_NEUTRAL: "1",
-      },
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    const ports = await new Promise<{ publicPort: number; privatePort: number; host: string }>(
-      (resolve, reject) => {
-        let buf = "";
-        child.stdout?.on("data", (d: Buffer) => {
-          buf += d.toString();
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-          for (const line of lines) {
-            process.stdout.write(`[${microvmId}] ${line}\n`);
-            if (line.includes('"listening"')) resolve(JSON.parse(line));
-          }
-        });
-        child.on("exit", (code) => reject(new Error(`control plane exited with ${code}`)));
-        setTimeout(() => reject(new Error("control plane did not start")), 20_000);
+    let onListening: (ports: Listening) => void = () => {};
+    const child = spawnPrefixed(
+      microvmId,
+      "node",
+      [path.join(root, "packages/control-plane/src/main.ts")],
+      {
+        cwd: root,
+        env: {
+          TABFRAME_MODE: "local",
+          TABFRAME_PUBLIC_PORT: "0",
+          TABFRAME_PRIVATE_PORT: "0",
+          TABFRAME_WEB_DIR: "packages/web/dist",
+          TABFRAME_GENERATION: String(payload.generation),
+          TABFRAME_TICK_MS: "200",
+          TABFRAME_LOCAL_NEUTRAL: "1",
+        },
+        stderr: "inherit",
+        onLine: (line) => {
+          if (line.includes('"listening"')) onListening(JSON.parse(line) as Listening);
+        },
       },
     );
+    const ports = await new Promise<Listening>((resolve, reject) => {
+      onListening = resolve;
+      child.on("exit", (code) => reject(new Error(`control plane exited with ${code}`)));
+      setTimeout(() => reject(new Error("control plane did not start")), 20_000);
+    });
     const info: MicrovmInfo = {
       microvmId,
       state: "RUNNING",
@@ -103,13 +103,10 @@ class LocalMicrovms implements MicrovmClient {
       privatePort: ports.privatePort,
     });
     // The run hook is what turns a neutral process into a control plane, exactly as in the image.
-    const res = await fetch(
-      `http://127.0.0.1:${ports.privatePort}/aws/lambda-microvms/runtime/v1/run`,
-      {
-        method: "POST",
-        body: JSON.stringify({ microvmId, runHookPayload: params.runHookPayload }),
-      },
-    );
+    const res = await fetch(`http://127.0.0.1:${ports.privatePort}${HOOK_BASE}/run`, {
+      method: "POST",
+      body: JSON.stringify({ microvmId, runHookPayload: params.runHookPayload }),
+    });
     if (!res.ok) throw new Error(`/run answered ${res.status}`);
     return info;
   }
@@ -124,7 +121,7 @@ class LocalMicrovms implements MicrovmClient {
     const vm = this.vms.get(microvmId);
     if (!vm) return;
     vm.child.kill("SIGTERM");
-    vm.info.state = "TERMINATED" as MicrovmState;
+    vm.info.state = "TERMINATED";
     this.vms.delete(microvmId);
   }
   async suspend(): Promise<void> {}
@@ -137,25 +134,11 @@ class LocalMicrovms implements MicrovmClient {
 // ---- the driver ------------------------------------------------------------------------------
 
 const microvms = new LocalMicrovms();
-const pointer = new InMemoryPointerStore({
-  state: "on",
-  microvmId: null,
-  endpoint: null,
-  generation: 0,
-  imageVersion: null,
-  updatedAt: "",
-  pending: null,
-});
+const pointer = new InMemoryPointerStore({ ...EMPTY_POINTER, state: "on" });
 /** Plain HTTP to a local private port; the proxy headers are harmless. */
+const localFetch: FetchLike = (url, init) => fetch(url.replace(/^https:/, "http:"), init);
 const httpClient = (secret: string) =>
-  new HttpControlPlaneClient({
-    microvms,
-    secret,
-    fetchImpl: (url, init) =>
-      fetch(url.replace(/^https:/, "http:"), init as RequestInit) as ReturnType<
-        NonNullable<ConstructorParameters<typeof HttpControlPlaneClient>[0]["fetchImpl"]>
-      >,
-  });
+  new HttpControlPlaneClient({ microvms, secret, fetchImpl: localFetch });
 
 const rotate = createRotateHandler({
   pointer,
@@ -174,28 +157,25 @@ const rotate = createRotateHandler({
     // Empty: each control plane serves blobs from its own port, so it keeps its local store base.
     storeBase: "",
     fleetSecretArn: "local",
+    snapshotBucket: null,
     readyTimeoutMs: 20_000,
     pollIntervalMs: 200,
   },
   controlPlane: httpClient,
-  latestSnapshotKey: async () => null,
 });
 
 const children: ChildProcess[] = [];
 function startCore(name: string, sessionUrl: string): void {
-  const child = spawn("node", [path.join(root, "packages/node/src/platform/node.ts")], {
-    cwd: root,
-    env: { ...process.env, TABFRAME_SESSION_URL: sessionUrl, TABFRAME_HOST_ID: name },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  children.push(child);
-  child.stdout?.on("data", (d: Buffer) => {
-    for (const line of d.toString().split("\n")) {
-      if (/"event":"(closed|status)"/.test(line) && line.includes('"state":"connecting"')) {
-        process.stdout.write(`[${name}] ${line}\n`);
-      }
-    }
-  });
+  children.push(
+    spawnPrefixed(name, "node", [path.join(root, "packages/node/src/platform/node.ts")], {
+      cwd: root,
+      env: { TABFRAME_SESSION_URL: sessionUrl, TABFRAME_HOST_ID: name },
+      stderr: "inherit",
+      // Only the reconnects: they are what a handover shows from a node's side.
+      echo: (line) =>
+        /"event":"(closed|status)"/.test(line) && line.includes('"state":"connecting"'),
+    }),
+  );
 }
 
 // A session endpoint of our own, so the nodes follow the pointer the way they follow the real one.
@@ -204,11 +184,11 @@ const sessionServer = createServer((_req, res) => {
   void (async () => {
     const p = await pointer.read();
     const port = p.microvmId ? microvms.publicPortOf(p.microvmId) : 0;
-    const body = port
+    const body: SessionBody = port
       ? {
           endpoint: `ws://127.0.0.1:${port}`,
           token: "local",
-          expiresAt: Date.now() + 30 * 60_000,
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
           storeBase: `http://127.0.0.1:${port}/blob`,
           generation: p.generation,
         }
@@ -221,20 +201,15 @@ await new Promise<void>((resolve) => sessionServer.listen(SESSION_PORT, "127.0.0
 const sessionUrl = `http://127.0.0.1:${SESSION_PORT}/`;
 
 say("dev-rotate-start", { sessionUrl, cores, rotations, interval });
-const first = await rotate();
-say("rotate", first as unknown as Record<string, unknown>);
+say("rotate", await rotate());
 for (let i = 1; i <= cores; i++) startCore(`core-${i}`, sessionUrl);
 
 for (let n = 1; n <= rotations; n++) {
   await new Promise((r) => setTimeout(r, interval));
   const before = await pointer.read();
-  const result: RotateResult = await rotate();
+  const result = await rotate();
   const after = await pointer.read();
-  say("rotate", {
-    ...(result as unknown as Record<string, unknown>),
-    from: before.generation,
-    to: after.generation,
-  });
+  say("rotate", { ...result, from: before.generation, to: after.generation });
 }
 
 say("dev-rotate-done", { generation: (await pointer.read()).generation });

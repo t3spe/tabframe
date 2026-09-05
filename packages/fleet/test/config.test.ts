@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   egressConnectorArn,
   ingressConnectorArn,
+  loadCanaryConfig,
   loadOpsConfig,
   loadRotateConfig,
   loadSessionConfig,
@@ -38,6 +39,7 @@ describe("config", () => {
       TABFRAME_SESSION_URL: "https://s/",
       TABFRAME_STORE_BASE: "https://d/",
       TABFRAME_FLEET_SECRET_ARN: "arn:secret",
+      TABFRAME_SNAPSHOT_BUCKET: "snapshots",
       AWS_REGION: "us-west-2",
     };
     expect(loadRotateConfig(env)).toMatchObject({
@@ -47,16 +49,35 @@ describe("config", () => {
       sessionUrl: "https://s/",
       storeBase: "https://d/",
       fleetSecretArn: "arn:secret",
+      snapshotBucket: "snapshots",
       region: "us-west-2",
     });
     expect(
-      loadRotateConfig({ ...env, TABFRAME_IMAGE_VERSION: undefined, AWS_REGION: undefined }),
+      loadRotateConfig({
+        ...env,
+        TABFRAME_IMAGE_VERSION: undefined,
+        TABFRAME_SNAPSHOT_BUCKET: undefined,
+        AWS_REGION: undefined,
+      }),
     ).toMatchObject({
       imageVersion: null,
+      snapshotBucket: null,
       region: "us-west-2",
     });
     expect(() => loadRotateConfig({ ...env, TABFRAME_CP_ROLE_ARN: undefined })).toThrow(
       "TABFRAME_CP_ROLE_ARN",
+    );
+  });
+
+  test("canary config requires both addresses", () => {
+    expect(
+      loadCanaryConfig({ TABFRAME_WEB_ORIGIN: "https://w", TABFRAME_SESSION_URL: "https://s/" }),
+    ).toEqual({ webOrigin: "https://w", sessionUrl: "https://s/" });
+    expect(() => loadCanaryConfig({ TABFRAME_WEB_ORIGIN: "https://w" })).toThrow(
+      "TABFRAME_SESSION_URL",
+    );
+    expect(() => loadCanaryConfig({ TABFRAME_SESSION_URL: "https://s/" })).toThrow(
+      "TABFRAME_WEB_ORIGIN",
     );
   });
 

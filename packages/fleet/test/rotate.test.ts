@@ -24,6 +24,7 @@ const config: RotateConfig = {
   sessionUrl: "https://abc.lambda-url.us-west-2.on.aws/",
   storeBase: "https://d123.cloudfront.net",
   fleetSecretArn: "arn:aws:secretsmanager:us-west-2:000000000000:secret:tabframe-fleet",
+  snapshotBucket: null,
   readyTimeoutMs: 30_000,
   pollIntervalMs: 2000,
 };
@@ -98,7 +99,7 @@ describe("rotate handler", () => {
     ]);
     expect(run.params.idlePolicy).toEqual(CONTROL_PLANE_IDLE_POLICY);
     expect(run.params.maximumDurationInSeconds).toBe(CONTROL_PLANE_MAX_DURATION_SECONDS);
-    expect(run.params.clientToken).toMatch(/^tabframe-cp-g2-\d+$/); // per generation and hour (WP8.1)
+    expect(run.params.clientToken).toMatch(/^tabframe-cp-g2-\d+$/); // per generation and hour
 
     const payload = JSON.parse(run.params.runHookPayload) as ControlPlanePayload;
     expect(payload).toEqual({
@@ -126,14 +127,14 @@ describe("rotate handler", () => {
   });
 
   test("polls until RUNNING, sleeping the poll interval each time", async () => {
-    microvms.pendingPolls = 3;
+    microvms.plan.push({ pendingPolls: 3, endsIn: "RUNNING" });
     const result = await handler(pointerStoreWith({ state: "on" }))();
     expect(result.action).toBe("launched");
     expect(sleep.slept).toEqual([2000, 2000, 2000]);
   });
 
   test("backs off on throttling and then succeeds", async () => {
-    microvms.throttleRuns = 2;
+    microvms.plan.push({ throttle: true }, { throttle: true });
     const result = await handler(pointerStoreWith({ state: "on" }))();
     expect(result.action).toBe("launched");
     expect(sleep.slept.slice(0, 2)).toEqual([1000, 2000]);
@@ -142,7 +143,7 @@ describe("rotate handler", () => {
   });
 
   test("gives up after the backoff schedule is exhausted", async () => {
-    microvms.throttleRuns = 5;
+    for (let i = 0; i < 5; i++) microvms.plan.push({ throttle: true });
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer)();
     expect(result).toEqual({ action: "failed", reason: "Rate exceeded" });
@@ -150,12 +151,12 @@ describe("rotate handler", () => {
     expect(pointer.writes).toHaveLength(0);
   });
 
-  test("fails when the new control plane never reaches RUNNING before the deadline, and terminates it (WP8.1)", async () => {
-    microvms.pendingPolls = 1000;
+  test("fails when the new control plane never reaches RUNNING before the deadline, and terminates it", async () => {
+    microvms.plan.push({ pendingPolls: 1000, endsIn: "RUNNING" });
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer, { readyTimeoutMs: 5000 })();
     expect(result.action).toBe("failed");
-    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    // The launch is recorded before the wait and forgotten when it fails.
     expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
     // The successor that never came up is not left running for hours, blocking every later try.
     expect(microvms.terminated).toEqual([microvms.runs[0]?.microvmId ?? "?"]);
@@ -163,7 +164,7 @@ describe("rotate handler", () => {
     expect(microvms.runs[0]?.params.clientToken).toMatch(/^tabframe-cp-g\d+-\d+$/);
   });
 
-  test("a suspended control plane is left alone by the scheduled rule and rotated by an operator (WP8.1)", async () => {
+  test("a suspended control plane is left alone by the scheduled rule and rotated by an operator", async () => {
     microvms.add({ microvmId: "mvm-asleep", state: "SUSPENDED" });
     const pointer = pointerStoreWith({
       state: "on",
@@ -183,11 +184,11 @@ describe("rotate handler", () => {
   });
 
   test("fails when the new control plane terminates during boot", async () => {
-    microvms.terminateAfterRun = true;
+    microvms.plan.push({ pendingPolls: 0, endsIn: "TERMINATED" });
     const pointer = pointerStoreWith({ state: "on" });
     const result = await handler(pointer)();
     expect(result.action).toBe("failed");
-    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    // The launch is recorded before the wait and forgotten when it fails.
     expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
   });
 });
@@ -255,7 +256,7 @@ describe("rotation", () => {
       log,
       config,
       controlPlane: () => cp,
-      latestSnapshotKey: async () => latestSnapshotKey,
+      snapshots: { latestKey: async () => latestSnapshotKey },
     });
 
   test("the five steps happen in order, and the successor is told where the snapshot is", async () => {
@@ -315,19 +316,19 @@ describe("rotation", () => {
 
   test("a successor that never boots leaves the pointer alone", async () => {
     microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
-    microvms.terminateAfterRun = true;
+    microvms.plan.push({ pendingPolls: 0, endsIn: "TERMINATED" });
     const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
     const result = await rotate(pointer)();
     expect(result.action).toBe("failed");
-    // The launch is recorded before the wait and forgotten when it fails (WP8.3).
+    // The launch is recorded before the wait and forgotten when it fails.
     expect(pointer.writes.at(-1)?.pending ?? null).toBeNull();
     expect(pointer.writes.at(-1)?.microvmId).toBe("mvm-old");
-    // The successor that never booted is cleaned up; the old control plane is not touched (WP8.1).
+    // The successor that never booted is cleaned up; the old control plane is not touched.
     expect(microvms.terminated).toEqual(["mvm-1"]);
     expect(cp.calls).toEqual([]);
   });
 
-  test("a retire a dead rotation left behind is finished first (WP8.2)", async () => {
+  test("a retire a dead rotation left behind is finished first", async () => {
     microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
     microvms.add({ microvmId: "mvm-cur", state: "RUNNING" });
     const pointer = pointerStoreWith({
@@ -345,9 +346,9 @@ describe("rotation", () => {
     expect(pointer.writes[0]).toMatchObject({ microvmId: "mvm-cur", retiring: null });
   });
 
-  test("a run that resolves to a terminated replay is retried with a fresh token (WP8.2)", async () => {
+  test("a run that resolves to a terminated replay is retried with a fresh token", async () => {
     microvms.add({ microvmId: "mvm-old", state: "RUNNING" });
-    microvms.terminateNextRuns = 1;
+    microvms.plan.push({ replayTerminated: true });
     const pointer = pointerStoreWith({ state: "on", microvmId: "mvm-old", generation: 7 });
     const result = await rotate(pointer)();
     expect(result.action).toBe("rotated");
@@ -367,8 +368,8 @@ describe("rotation", () => {
       generation: 7,
       pending: { microvmId: "mvm-new", endpoint: successor.endpoint, generation: 8 },
     });
-    // WP6.7: the old control plane still serves, so the pending successor — which never adopted
-    // the live ledger — is terminated and a fresh rotation follows from the live one.
+    // The old control plane still serves, so the pending successor — which never adopted the live
+    // ledger — is terminated and a fresh rotation follows from the live one.
     const result = await rotate(pointer)();
     expect(result).toMatchObject({ action: "rotated", from: "mvm-old", generation: 8 });
     expect(microvms.runs).toHaveLength(1);
@@ -427,7 +428,7 @@ describe("rotation", () => {
     expect(pointer.writes).toHaveLength(0);
   });
 
-  // ---- WP6.7: what an interrupted or racing rotation leaves behind ------------------------------
+  // ---- what an interrupted or racing rotation leaves behind --------------------------------------
 
   test("a pending successor is terminated while the current control plane still serves; the rotation starts afresh", async () => {
     microvms.add({ microvmId: "mvm-9", state: "RUNNING" });

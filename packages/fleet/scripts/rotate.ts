@@ -1,8 +1,6 @@
-// `mise run deploy` ends with this: invoke the deployed rotate function and print its result.
-import { mask, operatorDeps } from "./_deps.ts";
+// `mise run rotate`: one rotation now, the same code the hourly rule runs; the result printed.
+import { maskSecrets } from "../src/mask.ts";
+import { operatorDeps } from "../src/operator.ts";
+import { rotateNow } from "../src/ops.ts";
 
-const deps = await operatorDeps();
-const result = await deps.invoker.invokeSync(deps.config.rotateFunctionName, {
-  reason: "operator",
-});
-console.log(mask(JSON.stringify(result)));
+console.log(maskSecrets(JSON.stringify(await rotateNow(await operatorDeps(), "operator"))));

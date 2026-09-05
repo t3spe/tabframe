@@ -1,11 +1,7 @@
 // The session function (design §8.1, §9.2): vends `{endpoint, token, expiresAt, storeBase, generation}`
 // with one shared token per control plane, serves the off state, and heals when nothing is running.
-import {
-  PUBLIC_PORT,
-  type SessionConfig,
-  TOKEN_REFRESH_MINUTES,
-  TOKEN_TTL_MINUTES,
-} from "./config.ts";
+import { type SessionConfig, TOKEN_REFRESH_MINUTES, TOKEN_TTL_MINUTES } from "./config.ts";
+import { PORTS } from "./names.ts";
 import type { Pointer, PointerStore } from "./pointer.ts";
 import {
   type Clock,
@@ -18,7 +14,7 @@ import {
 
 export interface FunctionUrlEvent {
   requestContext?: { http?: { method?: string; path?: string } };
-  /** The function URL passes the query string whole (WP8.3: `probe=1` is the canary's). */
+  /** The function URL passes the query string whole; `probe=1` is the canary's. */
   rawQueryString?: string;
   rawPath?: string;
   headers?: Record<string, string | undefined>;
@@ -30,7 +26,7 @@ export interface FunctionUrlResponse {
   body: string;
 }
 
-/** How long a warm session instance trusts its last pointer and MicroVM lookup (WP8.3). */
+/** How long a warm session instance trusts its last pointer and MicroVM lookup. */
 export const LOOKUP_MEMO_MS = 5_000;
 
 export type SessionBody =
@@ -99,7 +95,7 @@ export function createSessionHandler(deps: SessionDeps): SessionHandler {
     const refreshMs = TOKEN_REFRESH_MINUTES * 60_000;
     if (!cache || cache.microvmId !== microvmId || now - cache.mintedAt >= refreshMs) {
       const token = await microvms.createAuthToken(microvmId, TOKEN_TTL_MINUTES, [
-        { port: PUBLIC_PORT },
+        { port: PORTS.public },
       ]);
       cache = { microvmId, token, mintedAt: now };
       log.info("session: minted shared token", { microvmId });
@@ -115,13 +111,12 @@ export function createSessionHandler(deps: SessionDeps): SessionHandler {
     if (method === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
     if (method !== "GET") return respond(405, { error: "method not allowed" });
 
-    // `?probe=1` is the canary's question (WP8.3): what is the state, without healing anything —
-    // a heal from a monitor would keep a machine nobody watches booting all night.
+    // `?probe=1` asks for the state without healing: a heal from a monitor would keep a machine
+    // nobody watches booting all night.
     const probe = event.rawQueryString?.includes("probe=1") ?? false;
     const now = clock.now();
-    // The pointer and the MicroVM's state are remembered for five seconds per warm instance
-    // (WP8.3): every visitor's fetch used to cost an SSM read and a GetMicrovm, and one curl loop
-    // could throttle both for everyone.
+    // The pointer and the MicroVM's state are remembered per warm instance: every visitor's fetch
+    // would otherwise cost an SSM read and a GetMicrovm, and one curl loop could throttle both.
     let p: Pointer;
     let info: MicrovmInfo | null;
     if (memo && now - memo.at < LOOKUP_MEMO_MS) {

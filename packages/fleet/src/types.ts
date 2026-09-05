@@ -91,6 +91,12 @@ export interface SecretReader {
   read(secretId: string): Promise<string>;
 }
 
+/** Where the latest ledger snapshot is, so a successor can boot adopted without its predecessor. */
+export interface SnapshotIndex {
+  /** The latest snapshot's key; null when there is none or the index cannot be read. */
+  latestKey(): Promise<string | null>;
+}
+
 export interface Logger {
   info(message: string, fields?: Record<string, unknown>): void;
   warn(message: string, fields?: Record<string, unknown>): void;

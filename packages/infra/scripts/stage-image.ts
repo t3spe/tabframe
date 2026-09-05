@@ -1,81 +1,13 @@
-// Assemble the MicroVM image staging directory from the real control-plane bundle:
-//   packages/infra/image-dist/ = Dockerfile + package.json (ESM) + main.js + programs/
-// `cdk deploy` reads it through TABFRAME_IMAGE_DIR (the committed packages/infra/image/ holds a
-// placeholder so the image builds before the control plane exists).
-import { execSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+// `mise run build:image` ends with this: stage packages/infra/image-dist from the bundle.
 import path from "node:path";
+import { stageImage } from "../lib/stage-image.ts";
 
 const root = path.resolve(import.meta.dirname, "../../..");
-const src = path.join(root, "packages/infra/image");
-const bundle = path.join(root, "packages/control-plane/dist/main.js");
-const programs = path.join(root, "programs");
 const out = path.join(root, "packages/infra/image-dist");
-
-if (!existsSync(bundle)) {
-  console.error(`missing ${path.relative(root, bundle)}; run the bundle step first`);
+try {
+  const staged = stageImage(root, out);
+  console.log(`[stage-image] ${path.relative(root, out)} ready (${staged.entries.join(", ")})`);
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
-rmSync(out, { recursive: true, force: true });
-mkdirSync(path.join(out, "programs"), { recursive: true });
-copyFileSync(path.join(src, "Dockerfile"), path.join(out, "Dockerfile"));
-writeFileSync(path.join(out, "package.json"), '{ "type": "module" }\n');
-copyFileSync(bundle, path.join(out, "main.js"));
-// The sandbox worker: a bundled process cannot spawn itself as a worker thread, so its entry is
-// staged beside the bundle and named to the process by TABFRAME_SANDBOX_WORKER (§4.2, §9.3).
-const worker = path.join(root, "packages/control-plane/dist/node-worker.js");
-if (!existsSync(worker)) {
-  console.error(`missing ${path.relative(root, worker)}; run the bundle step first`);
-  process.exit(1);
-}
-copyFileSync(worker, path.join(out, "node-worker.js"));
-writeFileSync(path.join(out, "programs", ".gitkeep"), "");
-// The build stamp (WP8.1): the commit the image was staged from, shown by /health, so a running
-// generation can always be traced to a commit.
-let sha = "unknown";
-try {
-  sha = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim();
-  if (execSync("git status --porcelain", { encoding: "utf8" }).trim()) sha += "-dirty";
-} catch {
-  // not a git checkout: the stamp stays unknown
-}
-let branch = "unknown";
-try {
-  branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
-} catch {
-  // not a git checkout
-}
-// `at` is the commit's time, not the build's (WP8.3): a wall-clock stamp made every deploy a new
-// image version and a platform build even for a docs-only commit.
-let at: string | null = null;
-try {
-  at = execSync("git show -s --format=%cI HEAD", { encoding: "utf8" }).trim() || null;
-} catch {
-  // not a git checkout
-}
-writeFileSync(
-  path.join(out, "build.json"),
-  `${JSON.stringify({ sha, branch, ungated: process.env.TABFRAME_DEPLOY_UNGATED === "1", at })}\n`,
-);
-// Compiled demo programs (WP1.5+): programs/<name>/dist/* → programs/<name>/, and the program's
-// inputs (WP2.2): programs/<name>/in/* → programs/<name>/in/, which the control plane seeds as
-// /in/<file> of the bundle.
-if (existsSync(programs)) {
-  for (const name of readdirSync(programs)) {
-    const dist = path.join(programs, name, "dist");
-    if (!existsSync(dist)) continue;
-    mkdirSync(path.join(out, "programs", name), { recursive: true });
-    for (const f of readdirSync(dist))
-      copyFileSync(path.join(dist, f), path.join(out, "programs", name, f));
-    const inputs = path.join(programs, name, "in");
-    if (existsSync(inputs)) {
-      mkdirSync(path.join(out, "programs", name, "in"), { recursive: true });
-      for (const f of readdirSync(inputs))
-        copyFileSync(path.join(inputs, f), path.join(out, "programs", name, "in", f));
-    }
-    // The source (WP7.6): the seeder stores it and the editor opens the shipped program from it.
-    const source = path.join(programs, name, "assembly", "index.ts");
-    if (existsSync(source)) copyFileSync(source, path.join(out, "programs", name, "source.ts"));
-  }
-}
-console.log(`[stage-image] ${path.relative(root, out)} ready (${readdirSync(out).join(", ")})`);

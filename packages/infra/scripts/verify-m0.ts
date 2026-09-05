@@ -1,8 +1,7 @@
-// M0 verification runbook (design §9.6, plan WP0.11): retires the MicroVM unknowns against the real
-// account. Launches a throwaway MicroVM from the deployed image with a short idle policy, exercises
-// the endpoint through the real proxy, and prints one line per check. Account ids and tokens never
-// reach stdout. Results are printed for the operator.
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+// M0 verification runbook (design §9.6): retires the MicroVM unknowns against the real account.
+// Launches a throwaway MicroVM from the deployed image with a short idle policy, exercises the
+// endpoint through the real proxy, and prints one line per check. Account ids and tokens never
+// reach stdout.
 import { GetAccountSettingsCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   CreateMicrovmAuthTokenCommand,
@@ -13,43 +12,34 @@ import {
   TerminateMicrovmCommand,
 } from "@aws-sdk/client-lambda-microvms";
 import { GetServiceQuotaCommand, ServiceQuotasClient } from "@aws-sdk/client-service-quotas";
-import { maskAccount } from "./mask.ts";
+import { egressConnectorArn, ingressConnectorArn } from "../../fleet/src/config.ts";
+import { maskSecrets } from "../../fleet/src/mask.ts";
+import { REGION_DEFAULT } from "../../fleet/src/names.ts";
+import { stackOutputs } from "../../fleet/src/operator.ts";
+import { record, results, sleep } from "./_runbook.ts";
 
-const region = process.env.AWS_REGION ?? "us-west-2";
+const region = process.env.AWS_REGION ?? REGION_DEFAULT;
 const only = process.argv.includes("--only")
   ? process.argv[process.argv.indexOf("--only") + 1]
   : null;
-const results: Array<{ check: string; result: string; pass: boolean | null }> = [];
-function record(check: string, result: string, pass: boolean | null = null): void {
-  results.push({ check, result, pass });
-  console.log(`${pass === null ? "·" : pass ? "✓" : "✗"} ${check}: ${maskAccount(result)}`);
-}
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- outputs -------------------------------------------------------------------------------------
-const cfn = new CloudFormationClient({ region });
-async function outputs(stack: string): Promise<Record<string, string>> {
-  const r = await cfn.send(new DescribeStacksCommand({ StackName: stack }));
-  return Object.fromEntries(
-    (r.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
-  );
-}
-const image = await outputs("TabframeImage");
-const core = await outputs("TabframeCore");
+const image = await stackOutputs("TabframeImage");
+const core = await stackOutputs("TabframeCore");
 const imageArn = image.ImageArn ?? "";
 const cpRoleArn = image.ControlPlaneRoleArn ?? "";
 const storeBase = `${core.WebOrigin}/blob`;
 if (!imageArn || !cpRoleArn) throw new Error("TabframeImage outputs missing; deploy first");
 
 // ---- account facts ---------------------------------------------------------------------------------
-const lambda = new LambdaClient({ region });
+const lambda = new LambdaClient({});
 const acct = await lambda.send(new GetAccountSettingsCommand({}));
 record(
   "Lambda concurrency",
   `${acct.AccountLimit?.ConcurrentExecutions} concurrent (jitter is the mechanism; increase requested)`,
   (acct.AccountLimit?.ConcurrentExecutions ?? 0) >= 10,
 );
-const quotas = new ServiceQuotasClient({ region });
+const quotas = new ServiceQuotasClient({});
 try {
   const q = await quotas.send(
     new GetServiceQuotaCommand({ ServiceCode: "lambda", QuotaCode: "L-CD1C0CC4" }),
@@ -60,18 +50,14 @@ try {
 }
 
 // ---- throwaway MicroVM -----------------------------------------------------------------------------
-const mv = new LambdaMicrovmsClient({ region });
+const mv = new LambdaMicrovmsClient({});
 const IDLE_SECONDS = 60;
 const run = await mv.send(
   new RunMicrovmCommand({
     imageIdentifier: imageArn,
     executionRoleArn: cpRoleArn,
-    ingressNetworkConnectors: [
-      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
-    ],
-    egressNetworkConnectors: [
-      `arn:aws:lambda:${region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
-    ],
+    ingressNetworkConnectors: [ingressConnectorArn(region)],
+    egressNetworkConnectors: [egressConnectorArn(region)],
     idlePolicy: {
       autoResumeEnabled: true,
       maxIdleDurationSeconds: IDLE_SECONDS,
@@ -333,5 +319,5 @@ try {
 console.log("\n| Check | Result | Pass |\n|---|---|---|");
 for (const r of results)
   console.log(
-    `| ${r.check} | ${maskAccount(r.result)} | ${r.pass === null ? "info" : r.pass ? "yes" : "no"} |`,
+    `| ${r.check} | ${maskSecrets(r.result)} | ${r.pass === null ? "info" : r.pass ? "yes" : "no"} |`,
   );

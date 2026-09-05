@@ -1,15 +1,17 @@
-// Core stack (design §11.4): buckets, CloudFront, the pointer parameter, the fleet secret, the budget.
+// Foundation stack, deployed as TabframeCore (design §11.4): buckets, CloudFront, the pointer
+// parameter, the fleet secret, the budget. The stack id stays "TabframeCore" because renaming a
+// deployed stack replaces it.
 import { pageCsp } from "@tabframe/protocol";
 import * as cdk from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { NAMES } from "./names.ts";
+import { NAMES } from "../../fleet/src/names.ts";
 
-export interface CoreStackProps extends cdk.StackProps {
+export interface FoundationStackProps extends cdk.StackProps {
   /** Notification address for the budget. When absent the budget is skipped with a synth warning. */
   budgetEmail?: string;
 }
 
-export class CoreStack extends cdk.Stack {
+export class FoundationStack extends cdk.Stack {
   readonly artifactsBucket: cdk.aws_s3.Bucket;
   readonly blobBucket: cdk.aws_s3.Bucket;
   readonly snapshotBucket: cdk.aws_s3.Bucket;
@@ -20,7 +22,7 @@ export class CoreStack extends cdk.Stack {
   /** `https://<distribution domain>` — the page origin and the store base. */
   readonly webOrigin: string;
 
-  constructor(scope: Construct, id: string, props: CoreStackProps) {
+  constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
 
     const s3 = cdk.aws_s3;
@@ -36,8 +38,8 @@ export class CoreStack extends cdk.Stack {
 
     this.artifactsBucket = privateBucket("Artifacts");
 
-    // The blob and snapshot buckets outlive the stack (WP8.1): a logical-id change or a property
-    // that forces replacement must not empty a year of content-addressed blobs the ledger names.
+    // The blob and snapshot buckets outlive the stack: a logical-id change or a property that
+    // forces replacement must not empty a year of content-addressed blobs the ledger names.
     this.blobBucket = privateBucket("Blobs", {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoDeleteObjects: false,
@@ -58,9 +60,8 @@ export class CoreStack extends cdk.Stack {
     this.snapshotBucket = privateBucket("Snapshots", {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       autoDeleteObjects: false,
-      // Generation snapshots expire after a day; `latest.json.gz` is the heal's fallback and stays
-      // (WP8.1: the rule without a prefix deleted it too, so a heal after a quiet day would have
-      // started from an empty ledger).
+      // Generation snapshots expire after a day; `latest.json.gz` is the heal's fallback and stays,
+      // so the rule is scoped to the generation prefix.
       lifecycleRules: [{ id: "expire-one-day", prefix: "g", expiration: cdk.Duration.days(1) }],
     });
 
@@ -68,9 +69,9 @@ export class CoreStack extends cdk.Stack {
 
     const cf = cdk.aws_cloudfront;
     const origins = cdk.aws_cloudfront_origins;
-    // Response headers (WP8.1): the page gets a content-security policy and the usual hardening;
-    // a blob is anyone's bytes on the page's own origin, so it is never sniffed into a document and
-    // never rendered — a navigation to it downloads.
+    // The page gets a content-security policy and the usual hardening; a blob is anyone's bytes on
+    // the page's own origin, so it is never sniffed into a document and never rendered — a
+    // navigation to it downloads.
     const pageHeaders = new cf.ResponseHeadersPolicy(this, "PageHeaders", {
       securityHeadersBehavior: {
         contentTypeOptions: { override: true },
@@ -85,7 +86,7 @@ export class CoreStack extends cdk.Stack {
           override: true,
         },
         contentSecurityPolicy: {
-          contentSecurityPolicy: pageCsp(this.region), // shared with the local server (WP8.2, WP8.3)
+          contentSecurityPolicy: pageCsp(this.region), // shared with the local server
           override: true,
         },
       },
@@ -95,7 +96,7 @@ export class CoreStack extends cdk.Stack {
         contentTypeOptions: { override: true },
         frameOptions: { frameOption: cf.HeadersFrameOption.DENY, override: true },
         // A security header goes here, never among the custom headers: CloudFront refuses the
-        // policy otherwise (found by the first deploy after WP8.1 — synth cannot see it).
+        // policy otherwise, and synth cannot see it.
         contentSecurityPolicy: { contentSecurityPolicy: "sandbox", override: true },
       },
       customHeadersBehavior: {
@@ -132,8 +133,8 @@ export class CoreStack extends cdk.Stack {
     });
     this.webOrigin = `https://${this.distribution.distributionDomainName}`;
 
-    // The pointer starts off (decision D20). The fleet functions rewrite it out of band; CloudFormation
-    // only touches it again if this template value changes.
+    // The pointer starts off (decision D20). The fleet functions rewrite it out of band;
+    // CloudFormation only touches it again if this template value changes.
     this.pointer = new cdk.aws_ssm.StringParameter(this, "Pointer", {
       parameterName: NAMES.pointerParam,
       stringValue: JSON.stringify({ state: "off" }),
