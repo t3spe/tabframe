@@ -134,6 +134,15 @@ export interface TaskRecord {
   failure: string | null;
 }
 
+/** Why the process fetches a blob on the core's behalf. */
+export type FetchPurpose =
+  | { type: "stageSpec"; executionId: string; taskId: string }
+  /** Does the root an execution inherits still exist? (design §5.4, expired-root fallback) */
+  | { type: "inheritRoot"; executionId: string };
+/** Why the process stores a blob: a folded manifest; `stage` is -1 for an execution's initial filesystem. */
+export type PutPurpose = { type: "manifest"; executionId: string; stage: number };
+export type BlobPurpose = FetchPurpose | PutPurpose;
+
 export type ExecutionStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface ExecutionRecord {
@@ -170,10 +179,8 @@ export interface ExecutionRecord {
   inheritedFrom: string | null;
   failure: string | null;
   counters: Counters;
-  /** When the pending store effect was issued, null while none is outstanding. */
-  waitingSince: number | null;
-  /** Store errors on the pending effect so far; the execution fails past a cap. */
-  storeErrors: number;
+  /** The store answer this execution waits for: asked again after `STORE_RETRY_MS`, given up past `STORE_ERRORS_MAX` errors. */
+  awaiting: { purpose: BlobPurpose; since: number; errors: number } | null;
 }
 
 /**

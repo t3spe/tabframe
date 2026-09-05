@@ -17,11 +17,11 @@ import {
   type StageSpec,
   type TaskLimits,
 } from "@tabframe/protocol";
-import type { BlobPurpose, Effect, Event } from "../src/events.ts";
+import type { Effect, Event } from "../src/events.ts";
 import { type Harness, harness } from "../src/harness.ts";
 import { seededRng } from "../src/interfaces.ts";
 import { checkInvariants } from "../src/invariants.ts";
-import type { ConnRole, ExecutionRecord, Ledger, TaskRecord } from "../src/ledger.ts";
+import type { ConnRole, ExecutionRecord, FetchPurpose, Ledger, TaskRecord } from "../src/ledger.ts";
 import { DEFAULT_TASK_LIMITS, YIELD_IDLE_MS } from "../src/policy.ts";
 import { stageTasks, wanted } from "../src/scheduler.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "../src/snapshot.ts";
@@ -574,7 +574,7 @@ class World implements ChaosWorld {
    * tiles (`tiles`) and pins a `done` follow-up to this frame's params, so every frame is one the
    * goldens cover and the compute cache already holds.
    */
-  private rewriteSpec(bytes: Uint8Array, purpose: BlobPurpose): Uint8Array {
+  private rewriteSpec(bytes: Uint8Array, purpose: FetchPurpose): Uint8Array {
     if (purpose.type !== "stageSpec") return bytes;
     let spec: StageSpec;
     try {

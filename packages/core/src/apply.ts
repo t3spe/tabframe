@@ -17,7 +17,7 @@ import {
   type TaskView,
 } from "@tabframe/protocol";
 import { BUDGETS, chargeLaunch, chargePresign, coolingDown, newBucket, take } from "./budgets.ts";
-import type { Effect, Event } from "./events.ts";
+import { type Effect, type Event, fetchResult } from "./events.ts";
 import {
   addProgram,
   afterTaskSettled,
@@ -27,10 +27,8 @@ import {
   ensureDefaultLoop,
   executionTasks,
   maybeStart,
-  onInheritRoot,
+  onFetched,
   onManifestStored,
-  onStageSpec,
-  onStoreError,
   pruneExecutions,
   resumeAll,
   resumePending,
@@ -129,29 +127,9 @@ export function apply(
       return [...r.effects, ...fill(ledger, now)];
     }
     case "blobFetched":
-      if (event.error !== undefined && event.purpose.type !== "manifest")
-        return onStoreError(ledger, event.purpose.executionId, event.error, now);
-      if (event.purpose.type === "stageSpec")
-        return onStageSpec(
-          ledger,
-          event.purpose.executionId,
-          event.purpose.taskId,
-          event.bytes,
-          now,
-        );
-      if (event.purpose.type === "inheritRoot")
-        return onInheritRoot(ledger, event.purpose.executionId, event.bytes, now);
-      return [];
+      return onFetched(ledger, event.purpose, fetchResult(event), now);
     case "blobStored":
-      if (event.purpose.type === "manifest")
-        return onManifestStored(
-          ledger,
-          event.purpose.executionId,
-          event.purpose.stage,
-          event.hash,
-          now,
-        );
-      return [];
+      return onManifestStored(ledger, event.purpose, event.hash, now);
   }
 }
 
@@ -237,13 +215,20 @@ function onMessage(
         if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "presign before hello", now);
         node.lastSeen = now;
         // A connection over its own budget is closed; a machine over its budget answers with no
-        // URLs (WP8.3), so an honest node's presign fails, its task is released and retried, and
-        // the node stays connected — closing it for someone else's spending swapped its socket and
-        // lost the result it was about to send.
+        // URLs, so an honest node's presign fails, its task is released and retried, and the node
+        // stays connected — closing it for someone else's spending would lose the result it was
+        // about to send.
         const charged = chargePresign(conn, ledger.session, d.msg.items, now);
         if (charged === "connection")
           return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
-        if (charged === "machine") return [{ kind: "presign", connId, items: [] }];
+        if (charged === "machine")
+          return [
+            {
+              kind: "send",
+              connId,
+              msg: { t: "presigned", v: PROTOCOL_VERSION, gen: ledger.meta.generation, urls: [] },
+            },
+          ];
         return [{ kind: "presign", connId, items: d.msg.items }];
       }
     }

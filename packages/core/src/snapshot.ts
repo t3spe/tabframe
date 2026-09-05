@@ -2,7 +2,7 @@
 // successor. The format stays at version 1: a field added later takes its default on the way in.
 import { fromBase64, toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
-import { resumePending } from "./executions.ts";
+import { pendingPurpose, resumePending } from "./executions.ts";
 import {
   type CloudCoreRecord,
   type ExecutionRecord,
@@ -30,6 +30,13 @@ export interface SerializedLedger {
   tasks: Array<Omit<TaskRecord, "input"> & { input: string }>;
 }
 
+/** An execution as older snapshots wrote it, before the ledger recorded what it was waiting for. */
+type StoredExecution = Omit<ExecutionRecord, "awaiting"> & {
+  awaiting?: ExecutionRecord["awaiting"];
+  waitingSince?: number | null;
+  storeErrors?: number;
+};
+
 export function serializeLedger(ledger: Ledger): string {
   const s: SerializedLedger = {
     version: 1,
@@ -51,7 +58,8 @@ export function deserializeLedger(json: string): Ledger {
   const s = JSON.parse(json) as SerializedLedger;
   if (s.version !== 1) throw new Error(`unsupported ledger version ${String(s.version)}`);
   const m = s.meta;
-  return {
+  const legacyWaiting = new Map<string, { since: number; errors: number }>();
+  const ledger: Ledger = {
     meta: {
       generation: m.generation,
       phase: "active",
@@ -102,15 +110,25 @@ export function deserializeLedger(json: string): Ledger {
       ]),
     ),
     executions: new Map(
-      s.executions.map((e) => [
-        e.executionId,
-        { ...e, waitingSince: e.waitingSince ?? null, storeErrors: e.storeErrors ?? 0 },
-      ]),
+      (s.executions as StoredExecution[]).map(({ waitingSince, storeErrors, ...e }) => {
+        if (e.awaiting === undefined && waitingSince != null)
+          legacyWaiting.set(e.executionId, { since: waitingSince, errors: storeErrors ?? 0 });
+        return [e.executionId, { ...e, awaiting: e.awaiting ?? null }];
+      }),
     ),
     queue: s.queue,
     running: s.running,
     tasks: new Map(s.tasks.map((t) => [t.taskId, { ...t, input: fromBase64(t.input) }])),
   };
+  // A snapshot from before `awaiting` said only that a store answer was pending; which one is read
+  // off the execution's state, as the older control plane did on every retry.
+  for (const [executionId, legacy] of legacyWaiting) {
+    const exec = ledger.executions.get(executionId);
+    if (!exec) continue;
+    const purpose = pendingPurpose(ledger, exec);
+    exec.awaiting = purpose ? { purpose, ...legacy } : null;
+  }
+  return ledger;
 }
 
 /**

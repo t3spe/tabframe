@@ -3,7 +3,7 @@
 // doubles, three times at most, and a node's loss is not a release; the machine's presign budget
 // answers with nothing instead of closing an honest connection.
 import { describe, expect, test } from "bun:test";
-import { CLOSE, RELEASED } from "@tabframe/protocol";
+import { CLOSE, PROTOCOL_VERSION, RELEASED } from "@tabframe/protocol";
 import { H, harness, renderSpec } from "./harness.ts";
 import { COMPUTE_MS_REPORT_CAP, RELEASES_PER_TASK_CAP } from "./policy.ts";
 
@@ -119,7 +119,13 @@ describe("the machine's presign budget (WP8.3)", () => {
     h.ledger.session.presignItems.tokens = 0;
     h.ledger.session.presignItems.refilledAt = h.now;
     const node = h.send("c1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
-    expect(node).toEqual([{ kind: "presign", connId: "c1", items: [] }]);
+    expect(node).toEqual([
+      {
+        kind: "send",
+        connId: "c1",
+        msg: { t: "presigned", v: PROTOCOL_VERSION, gen: h.gen, urls: [] },
+      },
+    ]);
     expect(node.some((e) => e.kind === "close")).toBe(false);
     const obs = h.send("o1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
     expect(obs.some((e) => e.kind === "send" && e.msg.t === "error")).toBe(true);

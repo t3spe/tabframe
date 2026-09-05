@@ -9,14 +9,18 @@ import {
   PROTOCOL_VERSION,
   type ProgramManifest,
 } from "@tabframe/protocol";
-import type { Effect } from "./events.ts";
+import type { Effect, FetchResult } from "./events.ts";
 import { forgetCloudCore } from "./fleet.ts";
 import {
+  type BlobPurpose,
   type ExecutionRecord,
   emptyCounters,
   executionView,
+  type FetchPurpose,
+  type LaunchRequest,
   type Ledger,
   type NodeRecord,
+  type PutPurpose,
   queueEntry,
   type TaskRecord,
   taskView,
@@ -49,8 +53,8 @@ export function addProgram(
 ): Effect[] {
   ledger.programs.set(bundle, { bundle, module, manifest, files, addedAt: now });
   const effects = broadcast(ledger, { t: "programAdded", program: bundle, name: manifest.name });
-  // Bounded (WP8.2): every program rides page 0 of every snapshot. Past the cap the oldest ones
-  // nobody runs, refers to, or loops on are retired.
+  // Every program rides page 0 of every snapshot: past the cap the oldest ones nobody runs, refers
+  // to, or loops on are retired.
   const live = [...ledger.programs.values()].filter((p) => !p.retired);
   if (live.length > PROGRAMS_CAP) {
     const referenced = new Set([...ledger.executions.values()].map((e) => e.bundle));
@@ -65,9 +69,9 @@ export function addProgram(
 }
 
 /**
- * A newer bundle ships under this program's name (WP4.9): the record is hidden and refuses
- * launches, so the follow-up chain of the old frame ends, and it is dropped once no execution
- * refers to it — `fill` and inheritance still need the module and files of one that does.
+ * A newer bundle ships under this program's name: the record is hidden and refuses launches, so
+ * the follow-up chain of the old frame ends, and it is dropped once no execution refers to it —
+ * `fill` and inheritance still need the module and files of one that does.
  */
 export function retireProgram(ledger: Ledger, bundle: string): Effect[] {
   const program = ledger.programs.get(bundle);
@@ -96,13 +100,6 @@ function dropUnreferencedRetired(ledger: Ledger): void {
   }
 }
 
-export interface LaunchRequest {
-  bundle: string;
-  params: Record<string, unknown>;
-  human: boolean;
-  inherit: string | "latest" | null;
-}
-
 /** Queue an execution: human launches go ahead of automatic continuations (design §6.7). */
 export function enqueue(
   ledger: Ledger,
@@ -112,8 +109,6 @@ export function enqueue(
   const program = ledger.programs.get(req.bundle);
   if (!program) return { effects: [], executionId: null, error: "unknown program" };
   if (program.retired) return { effects: [], executionId: null, error: "program retired" };
-  // Params travel in every executionStarted, snapshot page, and plan assignment (WP8.1): a bound
-  // keeps the 64 KB frame from being blown by one launch; the queue is bounded for the same reason.
   if (byteLength(canonicalStringify(req.params)) > PARAMS_MAX_BYTES)
     return { effects: [], executionId: null, error: `params over ${PARAMS_MAX_BYTES} bytes` };
   if (ledger.queue.length >= QUEUE_CAP)
@@ -140,9 +135,9 @@ export function enqueue(
     stageTaskIds: [],
     planTaskId: null,
     // The filesystem starts from the bundle's own files; what it inherits is read back from the
-    // inherited root's manifest when the run starts (`onInheritRoot`), overlaid so a relaunched
-    // bundle's inputs and module always win over stale copies (design §5.4). The ledger's copy of
-    // an old execution's file map may be gone by then (`pruneExecutions`), the blob is not.
+    // inherited root's manifest when the run starts, overlaid so a relaunched bundle's inputs and
+    // module win over stale copies (design §5.4). The ledger's copy of the origin's file map may be
+    // pruned by then, the blob is not.
     root: inherited ? null : program.bundle,
     files: { ...program.files },
     sealedStage: -1,
@@ -154,8 +149,7 @@ export function enqueue(
     inheritedFrom: inherited?.executionId ?? null,
     failure: null,
     counters: emptyCounters(),
-    waitingSince: null,
-    storeErrors: 0,
+    awaiting: null,
   };
   ledger.executions.set(executionId, exec);
   if (req.human) {
@@ -202,7 +196,7 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   }
   // The loop's pause holds its queued continuations too, not only new launches: after a person's
   // launch ends, the follow-up the previous frame left in the queue would otherwise take the
-  // stage at once (WP4.4: word count's bars lasted a tick). A person's own launch never waits.
+  // stage at once. A person's own launch never waits.
   if (!queued.human && (!loopMayRun(ledger, now) || now < (ledger.meta.loopPausedUntil ?? 0)))
     return [];
   ledger.queue.shift();
@@ -212,23 +206,12 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   ledger.running = exec.executionId;
   const effects = exec.human ? [] : releaseYield(ledger); // the loop is back; a person's launch keeps the yield
   effects.push(...broadcast(ledger, { t: "executionStarted", execution: executionView(exec) }));
-  const inheritedRoot = exec.inheritedFrom
-    ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
-    : null;
-  if (inheritedRoot) {
-    // Blobs expire (a year, §5.4). Check the inherited root is still there before planning;
-    // the plan task waits for the answer.
-    exec.waitingSince = now;
-    effects.push({
-      kind: "fetchBlob",
-      hash: inheritedRoot,
-      purpose: { type: "inheritRoot", executionId: exec.executionId },
-    });
-    return effects;
-  }
-  if (exec.inheritedFrom && exec.root === null) {
-    // The origin was pruned between enqueue and start (WP8.1): say so and start from the bundle.
-    effects.push(...onInheritRoot(ledger, exec.executionId, null, now));
+  if (exec.root === null) {
+    // An inherited filesystem: blobs expire (design §5.4), so the root is checked before planning
+    // and the plan task waits for the answer.
+    effects.push(
+      ...issue(ledger, exec, { type: "inheritRoot", executionId: exec.executionId }, now),
+    );
     return effects;
   }
   effects.push(...createPlanTask(ledger, exec, 0, now));
@@ -236,46 +219,114 @@ export function maybeStart(ledger: Ledger, now: number): Effect[] {
   return effects;
 }
 
+/** The root of the execution this one inherits from, null when that execution or its root is gone. */
+function originRoot(ledger: Ledger, exec: ExecutionRecord): string | null {
+  return exec.inheritedFrom ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null) : null;
+}
+
+function samePurpose(a: BlobPurpose, b: BlobPurpose): boolean {
+  if (a.type !== b.type || a.executionId !== b.executionId) return false;
+  if (a.type === "stageSpec" && b.type === "stageSpec") return a.taskId === b.taskId;
+  if (a.type === "manifest" && b.type === "manifest") return a.stage === b.stage;
+  return true;
+}
+
+/** Is this the store answer the execution is waiting for? Anything else is stale or a repeat. */
+function answered(exec: ExecutionRecord, purpose: BlobPurpose): boolean {
+  return (
+    exec.status === "running" &&
+    exec.awaiting !== null &&
+    samePurpose(exec.awaiting.purpose, purpose)
+  );
+}
+
 /**
- * The answer about an inherited root (design §5.4). Present: merge the filesystems and store the
- * merged manifest, which becomes this execution's initial root. Gone: say so and start from the
- * bundle alone — a warning, not a failure, because the program can still run.
+ * Ask the process for the store answer the execution needs next and remember what is awaited, so
+ * a silent store or a mid-flight adoption can ask again. Errors on the same purpose carry over.
  */
-export function onInheritRoot(
+function issue(ledger: Ledger, exec: ExecutionRecord, purpose: BlobPurpose, now: number): Effect[] {
+  const errors =
+    exec.awaiting && samePurpose(exec.awaiting.purpose, purpose) ? exec.awaiting.errors : 0;
+  switch (purpose.type) {
+    case "inheritRoot": {
+      const root = originRoot(ledger, exec);
+      // The origin was pruned between enqueue and start: say so and start from the bundle.
+      if (root === null) return inheritFrom(ledger, exec, null, "gone", now);
+      exec.awaiting = { purpose, since: now, errors };
+      return [{ kind: "fetchBlob", hash: root, purpose }];
+    }
+    case "stageSpec": {
+      const plan = ledger.tasks.get(purpose.taskId);
+      if (plan?.status !== "done" || !plan.accepted) return [];
+      exec.awaiting = { purpose, since: now, errors };
+      return [{ kind: "fetchBlob", hash: plan.accepted.output, purpose }];
+    }
+    case "manifest": {
+      const files = purpose.stage === -1 ? exec.files : stageFiles(ledger, exec).files;
+      exec.awaiting = { purpose, since: now, errors };
+      return [{ kind: "putBlob", bytes: manifestBytes(files), purpose }];
+    }
+  }
+}
+
+function manifestBytes(files: FsManifest["files"]): Uint8Array {
+  const manifest: FsManifest = { version: 1, files };
+  return encoder.encode(canonicalStringify(manifest));
+}
+
+/** The store answered a fetch the core asked for. */
+export function onFetched(
   ledger: Ledger,
-  executionId: string,
-  bytes: Uint8Array | null,
+  purpose: FetchPurpose,
+  result: FetchResult,
   now: number,
 ): Effect[] {
-  const exec = ledger.executions.get(executionId);
-  if (exec?.status !== "running" || exec.root !== null) return [];
-  exec.waitingSince = null;
-  exec.storeErrors = 0;
+  const exec = ledger.executions.get(purpose.executionId);
+  if (!exec || !answered(exec, purpose)) return [];
+  if (result.kind === "error") return storeError(ledger, exec, result.reason, now);
+  const bytes = result.kind === "bytes" ? result.bytes : null;
+  switch (purpose.type) {
+    case "stageSpec": {
+      const planTask = ledger.tasks.get(purpose.taskId);
+      if (!planTask) return [];
+      return onStageSpec(ledger, exec, planTask, bytes, now);
+    }
+    case "inheritRoot": {
+      if (bytes === null) return inheritFrom(ledger, exec, null, "gone", now);
+      return inheritFrom(ledger, exec, parseManifest(bytes), "unreadable", now);
+    }
+  }
+}
+
+/**
+ * The answer about an inherited root (design §5.4). Present: merge the filesystems and store the
+ * merged manifest, which becomes this execution's initial root. Gone or unreadable: say so and
+ * start from the bundle alone — a warning, not a failure, because the program can still run.
+ */
+function inheritFrom(
+  ledger: Ledger,
+  exec: ExecutionRecord,
+  inherited: FsManifest["files"] | null,
+  why: "gone" | "unreadable",
+  now: number,
+): Effect[] {
+  exec.awaiting = null;
   const program = ledger.programs.get(exec.bundle);
-  const inherited = bytes === null ? null : parseManifest(bytes);
   if (inherited === null) {
     exec.files = { ...(program?.files ?? {}) };
     exec.root = exec.bundle;
     const effects = broadcast(ledger, {
       t: "executionWarning",
-      executionId,
+      executionId: exec.executionId,
       code: "expired-root",
-      message: `the filesystem inherited from ${exec.inheritedFrom} is ${bytes === null ? "gone" : "unreadable"}; starting from the bundle`,
+      message: `the filesystem inherited from ${exec.inheritedFrom} is ${why}; starting from the bundle`,
     });
     effects.push(...createPlanTask(ledger, exec, 0, now));
     effects.push(...fill(ledger, now));
     return effects;
   }
   exec.files = { ...inherited, ...(program?.files ?? {}) };
-  const manifest: FsManifest = { version: 1, files: exec.files };
-  exec.waitingSince = now;
-  return [
-    {
-      kind: "putBlob",
-      bytes: encoder.encode(canonicalStringify(manifest)),
-      purpose: { type: "manifest", executionId, stage: -1 },
-    },
-  ];
+  return issue(ledger, exec, { type: "manifest", executionId: exec.executionId, stage: -1 }, now);
 }
 
 /** The inherited root's manifest, or null when the blob is not one (design §5.4). */
@@ -346,14 +397,12 @@ export function afterTaskSettled(ledger: Ledger, task: TaskRecord, now: number):
   if (exec.computeMsUsed > exec.computeMsCap)
     return failExecution(ledger, exec, "over compute budget", now);
   if (task.kind === "plan" && task.accepted) {
-    exec.waitingSince = now;
-    return [
-      {
-        kind: "fetchBlob",
-        hash: task.accepted.output,
-        purpose: { type: "stageSpec", executionId: exec.executionId, taskId: task.taskId },
-      },
-    ];
+    return issue(
+      ledger,
+      exec,
+      { type: "stageSpec", executionId: exec.executionId, taskId: task.taskId },
+      now,
+    );
   }
   if (
     exec.stageTaskIds.length > 0 &&
@@ -365,19 +414,15 @@ export function afterTaskSettled(ledger: Ledger, task: TaskRecord, now: number):
 }
 
 /** The planner's spec arrived from the store: materialize the stage or finish the execution. */
-export function onStageSpec(
+function onStageSpec(
   ledger: Ledger,
-  executionId: string,
-  taskId: string,
+  exec: ExecutionRecord,
+  planTask: TaskRecord,
   bytes: Uint8Array | null,
   now: number,
 ): Effect[] {
-  const exec = ledger.executions.get(executionId);
-  const planTask = ledger.tasks.get(taskId);
-  if (exec?.status !== "running" || !planTask || exec.planTaskId !== taskId) return [];
+  exec.awaiting = null;
   if (!bytes) return failExecution(ledger, exec, "stage spec blob missing", now);
-  exec.waitingSince = null;
-  exec.storeErrors = 0;
   let spec: ReturnType<typeof decodeStageSpec>;
   try {
     spec = decodeStageSpec(bytes);
@@ -451,10 +496,17 @@ export function onStageSpec(
   return effects;
 }
 
-/** Fold outputs and writes into the next filesystem manifest (design §5.4, §6.6). */
-function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
+/**
+ * The current stage's filesystem: the previous one plus each task's output at
+ * `/out/<stage>/<index>` and its writes, and the first path two tasks wrote differently, if any.
+ */
+function stageFiles(
+  ledger: Ledger,
+  exec: ExecutionRecord,
+): { files: FsManifest["files"]; conflict: string | null } {
   const files: FsManifest["files"] = { ...exec.files };
   const written = new Map<string, string>();
+  let conflict: string | null = null;
   for (const id of exec.stageTaskIds) {
     const task = ledger.tasks.get(id);
     if (!task?.accepted) continue;
@@ -464,12 +516,18 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
     };
     for (const w of task.accepted.writes) {
       const prior = written.get(w.path);
-      if (prior !== undefined && prior !== w.hash)
-        return failExecution(ledger, exec, `write conflict at ${w.path}`, now);
+      if (prior !== undefined && prior !== w.hash && conflict === null) conflict = w.path;
       written.set(w.path, w.hash);
       files[w.path] = { hash: w.hash, size: w.size };
     }
   }
+  return { files, conflict };
+}
+
+/** Fold outputs and writes into the next filesystem manifest (design §5.4, §6.6). */
+function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[] {
+  const { files, conflict } = stageFiles(ledger, exec);
+  if (conflict !== null) return failExecution(ledger, exec, `write conflict at ${conflict}`, now);
   const bytes = Object.values(files).reduce((n, f) => n + f.size, 0);
   if (bytes > ledger.config.fsBytesCap) {
     return failExecution(
@@ -479,119 +537,89 @@ function foldStage(ledger: Ledger, exec: ExecutionRecord, now: number): Effect[]
       now,
     );
   }
-  const manifest: FsManifest = { version: 1, files };
   exec.sealedStage = exec.stage;
-  exec.waitingSince = now;
-  return [
-    {
-      kind: "putBlob",
-      bytes: encoder.encode(canonicalStringify(manifest)),
-      purpose: { type: "manifest", executionId: exec.executionId, stage: exec.stage },
-    },
-  ];
+  return issue(
+    ledger,
+    exec,
+    { type: "manifest", executionId: exec.executionId, stage: exec.stage },
+    now,
+  );
 }
 
 /** The folded manifest is in the store: advance the root and plan the next stage. */
 export function onManifestStored(
   ledger: Ledger,
-  executionId: string,
-  stage: number,
+  purpose: PutPurpose,
   hash: string,
   now: number,
 ): Effect[] {
-  const exec = ledger.executions.get(executionId);
-  if (exec?.status !== "running") return [];
-  exec.waitingSince = null;
-  exec.storeErrors = 0;
-  if (stage === -1) {
-    // The initial filesystem of an execution that inherited one: plan can start now.
-    if (exec.root !== null) return [];
+  const exec = ledger.executions.get(purpose.executionId);
+  if (!exec || !answered(exec, purpose)) return [];
+  exec.awaiting = null;
+  if (purpose.stage === -1) {
+    // The initial filesystem of an execution that inherited one: planning can start now.
     exec.root = hash;
     return [...createPlanTask(ledger, exec, 0, now), ...fill(ledger, now)];
   }
-  if (exec.stage !== stage || exec.planTaskId) return [];
-  const files: FsManifest["files"] = { ...exec.files };
-  for (const id of exec.stageTaskIds) {
-    const task = ledger.tasks.get(id);
-    if (!task?.accepted) continue;
-    files[`/out/${exec.stage}/${task.index}`] = {
-      hash: task.accepted.output,
-      size: task.accepted.outputSize,
-    };
-    for (const w of task.accepted.writes) files[w.path] = { hash: w.hash, size: w.size };
-  }
-  exec.files = files;
+  exec.files = stageFiles(ledger, exec).files;
   exec.root = hash;
-  const effects = broadcast(ledger, { t: "stageDone", executionId, stage, root: hash });
-  effects.push(...createPlanTask(ledger, exec, stage + 1, now));
+  const effects = broadcast(ledger, {
+    t: "stageDone",
+    executionId: exec.executionId,
+    stage: purpose.stage,
+    root: hash,
+  });
+  effects.push(...createPlanTask(ledger, exec, purpose.stage + 1, now));
   effects.push(...fill(ledger, now));
   return effects;
 }
 
 /**
- * The store answered a pending effect with an error rather than bytes (WP8.2): not "missing", so
- * the execution keeps waiting and `resumePending` asks again; past `STORE_ERRORS_MAX` it fails
- * with the store's reason.
+ * The store answered the pending effect with an error rather than bytes: not "missing", so the
+ * execution keeps waiting and `resumePending` asks again; past `STORE_ERRORS_MAX` it fails with
+ * the store's reason. The retry interval counts from the original request.
  */
-export function onStoreError(
-  ledger: Ledger,
-  executionId: string,
-  reason: string,
-  now: number,
-): Effect[] {
-  const exec = ledger.executions.get(executionId);
-  if (exec?.status !== "running") return [];
-  exec.storeErrors += 1;
-  if (exec.storeErrors > STORE_ERRORS_MAX)
+function storeError(ledger: Ledger, exec: ExecutionRecord, reason: string, now: number): Effect[] {
+  if (!exec.awaiting) return [];
+  exec.awaiting.errors += 1;
+  if (exec.awaiting.errors > STORE_ERRORS_MAX)
     return failExecution(ledger, exec, `the store kept failing: ${reason.slice(0, 200)}`, now);
-  // Leave waitingSince as it is: the retry interval counts from the original request.
   return [];
 }
 
 /**
- * Re-derive the one asynchronous effect the running execution is waiting on: the inherited root's
- * manifest, the plan task's spec, or the folded manifest. The effects are fire-and-forget, so a
- * control plane that adopted the ledger mid-flight, or a store that failed once, would otherwise
- * leave the execution running for ever. Every effect here is idempotent: blobs are
- * content-addressed and the handlers ignore an answer that arrived already. Called on adopt
- * (`force`) and on every tick once `STORE_RETRY_MS` have passed.
+ * Issue the store effect the running execution is waiting on again: the effects are
+ * fire-and-forget, so a control plane that adopted the ledger mid-flight, or a store that stayed
+ * silent, would otherwise leave the execution running for ever. Every one is idempotent: blobs are
+ * content-addressed and an answer that arrived already is ignored. Called on adopt (`force`) and
+ * on every tick once `STORE_RETRY_MS` have passed.
  */
 export function resumePending(ledger: Ledger, now: number, force = false): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
-  if (exec?.status !== "running") return [];
-  if (!force && (exec.waitingSince === null || now - exec.waitingSince < STORE_RETRY_MS)) return [];
-  if (exec.root === null && !exec.planTaskId && exec.stageTaskIds.length === 0) {
-    const inheritedRoot = exec.inheritedFrom
-      ? (ledger.executions.get(exec.inheritedFrom)?.root ?? null)
-      : null;
-    if (!inheritedRoot) return onInheritRoot(ledger, exec.executionId, null, now);
-    exec.waitingSince = now;
-    return [
-      {
-        kind: "fetchBlob",
-        hash: inheritedRoot,
-        purpose: { type: "inheritRoot", executionId: exec.executionId },
-      },
-    ];
-  }
+  if (exec?.status !== "running" || !exec.awaiting) return [];
+  if (!force && now - exec.awaiting.since < STORE_RETRY_MS) return [];
+  return issue(ledger, exec, exec.awaiting.purpose, now);
+}
+
+/**
+ * The store answer a running execution needs next, read off its state: for snapshots written
+ * before the ledger recorded what it was waiting for.
+ */
+export function pendingPurpose(ledger: Ledger, exec: ExecutionRecord): BlobPurpose | null {
+  const executionId = exec.executionId;
+  if (exec.root === null && !exec.planTaskId && exec.stageTaskIds.length === 0)
+    return { type: "inheritRoot", executionId };
   if (exec.planTaskId) {
     const plan = ledger.tasks.get(exec.planTaskId);
-    if (plan?.status !== "done" || !plan.accepted) return [];
-    exec.waitingSince = now;
-    return [
-      {
-        kind: "fetchBlob",
-        hash: plan.accepted.output,
-        purpose: { type: "stageSpec", executionId: exec.executionId, taskId: plan.taskId },
-      },
-    ];
+    if (plan?.status !== "done" || !plan.accepted) return null;
+    return { type: "stageSpec", executionId, taskId: plan.taskId };
   }
   if (
     exec.stageTaskIds.length > 0 &&
     exec.stageTaskIds.every((id) => ledger.tasks.get(id)?.status === "done")
   )
-    return foldStage(ledger, exec, now);
-  return [];
+    return { type: "manifest", executionId, stage: exec.stage };
+  return null;
 }
 
 function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
@@ -616,7 +644,7 @@ function finishExecution(ledger: Ledger, exec: ExecutionRecord, now: number): Ef
     }),
   );
   // Only the machine's default loop continues on its own (D19), and not after a Stop or while it
-  // has yielded to a person (WP6.1, WP6.8).
+  // has yielded to a person.
   if (
     !exec.human &&
     !ledger.meta.loopStopped &&
@@ -729,10 +757,10 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 }
 
 /**
- * The loop yields to people (design §6.7, WP6.8): once a person's launch has ended — done, failed,
- * or killed — the loop launches nothing, neither a new frame nor a queued continuation, until
- * Start is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the
- * stage for as long as the person is around.
+ * The loop yields to people (design §6.7): once a person's launch has ended — done, failed, or
+ * killed — the loop launches nothing, neither a new frame nor a queued continuation, until Start
+ * is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the stage
+ * for as long as the person is around.
  */
 function holdResult(ledger: Ledger, exec: ExecutionRecord, _now: number): Effect[] {
   if (!exec.human || ledger.meta.loopYielded) return [];
@@ -800,9 +828,8 @@ export function commandHalf(
       msg: { t: "command", v: PROTOCOL_VERSION, gen: ledger.meta.generation, op },
     });
     // A killed or frozen cloud core is a MicroVM with nothing left to do: a closed node never
-    // reconnects and a frozen one computes nothing, so the VM is terminated with the command and
-    // the fleet policy launches a fresh one (design §6.8; found when a kill half left a core
-    // alive, unlinked, and never replaced — WP4.4).
+    // reconnects and a frozen one computes nothing, so the VM goes with the command and the fleet
+    // policy launches a fresh one (design §6.8).
     if (op !== "throttle" && v.kind === "core") {
       for (const core of [...ledger.cores.values()]) {
         if (core.nodeId === v.nodeId) effects.push(forgetCloudCore(ledger, core.microvmId));
@@ -831,10 +858,9 @@ export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[
 /**
  * Keep the ledger small (design §9.4): ended executions beyond the most recent `keep` are dropped
  * outright, and the tasks of ended executions beyond the most recent `keepTasks` are dropped while
- * the record stays — a record is a few hundred bytes, a frame's tasks are hundreds of kilobytes,
- * and it is the tasks that made the five-second snapshot two megabytes on the deployed machine
- * (WP4.3). Results live in the store by hash and a continuation copies what it inherits at
- * enqueue, so nothing live points at what is pruned.
+ * the record stays — a record is a few hundred bytes, a frame's tasks are hundreds of kilobytes.
+ * Results live in the store by hash and a continuation copies what it inherits at enqueue, so
+ * nothing live points at what is pruned.
  */
 export function pruneExecutions(
   ledger: Ledger,
@@ -861,10 +887,10 @@ export function pruneExecutions(
       if (dropTasks.has(task.executionId)) ledger.tasks.delete(taskId);
     }
   }
-  // The file map goes with the tasks (WP4.9): a frame's 640 entries of hash and size, 32 frames
-  // deep, was most of the deployed snapshot. The root hash stays, and inheritance reads the map
-  // back from the root's manifest blob. Judged on its own, not with the task probe: an adopted
-  // ledger whose tasks went before this rule existed still has the maps to lose.
+  // The file map goes with the tasks: a frame's entries of hash and size, 32 frames deep, were
+  // most of the deployed snapshot. The root hash stays, and inheritance reads the map back from
+  // the root's manifest blob. Judged on its own, not with the task probe: an adopted ledger whose
+  // tasks went before this rule existed still has the maps to lose.
   for (const e of ended.slice(keepTasks)) {
     if (Object.keys(e.files).length > 0) e.files = {};
   }
