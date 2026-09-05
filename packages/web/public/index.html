@@ -91,8 +91,7 @@
     <section id="filesPanel">
       <h2>Files <span id="filesRoot" class="mono muted">—</span> <a class="open-panel" href="/?observe&amp;panel=files" target="_blank" rel="noreferrer" title="The full file list in its own tab">open ↗</a></h2>
       <p class="summary" id="filesSummary">no filesystem yet</p>
-      <p class="panel-explain">Every execution has a filesystem: a manifest listing each path with the hash and size of its bytes, itself a blob named by its hash — the <em>root</em> shown above. Stages fold their outputs into a new manifest (<code>/out/&lt;stage&gt;/&lt;task&gt;</code>) and a program's writes land beside them; the bundle's own files (<code>/program.wasm</code>, <code>/manifest.json</code>, anything under <code>/in/</code>) are always there. Click a path to fetch its bytes from the store by hash; nothing here passes through the control plane. This tab follows the running execution unless you browse another root.</p>
-      <p class="muted small" id="filesNote">A filesystem is a manifest — path → hash and size — itself a blob named by its hash, the root. Click a file to fetch it from the store by hash; nothing here passed through the control plane.</p>
+      <p class="panel-explain" id="filesNote">Every execution has a filesystem: a manifest listing each path with the hash and size of its bytes, itself a blob named by its hash — the <em>root</em> shown above. Stages fold their outputs into a new manifest (<code>/out/&lt;stage&gt;/&lt;task&gt;</code>) and a program's writes land beside them; the bundle's own files (<code>/program.wasm</code>, <code>/manifest.json</code>, anything under <code>/in/</code>) are always there. Click a path to fetch its bytes from the store by hash; nothing here passes through the control plane. This tab follows the running execution unless you browse another root.</p>
       <div id="files"></div>
       <div id="filePreview" class="preview-box" hidden></div>
     </section>
@@ -119,7 +118,7 @@
     </section>
   </aside>
 </main>
-<footer>Tabframe · every visitor is a core · <a href="?observe">observe only</a> · <a href="?demo=1">demo</a></footer>
+<footer>Tabframe · every open tab is a core · <a href="?observe">observe only</a> · <a href="?demo=1">demo</a></footer>
 <script type="module" src="/host.js"></script>
 </body>
 </html>
