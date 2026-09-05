@@ -1,4 +1,4 @@
-// The guide in its own page (WP7.5, D4): what a program is and what it may do — the SDK's README
+// The guide in its own page (D4): what a program is and what it may do — the SDK's README
 // rendered at build time — and the numbers this machine holds a program to. Linked from the top
 // of the editor as "What is a program?".
 import { guideMarkdown, limitsSentence, renderGuide } from "./editor-core.ts";

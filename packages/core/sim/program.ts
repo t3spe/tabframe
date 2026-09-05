@@ -42,7 +42,7 @@ export function loadProgram(name = "mandelbrot"): LoadedProgram {
   if (!existsSync(built) || staleAgainstSources(built, dir)) {
     // A fresh checkout has no built programs (dist/ is not committed), and a checkout that changed
     // a program or the SDK has a stale one that no longer matches its goldens. Build them here the
-    // way `mise run build:programs` does, so `bun test` needs no step before it (WP4.8).
+    // way `mise run build:programs` does, so `bun test` needs no step before it.
     execFileSync("node", [path.join(ROOT, "packages/sdk-as/scripts/build-programs.ts")], {
       cwd: ROOT,
       stdio: "ignore",

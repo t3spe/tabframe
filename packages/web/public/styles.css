@@ -841,7 +841,7 @@ footer {
   border-top: 1px solid var(--line);
 }
 
-/* Big panels live in their own tab (WP6.3): the dashboard shows a one-line summary and a link;
+/* Big panels live in their own tab: the dashboard shows a one-line summary and a link;
    `?panel=ledger|files|activity` renders that one panel full-width with its explanation. */
 .open-panel {
   float: right;
@@ -897,7 +897,7 @@ body[data-panel] #activity {
   font-size: 13px;
 }
 
-/* Nothing changes size (WP6.2). Every region that appears, disappears, grows, or shrinks as the
+/* Nothing changes size. Every region that appears, disappears, grows, or shrinks as the
    machine runs keeps a reserved box: hidden means invisible, not gone; lists scroll inside fixed
    heights; text that can outgrow its slot is cut with an ellipsis; digits are tabular. */
 header .pill {
@@ -1037,7 +1037,7 @@ header .pill {
   display: block !important;
   visibility: hidden;
 }
-/* WP7.2: eight counters in two rows of four equal cells; nothing is clipped at common widths. */
+/* Eight counters in two rows of four equal cells; nothing is clipped at common widths. */
 #counters {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1106,7 +1106,7 @@ header .pill {
   display: block !important;
   visibility: hidden;
 }
-/* The editor's guide (WP6.6): the SDK's README, rendered beside the source. */
+/* The editor's guide: the SDK's README, rendered beside the source. */
 .guide {
   margin-top: 1rem;
   max-width: 80ch;
@@ -1141,7 +1141,7 @@ header .pill {
   color: var(--fg);
 }
 
-/* WP6.8: the top of the page. One status line for the rotation banner and the notice; Stop/Start
+/* The top of the page. One status line for the rotation banner and the notice; Stop/Start
    in the header; the execution row on two fixed lines; one message slot shared by failure,
    warnings, and follow-up. */
 /* The banner and the notice share one line-high slot; each keeps the slot's box when hidden
@@ -1272,7 +1272,7 @@ body[data-panel] .panel-only {
   visibility: hidden;
 }
 
-/* WP6.8: whole hashes wrap rather than cut; file names are links; a frozen panel says so. */
+/* Whole hashes wrap rather than cut; file names are links; a frozen panel says so. */
 #ledger td.hash,
 #ledger td a {
   overflow-wrap: anywhere;
@@ -1290,7 +1290,7 @@ body[data-panel] .panel-only {
   color: var(--warn);
 }
 
-/* WP7.1: the loop pill is quiet while the loop runs and amber whenever a person holds it. */
+/* The loop pill is quiet while the loop runs and amber whenever a person holds it. */
 .pill.loop[data-loop="running"] {
   color: var(--dim);
 }
@@ -1301,7 +1301,7 @@ body[data-panel] .panel-only {
   border-color: var(--warn);
 }
 
-/* WP7.4: on a panel tab the preview box is always there, so a click never moves the page. */
+/* On a panel tab the preview box is always there, so a click never moves the page. */
 body[data-panel] .preview-box {
   display: block;
   min-height: 11rem;
@@ -1335,7 +1335,7 @@ body[data-panel] .preview-box[hidden] {
   background: rgba(110, 168, 255, 0.1);
 }
 
-/* WP7.7: a reading tab drives nothing — the machine's controls leave the header, a way back arrives;
+/* A reading tab drives nothing — the machine's controls leave the header, a way back arrives;
    the sentence of state is quiet, a control's echo is not. */
 body[data-panel] header #stop,
 body[data-panel] header #start,
@@ -1353,7 +1353,7 @@ header a.panel-only {
   color: var(--dim);
 }
 
-/* WP8.1: reachable by keyboard and screen readers, invisible on screen. */
+/* Reachable by keyboard and screen readers, invisible on screen. */
 .visually-hidden,
 .editor-side input.visually-hidden {
   position: absolute !important;

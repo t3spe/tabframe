@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// WP0.6 acceptance: two tabs show each other's nodes live.
+// Two tabs show each other's nodes live.
 test("two tabs see each other's nodes; observe mode lends none; closing withdraws", async ({
   browser,
 }) => {

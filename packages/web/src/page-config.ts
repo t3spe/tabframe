@@ -1,4 +1,4 @@
-// The page's configuration (WP8.3): `/config.json` names the session URL. One failed fetch used to
+// The page's configuration: `/config.json` names the session URL. One failed fetch must not
 // leave the dashboard on "Connecting… the page keeps trying on its own" for ever, which was false.
 // This keeps trying, with a backoff that tops out at thirty seconds, and says what it is doing.
 

@@ -275,3 +275,34 @@ describe("standby until named", () => {
     );
   }, 15_000);
 });
+
+describe("image version", () => {
+  test("a control plane learns the version it runs from the platform once its fleet exists, and reports it", async () => {
+    const cp = await createControlPlane({ ...imageConfig, generation: 11 }, undefined, {
+      store,
+      snapshots: new MemorySnapshots(),
+      programs: [],
+      cores: {
+        launch: async () => ({ microvmId: "core-x", token: "t" }),
+        terminate: async () => {},
+        gone: async () => [],
+        describe: async (id) => ({
+          microvmId: id,
+          state: "RUNNING",
+          endpoint: null,
+          imageArn: "arn:aws:lambda:us-west-2:000000000000:microvm-image:tabframe",
+          imageVersion: "42.0",
+          startedAt: null,
+          stateReason: null,
+        }),
+      },
+    });
+    planes.push(cp);
+    await run(cp, 11);
+    await cp.idle();
+    const health = (await (await fetch(priv(cp, "/health"))).json()) as {
+      imageVersion: string | null;
+    };
+    expect(health.imageVersion).toBe("42.0");
+  });
+});

@@ -207,7 +207,7 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
   }
 
   return async (event?: unknown) => {
-    const p = await pointer.read();
+    let p = await pointer.read();
     if (p.state === "off") {
       log.info("rotate: machine is off, nothing to do");
       return { action: "skipped-off" };
@@ -230,6 +230,9 @@ export function createRotateHandler(deps: RotateDeps): RotateHandler {
         secret,
       );
       await clearRetiring(pointer);
+      // The record read at the start still names the retiring predecessor; every write below spreads
+      // the pointer it was given, so it must be the pointer as it is now.
+      p = await pointer.read();
     }
     const repaired = await repair(deps, p, secret);
     if (repaired) return repaired;
