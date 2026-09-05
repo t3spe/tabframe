@@ -36,6 +36,28 @@ export interface Socket {
   toClientAt: number;
 }
 
+/**
+ * The leniencies the simulation may drop (design §12). Every one off is today's simulation, trace
+ * for trace; turning them on is recorded follow-up work.
+ */
+export interface Realism {
+  /** Nodes give a task back at its deadline with RELEASED instead of computing past it. */
+  deadlineEnforced: boolean;
+  /** Probability that a fetch answers with a store error rather than bytes. */
+  storeFailRate: number;
+  /** Probability that a frame from a client is delivered twice. */
+  duplicateRate: number;
+  /** Rotate the control plane once — handover, drain, adopt — this long into the run; null never does. */
+  rotateAfterMs: number | null;
+}
+
+export const LENIENT: Realism = {
+  deadlineEnforced: false,
+  storeFailRate: 0,
+  duplicateRate: 0,
+  rotateAfterMs: null,
+};
+
 export interface SimStats {
   events: number;
   messagesToControlPlane: number;
@@ -137,6 +159,7 @@ export interface WorldApi {
   readonly bundle: string;
   readonly limits: TaskLimits;
   readonly stats: SimStats;
+  readonly realism: Realism;
   /** Uniform in [0, 1) from the seed. */
   random(): number;
   /** Uniform integer in [min, max]. */
