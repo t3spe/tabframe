@@ -1,5 +1,4 @@
 import type { Ledger } from "./ledger.ts";
-import { runningAttempts } from "./scheduler.ts";
 
 /**
  * The invariants of design §6.10 as a checker the tests and the simulation call after every event.
@@ -84,28 +83,23 @@ export function checkInvariants(ledger: Ledger): string[] {
     if (e && e.status !== "running" && e.status !== "queued")
       v.push(`execution ${e.executionId} is ${e.status} while ${t.taskId} is ${t.status}`);
   }
+  // The running execution's counters are what its tasks say: the open ones live in the current
+  // stage, the done ones accumulate over every stage.
   for (const e of ledger.executions.values()) {
     if (e.status !== "running") continue;
-    const ids = e.planTaskId ? [e.planTaskId, ...e.stageTaskIds] : e.stageTaskIds;
-    const counts = { pending: 0, assigned: 0, done: 0, failed: 0 };
-    for (const id of ids) {
-      const t = ledger.tasks.get(id);
-      if (!t) {
-        v.push(`execution ${e.executionId} references missing task ${id}`);
-        continue;
-      }
-      counts[t.status] += 1;
+    if (e.sealedStage > e.stage)
+      v.push(`execution ${e.executionId} sealed stage ${e.sealedStage} past stage ${e.stage}`);
+    const current = e.planTaskId ? [e.planTaskId, ...e.stageTaskIds] : e.stageTaskIds;
+    for (const id of current) {
+      if (!ledger.tasks.has(id)) v.push(`execution ${e.executionId} references missing task ${id}`);
     }
-    if (counts.pending !== e.counters.pending)
-      v.push(
-        `execution ${e.executionId} pending counter ${e.counters.pending} vs ${counts.pending}`,
-      );
-    if (counts.assigned !== e.counters.assigned)
-      v.push(
-        `execution ${e.executionId} assigned counter ${e.counters.assigned} vs ${counts.assigned}`,
-      );
+    const counts = { pending: 0, assigned: 0, done: 0, failed: 0 };
+    for (const t of ledger.tasks.values())
+      if (t.executionId === e.executionId) counts[t.status] += 1;
+    for (const key of ["pending", "assigned", "done", "failed"] as const) {
+      if (counts[key] !== e.counters[key])
+        v.push(`execution ${e.executionId} ${key} counter ${e.counters[key]} vs ${counts[key]}`);
+    }
   }
   return v;
 }
-
-export { runningAttempts };

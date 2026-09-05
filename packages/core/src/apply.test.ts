@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { CLOSE, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
 import fc from "fast-check";
-import { apply, SOLICITED_RATE } from "./apply.ts";
+import { apply } from "./apply.ts";
 import type { Effect } from "./events.ts";
 import { createLedger, type Ledger } from "./ledger.ts";
+import { SOLICITED_RATE } from "./policy.ts";
 
 const GEN = 3;
 

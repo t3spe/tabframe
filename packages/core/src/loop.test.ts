@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { RELEASED } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
+import { pruneExecutions } from "./executions.ts";
+import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
 import {
   KEEP_ENDED_EXECUTIONS,
   KEEP_ENDED_TASKS,
   LOOP_BACKOFF_MAX_MS,
   LOOP_BACKOFF_MIN_MS,
-  pruneExecutions,
   YIELD_IDLE_MS,
-} from "./executions.ts";
-import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
+} from "./policy.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "./snapshot.ts";
 
 /** The machine's default loop after failures: back off, doubling; success resets (D4, D19). */
@@ -437,7 +437,7 @@ describe("pause and resume", () => {
     expect(
       paused.some((e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "pause"),
     ).toBe(true);
-    expect(h.ledger.meta.pausedBy).toBe("editor");
+    expect(h.ledger.session.pausedBy).toBe("editor");
     // The plan result lands and the stage is created, but no tile is handed out.
     const stage = h.planSpec(
       h.result(plan.connId, plan.taskId, plan.attempt, H("e")),
@@ -453,7 +453,7 @@ describe("pause and resume", () => {
     expect(snap.msg.machine?.paused).toBe(true);
     // Resume from the dashboard: the tiles go out at once.
     const resumed = h.send("obs", { t: "resume" });
-    expect(h.ledger.meta.pausedBy).toBeNull();
+    expect(h.ledger.session.pausedBy).toBeNull();
     expect(h.assigns(resumed).length).toBeGreaterThan(0);
     expect(h.invariants()).toEqual([]);
   });
@@ -472,17 +472,17 @@ describe("pause and resume", () => {
     expect(
       gone.some((e) => e.kind === "send" && e.msg.t === "controlApplied" && e.msg.op === "resume"),
     ).toBe(true);
-    expect(h.ledger.meta.pausedBy).toBeNull();
+    expect(h.ledger.session.pausedBy).toBeNull();
     expect(h.ledger.running).not.toBeNull();
     // A pause never survives a rotation: the holder is on the previous generation's sockets.
     h.connect("editor2", "observer");
     h.send("editor2", { t: "subscribe" });
     h.send("editor2", { t: "pause" });
-    expect(h.ledger.meta.pausedBy).toBe("editor2");
+    expect(h.ledger.session.pausedBy).toBe("editor2");
     const restored = deserializeLedger(serializeLedger(h.ledger));
-    expect(restored.meta.pausedBy).toBeNull();
+    expect(restored.session.pausedBy).toBeNull();
     adoptLedger(h.ledger, 9, h.now);
-    expect(h.ledger.meta.pausedBy).toBeNull();
+    expect(h.ledger.session.pausedBy).toBeNull();
     expect(h.invariants()).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import { toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
 import type { ExecutionRecord, Ledger, NodeRecord, TaskRecord } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
-import { COMPUTE_MS_REPORT_CAP } from "./results.ts";
+import { COMPUTE_MS_REPORT_CAP, DEADLINE_DOUBLINGS } from "./policy.ts";
 
 /** Median of the execution's recent compute samples times the factor, floored (design §6.4). */
 export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
@@ -20,7 +20,6 @@ export function deadlineMs(ledger: Ledger, exec: ExecutionRecord): number {
  * is not killed at the floor on every node for ever, while a program that never returns still fails
  * within about a minute (2 + 4 + 8 + 16 + 16 + 16 s at the floor) rather than after ten.
  */
-export const DEADLINE_DOUBLINGS = 3;
 export function deadlineFor(task: TaskRecord, base: number): number {
   const released = task.attempts.filter((a) => a.outcome === "released").length;
   return Math.min(COMPUTE_MS_REPORT_CAP, base * 2 ** Math.min(released, DEADLINE_DOUBLINGS));
@@ -154,7 +153,7 @@ export function stageTasks(ledger: Ledger, exec: ExecutionRecord): TaskRecord[] 
 export function fill(ledger: Ledger, now: number): Effect[] {
   // A control plane that has handed its ledger over must not assign anything (design §9.4), and
   // a paused one assigns nothing new while the editor tab holding it lives (WP6.4).
-  if (ledger.meta.phase !== "active" || ledger.meta.pausedBy !== null) return [];
+  if (ledger.meta.phase !== "active" || ledger.session.pausedBy !== null) return [];
   const effects: Effect[] = [];
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   if (!exec) return effects;

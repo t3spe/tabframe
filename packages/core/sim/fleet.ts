@@ -5,13 +5,13 @@
 // packages/control-plane/src/cores.ts is the real thing, with one difference called out at
 // `reconcile` below.
 import type { Event } from "../src/events.ts";
+import type { Ledger } from "../src/ledger.ts";
 import {
-  CORE_LAUNCH_GAP_MS,
-  DESIRED_CORES,
+  CLOUD_CORE_LAUNCH_GAP_MS,
+  DESIRED_CLOUD_CORES,
   SLEEP_AFTER_NO_INTERACTION_MS,
   SLEEP_AFTER_NO_OBSERVER_MS,
-} from "../src/fleet.ts";
-import type { Ledger } from "../src/ledger.ts";
+} from "../src/policy.ts";
 import type { NodeProfile, VirtualNode } from "./node.ts";
 import type { VirtualObserver } from "./observer.ts";
 import type { WorldApi } from "./types.ts";
@@ -167,9 +167,9 @@ export class SimFleet {
   check(sleepingAnnouncements: number): void {
     const ledger = this.world.ledger;
     const cores = ledger.cores;
-    if (cores.size > DESIRED_CORES)
+    if (cores.size > DESIRED_CLOUD_CORES)
       this.world.violation(
-        `the ledger holds ${cores.size} cores, the fleet wants ${DESIRED_CORES}`,
+        `the ledger holds ${cores.size} cores, the fleet wants ${DESIRED_CLOUD_CORES}`,
       );
 
     // A record with no node behind it is the machine short-handed. A few seconds of it is normal
@@ -230,8 +230,10 @@ export class SimFleet {
 
     if (this.lastLaunchAt !== null && ledger.meta.lastCoreLaunchAt > this.lastLaunchAt) {
       const gap = ledger.meta.lastCoreLaunchAt - this.lastLaunchAt;
-      if (gap < CORE_LAUNCH_GAP_MS)
-        this.world.violation(`two core launches ${gap} ms apart, the gap is ${CORE_LAUNCH_GAP_MS}`);
+      if (gap < CLOUD_CORE_LAUNCH_GAP_MS)
+        this.world.violation(
+          `two core launches ${gap} ms apart, the gap is ${CLOUD_CORE_LAUNCH_GAP_MS}`,
+        );
     }
     if (ledger.meta.lastCoreLaunchAt > 0) this.lastLaunchAt = ledger.meta.lastCoreLaunchAt;
   }
@@ -282,11 +284,11 @@ export class FleetDrill {
     switch (this.step) {
       case "kill": {
         const live = this.fleet.liveCores();
-        if (live.length < DESIRED_CORES) {
+        if (live.length < DESIRED_CLOUD_CORES) {
           // Still filling the fleet after the chaos; give it the replacement budget to get there.
           if (elapsed > REPLACE_BUDGET_MS)
             this.world.violation(
-              `drill: ${live.length} of ${DESIRED_CORES} cores serving after ${elapsed} ms`,
+              `drill: ${live.length} of ${DESIRED_CLOUD_CORES} cores serving after ${elapsed} ms`,
             );
           return;
         }
@@ -305,7 +307,7 @@ export class FleetDrill {
             );
           return;
         }
-        if (live.length < DESIRED_CORES) {
+        if (live.length < DESIRED_CLOUD_CORES) {
           if (elapsed > REPLACE_BUDGET_MS)
             this.world.violation(
               `drill: a destroyed core was not replaced within ${elapsed} ms (${live.length} serving)`,
@@ -346,7 +348,7 @@ export class FleetDrill {
         const live = this.fleet.liveCores();
         const rendering =
           this.world.stats.framesDone > this.framesAtWake || ledger.running !== null;
-        if (ledger.meta.awake && live.length >= DESIRED_CORES && rendering) {
+        if (ledger.meta.awake && live.length >= DESIRED_CLOUD_CORES && rendering) {
           this.world.note("drill: awake, fleet back, rendering");
           this.advance("done");
           return;

@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { CLOSE, RELEASED } from "@tabframe/protocol";
 import { H, harness, renderSpec } from "./harness.ts";
-import { COMPUTE_MS_REPORT_CAP, RELEASES_PER_TASK_CAP } from "./results.ts";
+import { COMPUTE_MS_REPORT_CAP, RELEASES_PER_TASK_CAP } from "./policy.ts";
 
 /** The assign messages in a batch of effects, deadlines included. */
 function assignMsgs(effects: ReturnType<ReturnType<typeof harness>["tick"]>) {
@@ -116,8 +116,8 @@ describe("the machine's presign budget (WP8.3)", () => {
     const h = harness();
     h.subscribe("o1");
     h.hello("c1", "h1");
-    h.ledger.meta.presignItems.tokens = 0;
-    h.ledger.meta.presignItems.refilledAt = h.now;
+    h.ledger.session.presignItems.tokens = 0;
+    h.ledger.session.presignItems.refilledAt = h.now;
     const node = h.send("c1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });
     expect(node).toEqual([{ kind: "presign", connId: "c1", items: [] }]);
     expect(node.some((e) => e.kind === "close")).toBe(false);
@@ -125,7 +125,7 @@ describe("the machine's presign budget (WP8.3)", () => {
     expect(obs.some((e) => e.kind === "send" && e.msg.t === "error")).toBe(true);
     expect(obs.some((e) => e.kind === "close")).toBe(false);
     // A connection over its own budget is still closed.
-    h.ledger.meta.presignItems.tokens = 10_000;
+    h.ledger.session.presignItems.tokens = 10_000;
     const conn = h.ledger.conns.get("c1");
     if (conn) conn.presignBytes.tokens = 0;
     const closed = h.send("c1", { t: "presign", items: [{ hash: H("f"), size: 10 }] });

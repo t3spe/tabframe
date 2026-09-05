@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { CLOSE, type RotatingReason } from "@tabframe/protocol";
-import { beginHandover, drain, JITTER_FLOOR_MS, jitterWindowMs } from "./handover.ts";
+import { beginHandover, drain, jitterWindowMs } from "./handover.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
+import { JITTER_FLOOR_MS } from "./policy.ts";
 import { adoptLedger, deserializeLedger } from "./snapshot.ts";
 
 /** The control plane's half of a rotation (design §9.4). */

@@ -14,7 +14,7 @@ import {
   type TaskLimits,
 } from "@tabframe/protocol";
 import { type BlobReader, runTask, validateModuleBytes } from "@tabframe/sandbox";
-import { DEFAULT_TASK_LIMITS } from "../src/ledger.ts";
+import { DEFAULT_TASK_LIMITS } from "../src/policy.ts";
 import { type FakeStore, sha256 } from "./store.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");

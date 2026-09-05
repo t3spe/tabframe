@@ -16,6 +16,7 @@ import {
   type Snapshot,
   type TaskView,
 } from "@tabframe/protocol";
+import { BUDGETS, chargeLaunch, chargePresign, coolingDown, newBucket, take } from "./budgets.ts";
 import type { Effect, Event } from "./events.ts";
 import {
   addProgram,
@@ -35,10 +36,15 @@ import {
   resumePending,
   retireProgram,
 } from "./executions.ts";
-import { coreGone, coreLaunched, fleetTick, microvmIdOfHost } from "./fleet.ts";
+import {
+  cloudCoreGone,
+  cloudCoreLaunched,
+  fleetTick,
+  microvmIdOfHost,
+  unlinkCloudCore,
+} from "./fleet.ts";
 import {
   type ConnRole,
-  type ConnState,
   type ExecutionRecord,
   executionView,
   type Ledger,
@@ -49,13 +55,16 @@ import {
   taskView,
 } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
+import {
+  CONTROL_COOLDOWN_MS,
+  HANDOVER_LEASE_MS,
+  HANDSHAKE_TIMEOUT_MS,
+  HEALTH_ANNOUNCE_MS,
+  OBSERVER_SILENCE_MS,
+  SNAPSHOT_PAGE_BUDGET,
+} from "./policy.ts";
 import { onResult, settleExisting } from "./results.ts";
 import { fill, relabelHealth, releaseNode } from "./scheduler.ts";
-
-/** Connections that never say hello or subscribe are dropped after this long. */
-const HANDSHAKE_TIMEOUT_MS = 10_000;
-/** Observers that stop pinging are dropped after this long. */
-const OBSERVER_SILENCE_MS = 5 * LIMITS.observerPingMs;
 
 export interface ApplyOptions {
   /** Uniform random in [0, 1); victim selection for the demo controls. */
@@ -83,9 +92,9 @@ export function apply(
     case "tick":
       return tick(ledger, now);
     case "coreLaunched":
-      return coreLaunched(ledger, event.microvmId, now, event.token);
+      return cloudCoreLaunched(ledger, event.microvmId, event.token, now);
     case "coreGone":
-      return coreGone(ledger, event.microvmId);
+      return cloudCoreGone(ledger, event.microvmId);
     case "bundleRejected":
       return ledger.conns.has(event.connId)
         ? [
@@ -98,7 +107,7 @@ export function apply(
         : [];
     case "programAdded":
       return [
-        ...addProgram(ledger, event.bundle, event.module, event.manifest, event.files ?? {}, now),
+        ...addProgram(ledger, event.bundle, event.module, event.manifest, event.files, now),
         ...ensureDefaultLoop(ledger, now),
       ];
     case "programRetired":
@@ -146,9 +155,6 @@ export function apply(
   }
 }
 
-/** A handover with no drain after this long is a rotation that died: the control plane carries on. */
-export const HANDOVER_LEASE_MS = 90_000;
-
 function tick(ledger: Ledger, now: number): Effect[] {
   const effects = sweep(ledger, now);
   pruneExecutions(ledger);
@@ -156,9 +162,9 @@ function tick(ledger: Ledger, now: number): Effect[] {
   // fleet, no loop, no assignment — the successor owns all of that now. Unless the rotation died
   // between the handover and the promote, in which case the lease brings this one back.
   if (ledger.meta.phase === "handing-over") {
-    if (ledger.meta.handoverAt !== null && now - ledger.meta.handoverAt > HANDOVER_LEASE_MS) {
+    if (ledger.session.handoverAt !== null && now - ledger.session.handoverAt > HANDOVER_LEASE_MS) {
       ledger.meta.phase = "active";
-      ledger.meta.handoverAt = null;
+      ledger.session.handoverAt = null;
     } else return effects;
   }
   if (ledger.meta.phase === "drained") return effects;
@@ -173,14 +179,13 @@ function tick(ledger: Ledger, now: number): Effect[] {
 
 function onConnected(ledger: Ledger, connId: string, role: ConnRole, now: number): Effect[] {
   if (ledger.conns.has(connId)) return [];
-  const rate = role === "node" ? LIMITS.nodeMessagesPerSecond : LIMITS.observerMessagesPerSecond;
   ledger.conns.set(connId, {
     connId,
     role,
     openedAt: now,
-    bucket: { tokens: rate, refilledAt: now },
-    solicited: { tokens: SOLICITED_RATE, refilledAt: now },
-    presignBytes: { tokens: PRESIGN_BYTES_PER_MIN, refilledAt: now },
+    messages: newBucket(role === "node" ? BUDGETS.nodeMessages : BUDGETS.observerMessages, now),
+    solicited: newBucket(BUDGETS.solicited, now),
+    presignBytes: newBucket(BUDGETS.presignBytes, now),
   });
   return [];
 }
@@ -203,18 +208,13 @@ function onMessage(
     // small tiles legitimately sends dozens a second); the bucket covers what a node sends on
     // its own initiative.
     const solicited = d.msg.t === "result" || d.msg.t === "presign";
-    if (!solicited && !takeToken(conn.bucket, LIMITS.nodeMessagesPerSecond, now))
+    if (!solicited && !take(conn.messages, BUDGETS.nodeMessages, now))
       return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
     // Results and presigns get a bucket of their own (WP8.1): generous, since maxInFlight paces an
     // honest node, but a bound — a node that says hello and floods presigns costs S3 calls.
     if (
       solicited &&
-      !takeTokens(
-        conn.solicited,
-        SOLICITED_RATE,
-        now,
-        d.msg.t === "presign" ? d.msg.items.length : 1,
-      )
+      !take(conn.solicited, BUDGETS.solicited, now, d.msg.t === "presign" ? d.msg.items.length : 1)
     )
       return refuse(ledger, connId, CLOSE.rateLimited, "result rate exceeded", now);
     switch (d.msg.t) {
@@ -240,7 +240,7 @@ function onMessage(
         // URLs (WP8.3), so an honest node's presign fails, its task is released and retried, and
         // the node stays connected — closing it for someone else's spending swapped its socket and
         // lost the result it was about to send.
-        const charged = chargePresign(ledger, conn, d.msg.items, now);
+        const charged = chargePresign(conn, ledger.session, d.msg.items, now);
         if (charged === "connection")
           return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
         if (charged === "machine") return [{ kind: "presign", connId, items: [] }];
@@ -250,7 +250,7 @@ function onMessage(
   }
   const d = decode(observerToControlPlane, raw, opts);
   if (!d.ok) return refuse(ledger, connId, d.closeCode, d.reason, now);
-  if (!takeToken(conn.bucket, LIMITS.observerMessagesPerSecond, now))
+  if (!take(conn.messages, BUDGETS.observerMessages, now))
     return refuse(ledger, connId, CLOSE.rateLimited, "message rate exceeded", now);
   switch (d.msg.t) {
     case "subscribe":
@@ -261,7 +261,7 @@ function onMessage(
       if (!ledger.observers.has(connId))
         return refuse(ledger, connId, CLOSE.invalidMessage, "presign before subscribe", now);
       {
-        const charged = chargePresign(ledger, conn, d.msg.items, now);
+        const charged = chargePresign(conn, ledger.session, d.msg.items, now);
         if (charged === "connection")
           return refuse(ledger, connId, CLOSE.rateLimited, "presign budget exhausted", now);
         if (charged === "machine")
@@ -286,13 +286,6 @@ function onMessage(
   }
 }
 
-/** The per-connection token bucket: refill at the rate, spend one; false when it is empty. */
-/** Results and presigns per second per node (WP8.1); maxInFlight keeps an honest node far below. */
-export const SOLICITED_RATE = 256;
-/** Presigned bytes a connection may ask for per minute (WP8.2): a refilling bucket, so an honest core rendering all day is never closed and a flood is. */
-export const PRESIGN_BYTES_PER_MIN = 64 * 1024 * 1024;
-/** Destructive controls are applied at most this often, machine-wide (WP8.1). */
-export const CONTROL_COOLDOWN_MS = 2_000;
 // (WP8.3) skip and killExecution join the set: each ends every task of an execution at once, and at
 // five messages a second one socket could end every execution as it started. The redundancy flip
 // stays out: a person who toggles it and toggles it back within two seconds must get the second
@@ -307,63 +300,6 @@ const DESTRUCTIVE = new Set([
   "skip",
   "killExecution",
 ]);
-
-/** Presign items the whole machine may ask for per minute (WP8.3): a reconnect refills a connection's budget, never this one. */
-export const PRESIGN_ITEMS_PER_MIN_MACHINE = 12_000;
-/** Presigned bytes the whole machine may ask for per minute (WP8.3). */
-export const PRESIGN_BYTES_PER_MIN_MACHINE = 512 * 1024 * 1024;
-
-function refill(b: { tokens: number; refilledAt: number }, perMin: number, now: number): void {
-  b.tokens = Math.min(perMin, b.tokens + ((now - b.refilledAt) * perMin) / 60_000);
-  b.refilledAt = now;
-}
-
-/**
- * Charge a presign's bytes against the connection's refilling budget (WP8.2) and its items and
- * bytes against the machine's (WP8.3); false when either is spent. The machine's buckets live in
- * `meta`, so a client that reconnects to be reborn finds them where it left them.
- */
-function chargePresign(
-  ledger: Ledger,
-  conn: ConnState,
-  items: Array<{ size: number }>,
-  now: number,
-): "ok" | "connection" | "machine" {
-  let total = 0;
-  for (const it of items) total += it.size;
-  refill(conn.presignBytes, PRESIGN_BYTES_PER_MIN, now);
-  refill(ledger.meta.presignItems, PRESIGN_ITEMS_PER_MIN_MACHINE, now);
-  refill(ledger.meta.presignBytesMachine, PRESIGN_BYTES_PER_MIN_MACHINE, now);
-  if (total > conn.presignBytes.tokens) return "connection";
-  if (items.length > ledger.meta.presignItems.tokens) return "machine";
-  if (total > ledger.meta.presignBytesMachine.tokens) return "machine";
-  conn.presignBytes.tokens -= total;
-  ledger.meta.presignItems.tokens -= items.length;
-  ledger.meta.presignBytesMachine.tokens -= total;
-  return "ok";
-}
-
-/** Take `n` tokens at once (WP8.2): a presign costs one per item, since each item is an S3 call. */
-function takeTokens(
-  b: { tokens: number; refilledAt: number },
-  rate: number,
-  now: number,
-  n: number,
-): boolean {
-  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
-  b.refilledAt = now;
-  if (b.tokens < n) return false;
-  b.tokens -= n;
-  return true;
-}
-
-function takeToken(b: { tokens: number; refilledAt: number }, rate: number, now: number): boolean {
-  b.tokens = Math.min(rate, b.tokens + ((now - b.refilledAt) / 1000) * rate);
-  b.refilledAt = now;
-  if (b.tokens < 1) return false;
-  b.tokens -= 1;
-  return true;
-}
 
 function onControl(
   ledger: Ledger,
@@ -380,8 +316,8 @@ function onControl(
   const destructive =
     DESTRUCTIVE.has(msg.t) && !(msg.t === "killExecution" && ledger.running !== msg.executionId);
   if (destructive) {
-    const last = ledger.meta.lastControlAt[msg.t] ?? 0;
-    if (now - last < CONTROL_COOLDOWN_MS)
+    const ago = coolingDown(ledger.session.lastControlAt, msg.t, now);
+    if (ago !== null)
       return [
         {
           kind: "send",
@@ -389,11 +325,10 @@ function onControl(
           msg: errorMsg(
             ledger,
             "cooldown",
-            `${msg.t} was applied ${now - last} ms ago; wait ${CONTROL_COOLDOWN_MS} ms`,
+            `${msg.t} was applied ${ago} ms ago; wait ${CONTROL_COOLDOWN_MS} ms`,
           ),
         },
       ];
-    ledger.meta.lastControlAt[msg.t] = now;
   }
   switch (msg.t) {
     case "killHalf":
@@ -538,8 +473,8 @@ function onControl(
     case "pause": {
       // The editor tab that asked holds the pause; nothing new is assigned or started until it
       // resumes or goes away (WP6.4). Asking twice from the same socket is one pause.
-      const held = ledger.meta.pausedBy;
-      ledger.meta.pausedBy = connId;
+      const held = ledger.session.pausedBy;
+      ledger.session.pausedBy = connId;
       if (held === connId) return [];
       return broadcast(ledger, { t: "controlApplied", op: "pause", nodeIds: [] });
     }
@@ -588,6 +523,9 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
     ewmaMs: null,
     inFlight: [],
     commanded: null,
+    heartbeatAt: null,
+    announcedHealth: null,
+    healthAnnouncedAt: null,
   };
   ledger.nodes.set(nodeId, node);
   ledger.nodeByConn.set(connId, nodeId);
@@ -599,9 +537,9 @@ function onHello(ledger: Ledger, connId: string, msg: Hello, now: number): Effec
     const core = ledger.cores.get(microvmId);
     // A token match, unconditionally (WP8.3): every launch since WP8.2 carries one, and a token-less
     // record inherited from an old snapshot must not be claimable by whoever names its id.
-    if (core && core.token !== undefined && core.token === msg.coreToken) {
+    if (core && core.token === msg.coreToken) {
       core.nodeId = nodeId;
-      core.unlinkedAt = undefined;
+      core.unlinkedAt = null;
     } else {
       ledger.nodes.delete(nodeId);
       ledger.nodeByConn.delete(connId);
@@ -634,7 +572,7 @@ function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number
   if (!node) return refuse(ledger, connId, CLOSE.invalidMessage, "heartbeat before hello", now);
   // A heartbeat arriving faster than half the heartbeat period is noise (WP8.3): one socket
   // alternating `visible` a thousand times a second used to fan out to every observer.
-  if (node.heartbeatAt !== undefined && now - node.heartbeatAt < LIMITS.heartbeatMs / 2) return [];
+  if (node.heartbeatAt !== null && now - node.heartbeatAt < LIMITS.heartbeatMs / 2) return [];
   node.heartbeatAt = now;
   node.lastSeen = now;
   node.visible = msg.visible;
@@ -653,8 +591,6 @@ function onHeartbeat(ledger: Ledger, connId: string, msg: Heartbeat, now: number
   }
   return [];
 }
-/** How often one node's health may be announced (WP8.3). */
-export const HEALTH_ANNOUNCE_MS = 2_000;
 
 function onSubscribe(ledger: Ledger, connId: string, now: number): Effect[] {
   if (ledger.observers.has(connId))
@@ -680,8 +616,6 @@ export function programView(p: ProgramRecord): ProgramView {
     source: p.manifest.source ?? null,
   };
 }
-/** Room left for task rows once the envelope and page fields are accounted for. */
-const SNAPSHOT_PAGE_BUDGET = LIMITS.maxMessageBytes - 2048;
 
 function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
   let latest: ExecutionRecord | undefined;
@@ -697,7 +631,6 @@ function latestEnded(ledger: Ledger): ExecutionRecord | undefined {
  * bytes as well as by row count: a full frame of done tiles with two holders each does not fit
  * 256 rows under the message cap, and page 0 also carries up to 256 nodes.
  */
-const pageMemo = new WeakMap<Ledger, { gen: number; seq: number; pages: TaskView[][] }>();
 export function snapshotPages(ledger: Ledger, connId: string, now: number): Effect[] {
   // Nothing running: the snapshot shows the execution that ended last, so a visitor arriving
   // during the hold after a person's launch — or a dashboard resubscribing for a fresh snapshot —
@@ -710,7 +643,7 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
     reason: ledger.meta.sleepReason,
     redundancy: ledger.meta.redundancy,
     stopped: ledger.meta.loopStopped,
-    paused: ledger.meta.pausedBy !== null,
+    paused: ledger.session.pausedBy !== null,
     yielded: ledger.meta.loopYielded,
     nextRotationAt: null,
     uptimeMs: Math.max(0, now - ledger.meta.startedAt),
@@ -733,7 +666,7 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
   }
   // The page split is memoised per (generation, seq) (WP8.2): a connect-subscribe-close loop
   // used to re-serialise every task row per subscribe; now it costs one serialisation per change.
-  const memo = pageMemo.get(ledger);
+  const memo = ledger.session.pageMemo;
   let pages: TaskView[][];
   if (memo && memo.gen === ledger.meta.generation && memo.seq === ledger.meta.seq) {
     pages = memo.pages;
@@ -755,7 +688,7 @@ export function snapshotPages(ledger: Ledger, connId: string, now: number): Effe
       used += size;
     }
     pages.push(current);
-    pageMemo.set(ledger, { gen: ledger.meta.generation, seq: ledger.meta.seq, pages });
+    ledger.session.pageMemo = { gen: ledger.meta.generation, seq: ledger.meta.seq, pages };
   }
   const effects: Effect[] = [];
   for (let page = 0; page < pages.length; page++) {
@@ -841,16 +774,6 @@ function refuse(
 }
 
 /** Forget a connection. A node's departure releases its work and is announced; an observer's is not. */
-/** A node has gone: if it was a cloud core, the core is free to be replaced. */
-function unlinkCore(ledger: Ledger, nodeId: string, now: number): void {
-  for (const core of ledger.cores.values()) {
-    if (core.nodeId === nodeId) {
-      core.nodeId = null;
-      core.unlinkedAt = now;
-    }
-  }
-}
-
 export function removeConnection(
   ledger: Ledger,
   connId: string,
@@ -864,13 +787,13 @@ export function removeConnection(
     ledger.nodes.delete(nodeId);
     ledger.nodeByConn.delete(connId);
     ledger.conns.delete(connId);
-    unlinkCore(ledger, nodeId, now);
+    unlinkCloudCore(ledger, nodeId, now);
     effects.push(...broadcast(ledger, { t: "nodeLeft", nodeId, reason }));
     if (node) effects.push(...releaseNode(ledger, node));
     return effects;
   }
   // The pause holder's socket went away: the machine resumes by itself (WP6.4).
-  if (ledger.meta.pausedBy === connId) effects.push(...resumeMachine(ledger, now));
+  if (ledger.session.pausedBy === connId) effects.push(...resumeMachine(ledger, now));
   ledger.observers.delete(connId);
   ledger.conns.delete(connId);
   return effects;
@@ -878,8 +801,8 @@ export function removeConnection(
 
 /** Lift a pause, tell the observers, and let the machine pick up where it stopped. */
 function resumeMachine(ledger: Ledger, now: number): Effect[] {
-  if (ledger.meta.pausedBy === null) return [];
-  ledger.meta.pausedBy = null;
+  if (ledger.session.pausedBy === null) return [];
+  ledger.session.pausedBy = null;
   const effects = broadcast(ledger, { t: "controlApplied", op: "resume", nodeIds: [] });
   effects.push(...ensureDefaultLoop(ledger, now), ...maybeStart(ledger, now), ...fill(ledger, now));
   return effects;
@@ -897,19 +820,5 @@ function nodeOf(ledger: Ledger, connId: string): NodeRecord | undefined {
 function launchRateExceeded(ledger: Ledger, connId: string, now: number): string | null {
   const observer = ledger.observers.get(connId);
   if (!observer) return null;
-  observer.launchedAt = observer.launchedAt.filter((at) => now - at < 60_000);
-  if (observer.launchedAt.length >= ledger.config.launchesPerMinute) {
-    return `at most ${ledger.config.launchesPerMinute} launches a minute`;
-  }
-  // And a machine-wide bound (WP8.3): a reconnect gave a visitor a fresh per-observer budget, and
-  // every launch of an unknown bundle costs the control plane a fetch and a validation.
-  ledger.meta.launchesAt = ledger.meta.launchesAt.filter((at) => now - at < 60_000);
-  if (ledger.meta.launchesAt.length >= LAUNCHES_PER_MIN_MACHINE) {
-    return `the machine takes at most ${LAUNCHES_PER_MIN_MACHINE} launches a minute in all`;
-  }
-  observer.launchedAt.push(now);
-  ledger.meta.launchesAt.push(now);
-  return null;
+  return chargeLaunch(observer, ledger.session, ledger.config.launchesPerMinute, now);
 }
-/** Launches per minute for the whole machine (WP8.3). */
-export const LAUNCHES_PER_MIN_MACHINE = 12;

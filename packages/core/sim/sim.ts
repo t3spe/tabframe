@@ -18,17 +18,11 @@ import {
   type TaskLimits,
 } from "@tabframe/protocol";
 import type { BlobPurpose, Effect, Event } from "../src/events.ts";
-import { YIELD_IDLE_MS } from "../src/executions.ts";
 import { type Harness, harness } from "../src/harness.ts";
 import { seededRng } from "../src/interfaces.ts";
 import { checkInvariants } from "../src/invariants.ts";
-import {
-  type ConnRole,
-  DEFAULT_TASK_LIMITS,
-  type ExecutionRecord,
-  type Ledger,
-  type TaskRecord,
-} from "../src/ledger.ts";
+import type { ConnRole, ExecutionRecord, Ledger, TaskRecord } from "../src/ledger.ts";
+import { DEFAULT_TASK_LIMITS, YIELD_IDLE_MS } from "../src/policy.ts";
 import { stageTasks, wanted } from "../src/scheduler.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "../src/snapshot.ts";
 import {
@@ -386,7 +380,7 @@ class World implements ChaosWorld {
       `observers ${l.observers.size}`,
       `programs ${l.programs.size}`,
       paused > 0 ? `loop paused ${Math.round(paused)} ms` : "loop ready",
-      `stopped ${l.meta.loopStopped} yielded ${l.meta.loopYielded} pausedBy ${l.meta.pausedBy ?? "none"} idle ${this.now - l.meta.lastInteractionAt} ms`,
+      `stopped ${l.meta.loopStopped} yielded ${l.meta.loopYielded} pausedBy ${l.session.pausedBy ?? "none"} idle ${this.now - l.meta.lastInteractionAt} ms`,
       `executions ${[...l.executions.values()].map((e) => `${e.executionId}${e.human ? "H" : "a"}:${e.status}`).join(" ")}`,
       ...(exec ? this.describeOpen(exec) : []),
     ].join(", ");

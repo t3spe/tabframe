@@ -1,3 +1,7 @@
+// The ledger: everything the control plane knows, as plain records (design §6.1, §6.2). Durable
+// state lives in `meta`, `config`, and the record maps; what belongs to one process — sockets,
+// holds, budgets — lives in `conns`, `nodeByConn`, `observers`, and `session`, and a successor
+// starts those fresh.
 import type {
   Counters,
   ExecutionView,
@@ -11,13 +15,18 @@ import type {
   TaskLimits,
   TaskView,
 } from "@tabframe/protocol";
+import { BUDGETS, type Bucket, newBucket } from "./budgets.ts";
+import { CONFIG_DEFAULTS, DEFAULT_TASK_LIMITS } from "./policy.ts";
 
-/** One live node. Everything the control plane knows about a core (design §6.2). */
+/** The wire's `NodeKind` as the core reads it: "tab" is a browser tab, "core" a cloud core (a MicroVM the fleet launched). */
+export type WorkerKind = NodeKind;
+
+/** One live node: everything the control plane knows about a worker (design §6.2). */
 export interface NodeRecord {
   nodeId: string;
   connId: string;
   hostId: string;
-  kind: NodeKind;
+  kind: WorkerKind;
   cores: number;
   sandboxVersion: string;
   joinedAt: number;
@@ -32,11 +41,11 @@ export interface NodeRecord {
   inFlight: string[];
   /** The last demo command applied, so resumeAll knows whom to resume. */
   commanded: "throttle" | "freeze" | null;
-  /** When the last heartbeat was taken (WP8.3); earlier ones are dropped. */
-  heartbeatAt?: number;
-  /** The health observers were last told, and when (WP8.3). */
-  announcedHealth?: Health;
-  healthAnnouncedAt?: number;
+  /** When the last heartbeat was taken; ones arriving faster than half the period are dropped. */
+  heartbeatAt: number | null;
+  /** The health observers were last told, and when. */
+  announcedHealth: Health | null;
+  healthAnnouncedAt: number | null;
 }
 
 /** One dashboard connection. */
@@ -50,20 +59,20 @@ export interface ObserverRecord {
 
 export type ConnRole = "node" | "observer";
 
-/** Per-connection state the control plane keeps before and after a hello or subscribe. */
+/** Per-connection state, kept from the socket opening until it closes. */
 export interface ConnState {
   connId: string;
   role: ConnRole;
   openedAt: number;
-  /** Token bucket for the per-connection message rate. */
-  bucket: { tokens: number; refilledAt: number };
-  /** A second bucket for results and presigns, which answer assignments (WP8.1). */
-  solicited: { tokens: number; refilledAt: number };
-  /** A refilling budget of presigned bytes (WP8.2): honest nodes never see it, a flood does. */
-  presignBytes: { tokens: number; refilledAt: number };
+  /** What the connection sends on its own initiative. */
+  messages: Bucket;
+  /** Results and presigns, which answer assignments. */
+  solicited: Bucket;
+  /** Presigned bytes this connection asked for. */
+  presignBytes: Bucket;
 }
 
-/** "released": the node gave the task back at its deadline; "lost": the node went away (WP8.3 split). */
+/** "released": the node gave the task back at its deadline; "lost": the node went away. */
 export type AttemptOutcome = "running" | "result" | "released" | "lost" | "cancelled" | "error";
 
 export interface AttemptRecord {
@@ -161,29 +170,25 @@ export interface ExecutionRecord {
   inheritedFrom: string | null;
   failure: string | null;
   counters: Counters;
-  /** When the pending store effect was issued, null while none is outstanding (WP8.1). */
+  /** When the pending store effect was issued, null while none is outstanding. */
   waitingSince: number | null;
-  /** Store errors on the pending effect so far (WP8.2); the execution fails past a cap. */
+  /** Store errors on the pending effect so far; the execution fails past a cap. */
   storeErrors: number;
 }
 
 /**
- * A cloud core the control plane launched (design §6.8). Its MicroVM id lives in the ledger, so
- * the cores follow a snapshot through a handover and the successor inherits rather than relaunches.
+ * A cloud core the control plane launched (design §6.8). The record travels with the ledger, so
+ * a successor inherits the MicroVM instead of relaunching it.
  */
-export interface CoreRecord {
+export interface CloudCoreRecord {
   microvmId: string;
   launchedAt: number;
-  /** The node this core connected as, once it has said hello. */
+  /** The token the core's run payload carried; a hello links only by showing it. */
+  token: string;
+  /** The node this core connected as, once it has said hello; the process's /health reads it. */
   nodeId: string | null;
-  /** The token the core's run payload carried; a hello must show it to link (WP8.2). Absent on records from before. */
-  token?: string;
-  /**
-   * Since when the core has had no node: its launch, or the moment its node left. A core that
-   * stays unlinked past `CORE_LINK_TIMEOUT_MS` is terminated and replaced (WP4.4); absent in
-   * snapshots from before, which means "since launch".
-   */
-  unlinkedAt?: number | undefined;
+  /** Since when the core has had no node, null while linked; unlinked past the link timeout it is replaced. */
+  unlinkedAt: number | null;
 }
 
 export interface ProgramRecord {
@@ -193,10 +198,7 @@ export interface ProgramRecord {
   /** The bundle's own files (design §5.1): the module, the manifest, and anything under `/in/`. */
   files: FsManifest["files"];
   addedAt: number;
-  /**
-   * Superseded by a newer bundle shipped under the same name (WP4.9): hidden from the program list,
-   * refused at launch, and kept only while an execution still refers to it.
-   */
+  /** Superseded by a newer bundle under the same name: hidden, refusing launches, kept only while an execution refers to it. */
   retired?: boolean;
 }
 
@@ -206,6 +208,7 @@ export interface ProgramRecord {
  */
 export type Phase = "active" | "handing-over" | "drained";
 
+/** Durable machine state: what a snapshot carries and a successor inherits. */
 export interface Meta {
   generation: number;
   phase: Phase;
@@ -230,35 +233,42 @@ export interface Meta {
   /** The default loop backs off after a failed execution: current delay and when it may relaunch. */
   loopBackoffMs: number;
   loopPausedUntil: number;
-  /** A person pressed Stop (WP6.1): the loop launches nothing until Start; survives a rotation. */
+  /** A person pressed Stop: the loop launches nothing until Start; survives a rotation. */
   loopStopped: boolean;
-  /**
-   * The loop yielded to a person (WP6.8): set when a person's launch ends, so the loop does not
-   * take the stage back from whoever is looking; cleared by Start, or by ten minutes without anyone
-   * touching the page. Survives a rotation.
-   */
+  /** The loop yielded to a person: set when a person's launch ends, cleared by Start or by quiet minutes; survives a rotation. */
   loopYielded: boolean;
-  /**
-   * When the handover began (WP8.1): a control plane left `handing-over` without a drain for
-   * longer than the lease goes back to `active`, so a rotation that died between handover and
-   * promote does not leave the machine dark for an hour.
-   */
-  handoverAt: number | null;
-  /** Core launches asked for and not yet acknowledged, by time (WP8.1): counted against the desired size. */
+  /** Core launches asked for and not yet acknowledged, by time: counted against the desired size. */
   coreLaunches: number[];
-  /** The last time each destructive control was applied, machine-wide (WP8.1): a short cooldown. */
-  lastControlAt: Record<string, number>;
-  /** Machine-wide presign budgets (WP8.3): items and bytes per minute, refilling. */
-  presignItems: { tokens: number; refilledAt: number };
-  presignBytesMachine: { tokens: number; refilledAt: number };
-  /** Launch times in the last minute, machine-wide (WP8.3). */
-  launchesAt: number[];
-  /**
-   * The observer connection holding the machine paused (WP6.4): nothing is assigned or started
-   * while it is set; in-flight tasks finish. Cleared by resume, by the holder's socket going away,
-   * and by adoption (a rotation) — the holder's socket is on the previous generation.
-   */
+}
+
+/** What belongs to this process alone: gone at a handover, fresh for the successor. */
+export interface Session {
+  /** The observer connection holding the machine paused (design §6.7): nothing is assigned or started while set. */
   pausedBy: string | null;
+  /** When each destructive control was last applied, for the cooldown. */
+  lastControlAt: Record<string, number>;
+  /** When the handover began; without a drain the lease brings the control plane back (design §9.4). */
+  handoverAt: number | null;
+  /** Launch times in the last minute, machine-wide. */
+  launchesAt: number[];
+  /** Machine-wide presign budgets: a client that reconnects finds them where it left them. */
+  presignItems: Bucket;
+  presignBytesMachine: Bucket;
+  /** The snapshot page split for one (generation, seq): a subscribe storm costs one serialisation per change. */
+  pageMemo: { gen: number; seq: number; pages: TaskView[][] } | null;
+}
+
+/** The session a control plane starts with, fresh or adopting. */
+export function freshSession(now = 0): Session {
+  return {
+    pausedBy: null,
+    lastControlAt: {},
+    handoverAt: null,
+    launchesAt: [],
+    presignItems: newBucket(BUDGETS.machinePresignItems, now),
+    presignBytesMachine: newBucket(BUDGETS.machinePresignBytes, now),
+    pageMemo: null,
+  };
 }
 
 export interface LedgerConfig {
@@ -281,6 +291,14 @@ export interface LedgerConfig {
   deadlineFactor?: number;
 }
 
+/** What a launch asks for; the loop's launches and a person's go through the same shape. */
+export interface LaunchRequest {
+  bundle: string;
+  params: Record<string, unknown>;
+  human: boolean;
+  inherit: string | "latest" | null;
+}
+
 export interface Ledger {
   meta: Meta;
   config: Required<
@@ -298,13 +316,16 @@ export interface Ledger {
   > & {
     defaultLoop: { bundle: string; params: Record<string, unknown> } | null;
   };
+  session: Session;
+  /** The process's sockets and who is on them; not persisted. */
   conns: Map<string, ConnState>;
-  nodes: Map<string, NodeRecord>;
   nodeByConn: Map<string, string>;
   observers: Map<string, ObserverRecord>;
+  /** Nodes are persisted so an adopting control plane knows what to release (design §9.4). */
+  nodes: Map<string, NodeRecord>;
   programs: Map<string, ProgramRecord>;
   /** Cloud cores by MicroVM id (design §6.8). */
-  cores: Map<string, CoreRecord>;
+  cores: Map<string, CloudCoreRecord>;
   executions: Map<string, ExecutionRecord>;
   /** Queued execution ids in order; human launches ahead of automatic continuations. */
   queue: string[];
@@ -312,14 +333,7 @@ export interface Ledger {
   tasks: Map<string, TaskRecord>;
 }
 
-export const DEFAULT_TASK_LIMITS: TaskLimits = {
-  maxOutputBytes: 16 * 1024 * 1024,
-  maxWriteBytes: 16 * 1024 * 1024,
-  maxWriteFiles: 256,
-  maxLogBytes: 64 * 1024,
-  memoryPagesMax: 1024,
-};
-
+/** A fresh ledger for generation `generation`, its clocks starting at `now`. */
 export function createLedger(generation: number, config: LedgerConfig, now = 0): Ledger {
   return {
     meta: {
@@ -341,29 +355,24 @@ export function createLedger(generation: number, config: LedgerConfig, now = 0):
       loopPausedUntil: 0,
       loopStopped: false,
       loopYielded: false,
-      handoverAt: null,
       coreLaunches: [],
-      lastControlAt: {},
-      presignItems: { tokens: 12_000, refilledAt: 0 },
-      presignBytesMachine: { tokens: 512 * 1024 * 1024, refilledAt: 0 },
-      launchesAt: [],
-      pausedBy: null,
     },
     config: {
       defaultLoop: config.defaultLoop ?? null,
-      computeMsCap: config.computeMsCap ?? 60 * 60 * 1000,
+      computeMsCap: config.computeMsCap ?? CONFIG_DEFAULTS.computeMsCap,
       taskLimits: config.taskLimits ?? DEFAULT_TASK_LIMITS,
-      fsBytesCap: config.fsBytesCap ?? 256 * 1024 * 1024,
-      taskCap: config.taskCap ?? 20_000,
-      launchesPerMinute: config.launchesPerMinute ?? 6,
-      cloudCores: config.cloudCores ?? false,
-      deadlineFloorMs: config.deadlineFloorMs ?? 2_000,
-      deadlineFactor: config.deadlineFactor ?? 3,
+      fsBytesCap: config.fsBytesCap ?? CONFIG_DEFAULTS.fsBytesCap,
+      taskCap: config.taskCap ?? CONFIG_DEFAULTS.taskCap,
+      launchesPerMinute: config.launchesPerMinute ?? CONFIG_DEFAULTS.launchesPerMinute,
+      cloudCores: config.cloudCores ?? CONFIG_DEFAULTS.cloudCores,
+      deadlineFloorMs: config.deadlineFloorMs ?? CONFIG_DEFAULTS.deadlineFloorMs,
+      deadlineFactor: config.deadlineFactor ?? CONFIG_DEFAULTS.deadlineFactor,
     },
+    session: freshSession(now),
     conns: new Map(),
-    nodes: new Map(),
     nodeByConn: new Map(),
     observers: new Map(),
+    nodes: new Map(),
     programs: new Map(),
     cores: new Map(),
     executions: new Map(),
@@ -389,7 +398,7 @@ export function emptyCounters(): Counters {
 export function nodeView(n: NodeRecord): NodeView {
   return {
     nodeId: n.nodeId,
-    // A cloud core's MicroVM id stays out of the view (WP8.2): with it, anyone could name a core.
+    // A cloud core's MicroVM id stays out of the view: with it, anyone could name a core.
     hostId: n.kind === "core" ? "fleet" : n.hostId,
     kind: n.kind,
     health: n.health,
@@ -411,9 +420,8 @@ export function taskView(t: TaskRecord): TaskView {
     status: t.status,
     holders: t.attempts.filter((a) => a.outcome === "running").map((a) => a.nodeId),
     attempts: t.attempts.length,
-    // A failed task has no output (a trap's record carries an empty one), and the view's output is
-    // a hash or null: an empty string here once made every snapshot after a trap undecodable, so
-    // no fresh dashboard could subscribe until the execution was pruned (found by the walkthrough).
+    // A failed task has no output: a trap's record carries an empty string, and the view's output
+    // must be a hash or null for the snapshot to decode.
     output: t.status === "done" && t.accepted?.output ? t.accepted.output : null,
     place: t.place,
     contested: t.contestedRounds > 0 || t.resolvedByVote,

@@ -4,10 +4,16 @@
 // until its lease runs out; turning redundancy off settles tasks that already hold a result.
 import { describe, expect, test } from "bun:test";
 import { LIMITS } from "@tabframe/protocol";
-import { CONTROL_COOLDOWN_MS, HANDOVER_LEASE_MS, PRESIGN_BYTES_PER_MIN } from "./apply.ts";
-import { PARAMS_MAX_BYTES, QUEUE_CAP, STORE_RETRY_MS } from "./executions.ts";
 import { beginHandover } from "./handover.ts";
 import { BUNDLE, H, harness, renderSpec } from "./harness.ts";
+import {
+  CONTROL_COOLDOWN_MS,
+  HANDOVER_LEASE_MS,
+  PARAMS_MAX_BYTES,
+  PRESIGN_BYTES_PER_MIN,
+  QUEUE_CAP,
+  STORE_RETRY_MS,
+} from "./policy.ts";
 import { adoptLedger, deserializeLedger, serializeLedger } from "./snapshot.ts";
 
 const kinds = (fx: ReturnType<ReturnType<typeof harness>["tick"]>) => fx.map((e) => e.kind);

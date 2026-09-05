@@ -1,4 +1,4 @@
-import { canonicalStringify, PROTOCOL_VERSION, RELEASED, type Result } from "@tabframe/protocol";
+import { canonicalStringify, RELEASED, type Result } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
 import type {
   ExecutionRecord,
@@ -9,6 +9,12 @@ import type {
   WriteRecord,
 } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
+import {
+  COMPUTE_MS_REPORT_CAP,
+  MAX_CONTESTED_ROUNDS,
+  RELEASES_PER_TASK_CAP,
+  RESULTS_PER_TASK_CAP,
+} from "./policy.ts";
 import { cancelOthers, runningAttempts } from "./scheduler.ts";
 
 /** Equal identities mean identical output bytes and identical written files (design §5.4). */
@@ -189,13 +195,6 @@ export function onResult(
   return { effects, settlement: { kind: "none" } };
 }
 
-/** Records kept per task (WP8.1). */
-export const RESULTS_PER_TASK_CAP = 16;
-/** Releases a task survives before it is a program fault (WP8.2). */
-export const RELEASES_PER_TASK_CAP = 6;
-/** The most compute time one report may claim (WP8.1). */
-export const COMPUTE_MS_REPORT_CAP = 10 * 60_000;
-
 /**
  * Settle a task on the result it already holds (WP8.1): when redundancy is turned off, a task that
  * waited for a twin settles on the one report it has.
@@ -325,9 +324,6 @@ function contest(
   return effects;
 }
 
-/** Rounds after which a tied vote is broken by report order rather than by another round. */
-const MAX_CONTESTED_ROUNDS = 4;
-
 /**
  * After the second contested round, the identity reported by the most nodes wins (D7). Votes are
  * nodes, not reports: a node that keeps reporting the same bytes round after round counts once.
@@ -369,5 +365,3 @@ function settleContested(
   effects.push(...accept(ledger, exec, task, winner, winner.nodeId, now));
   return settlementFor(task, winner);
 }
-
-export { PROTOCOL_VERSION, runningAttempts };

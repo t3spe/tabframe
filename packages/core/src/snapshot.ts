@@ -1,29 +1,29 @@
+// The ledger as JSON for the S3 snapshot and the handover (design §9.4), and its adoption by a
+// successor. The format stays at version 1: a field added later takes its default on the way in.
 import { fromBase64, toBase64 } from "./bytes.ts";
 import type { Effect } from "./events.ts";
 import { resumePending } from "./executions.ts";
-import type {
-  CoreRecord,
-  ExecutionRecord,
-  Ledger,
-  NodeRecord,
-  ProgramRecord,
-  TaskRecord,
+import {
+  type CloudCoreRecord,
+  type ExecutionRecord,
+  freshSession,
+  type Ledger,
+  type Meta,
+  type NodeRecord,
+  type ProgramRecord,
+  type TaskRecord,
 } from "./ledger.ts";
 import { releaseNode } from "./scheduler.ts";
 
-/**
- * The ledger as JSON for the S3 snapshot and the handover (design §9.4). Connections and observers
- * are not persisted: they belong to the process that held them. Nodes are, so an adopting
- * control plane knows what to release.
- */
+/** The durable parts of a ledger. Connections and the session belong to the process that held them; nodes travel so an adopter knows what to release. */
 export interface SerializedLedger {
   version: 1;
-  meta: Ledger["meta"];
+  meta: Meta;
   config: Ledger["config"];
   nodes: NodeRecord[];
   programs: ProgramRecord[];
   /** Cloud cores travel with the ledger, so a successor inherits them (design §6.8). */
-  cores?: CoreRecord[];
+  cores?: CloudCoreRecord[];
   executions: ExecutionRecord[];
   queue: string[];
   running: string | null;
@@ -46,38 +46,61 @@ export function serializeLedger(ledger: Ledger): string {
   return JSON.stringify(s);
 }
 
+/** Read a snapshot. Fields that older snapshots lack take their defaults; the session starts fresh. */
 export function deserializeLedger(json: string): Ledger {
   const s = JSON.parse(json) as SerializedLedger;
   if (s.version !== 1) throw new Error(`unsupported ledger version ${String(s.version)}`);
+  const m = s.meta;
   return {
-    // Fields added after a snapshot was written take their defaults.
     meta: {
-      ...s.meta,
+      generation: m.generation,
       phase: "active",
-      lastObserverAt: s.meta.lastObserverAt ?? s.meta.startedAt,
-      awake: s.meta.awake ?? true,
-      sleepReason: s.meta.sleepReason ?? null,
-      lastCoreLaunchAt: s.meta.lastCoreLaunchAt ?? 0,
-      loopBackoffMs: s.meta.loopBackoffMs ?? 0,
-      loopPausedUntil: s.meta.loopPausedUntil ?? 0,
-      loopStopped: s.meta.loopStopped ?? false,
-      loopYielded: s.meta.loopYielded ?? false,
-      handoverAt: null,
-      coreLaunches: s.meta.coreLaunches ?? [],
-      lastControlAt: {},
-      presignItems: { tokens: 12_000, refilledAt: 0 },
-      presignBytesMachine: { tokens: 512 * 1024 * 1024, refilledAt: 0 },
-      launchesAt: [],
-      pausedBy: null, // whoever held a pause is not on this socket set
+      storeBase: m.storeBase,
+      seq: m.seq,
+      nodeCounter: m.nodeCounter,
+      taskCounter: m.taskCounter,
+      executionCounter: m.executionCounter,
+      redundancy: m.redundancy,
+      startedAt: m.startedAt,
+      lastInteractionAt: m.lastInteractionAt,
+      lastObserverAt: m.lastObserverAt ?? m.startedAt,
+      awake: m.awake ?? true,
+      sleepReason: m.sleepReason ?? null,
+      lastCoreLaunchAt: m.lastCoreLaunchAt ?? 0,
+      loopBackoffMs: m.loopBackoffMs ?? 0,
+      loopPausedUntil: m.loopPausedUntil ?? 0,
+      loopStopped: m.loopStopped ?? false,
+      loopYielded: m.loopYielded ?? false,
+      coreLaunches: m.coreLaunches ?? [],
     },
     config: s.config,
+    session: freshSession(),
     conns: new Map(),
-    nodes: new Map(s.nodes.map((n) => [n.nodeId, n])),
     nodeByConn: new Map(),
     observers: new Map(),
-    // A snapshot written before bundles carried their files has none.
+    nodes: new Map(
+      s.nodes.map((n) => [
+        n.nodeId,
+        {
+          ...n,
+          heartbeatAt: n.heartbeatAt ?? null,
+          announcedHealth: n.announcedHealth ?? null,
+          healthAnnouncedAt: n.healthAnnouncedAt ?? null,
+        },
+      ]),
+    ),
     programs: new Map(s.programs.map((p) => [p.bundle, { ...p, files: p.files ?? {} }])),
-    cores: new Map((s.cores ?? []).map((c) => [c.microvmId, c])),
+    // A core from before launch tokens gets one no hello can show, so it is replaced, never claimed.
+    cores: new Map(
+      (s.cores ?? []).map((c) => [
+        c.microvmId,
+        {
+          ...c,
+          token: c.token ?? "",
+          unlinkedAt: c.unlinkedAt ?? (c.nodeId === null ? c.launchedAt : null),
+        },
+      ]),
+    ),
     executions: new Map(
       s.executions.map((e) => [
         e.executionId,
@@ -101,9 +124,8 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
     effects.push(...releaseNode(ledger, node));
     ledger.nodes.delete(node.nodeId);
   }
-  // The cores are still running out there; they will reconnect to this generation as new nodes,
-  // and get the link timeout's grace from now, not from their launch (WP4.4: without this every
-  // rotation terminated every core on its first tick).
+  // The cores are still running out there and reconnect to this generation as new nodes; their
+  // link grace counts from now, not from their launch.
   for (const core of ledger.cores.values()) {
     core.nodeId = null;
     core.unlinkedAt = now;
@@ -111,14 +133,12 @@ export function adoptLedger(ledger: Ledger, generation: number, now: number): Ef
   ledger.nodeByConn.clear();
   ledger.conns.clear();
   ledger.observers.clear();
-  ledger.meta.pausedBy = null;
-  // The asynchronous effect the running execution was waiting on — an inherited root, a stage
-  // spec, a folded manifest — was issued by the predecessor and never answered here: re-derive it
-  // from the ledger's state (WP8.1; every one of them is idempotent).
+  ledger.session = freshSession(now);
+  // The store effect the running execution was waiting on was issued by the predecessor and never
+  // answered here; it is issued again (blobs are content-addressed, so a repeat is harmless).
   effects.push(...resumePending(ledger, now, true));
   ledger.meta.generation = generation;
   ledger.meta.startedAt = now;
-  // Whatever the source ledger was doing, this one is the active control plane now.
   ledger.meta.phase = "active";
   return effects;
 }

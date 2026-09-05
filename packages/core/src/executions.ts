@@ -10,6 +10,7 @@ import {
   type ProgramManifest,
 } from "@tabframe/protocol";
 import type { Effect } from "./events.ts";
+import { forgetCloudCore } from "./fleet.ts";
 import {
   type ExecutionRecord,
   emptyCounters,
@@ -21,6 +22,18 @@ import {
   taskView,
 } from "./ledger.ts";
 import { broadcast } from "./observers.ts";
+import {
+  KEEP_ENDED_EXECUTIONS,
+  KEEP_ENDED_TASKS,
+  LOOP_BACKOFF_MAX_MS,
+  LOOP_BACKOFF_MIN_MS,
+  PARAMS_MAX_BYTES,
+  PROGRAMS_CAP,
+  QUEUE_CAP,
+  STORE_ERRORS_MAX,
+  STORE_RETRY_MS,
+  YIELD_IDLE_MS,
+} from "./policy.ts";
 import { cancelOthers, fill } from "./scheduler.ts";
 
 const encoder = new TextEncoder();
@@ -50,9 +63,6 @@ export function addProgram(
   }
   return effects;
 }
-
-/** Programs the ledger keeps before the oldest unused ones are retired (WP8.2). */
-export const PROGRAMS_CAP = 64;
 
 /**
  * A newer bundle ships under this program's name (WP4.9): the record is hidden and refuses
@@ -182,7 +192,7 @@ function resolveInherit(ledger: Ledger, req: LaunchRequest): ExecutionRecord | n
 
 /** Start the next queued execution when nothing is running; the first act is a plan task. */
 export function maybeStart(ledger: Ledger, now: number): Effect[] {
-  if (ledger.running || ledger.meta.pausedBy !== null) return [];
+  if (ledger.running || ledger.session.pausedBy !== null) return [];
   const nextId = ledger.queue[0];
   if (nextId === undefined) return [];
   const queued = ledger.executions.get(nextId);
@@ -518,23 +528,6 @@ export function onManifestStored(
   return effects;
 }
 
-/** A launch's params are bounded, canonical bytes (WP8.1); the queue is bounded too. */
-export const PARAMS_MAX_BYTES = 4096;
-export const QUEUE_CAP = 32;
-/** How long a running execution waits for the store before its pending effect is issued again. */
-export const STORE_RETRY_MS = 10_000;
-
-/**
- * Re-derive the one asynchronous effect the running execution is waiting on (WP8.1): the inherited
- * root's manifest, the plan task's spec, or the folded manifest. The effects are fire-and-forget,
- * so a control plane that adopted the ledger mid-flight, or a store that failed once, would
- * otherwise leave the execution running for ever with nothing to move it. Every effect here is
- * idempotent: blobs are content-addressed and the handlers ignore an answer that arrived already.
- * Called on adopt (`force`) and on every tick once `STORE_RETRY_MS` have passed.
- */
-/** Store errors on one pending effect before the execution fails (WP8.2): a minute of retries. */
-export const STORE_ERRORS_MAX = 6;
-
 /**
  * The store answered a pending effect with an error rather than bytes (WP8.2): not "missing", so
  * the execution keeps waiting and `resumePending` asks again; past `STORE_ERRORS_MAX` it fails
@@ -555,6 +548,14 @@ export function onStoreError(
   return [];
 }
 
+/**
+ * Re-derive the one asynchronous effect the running execution is waiting on: the inherited root's
+ * manifest, the plan task's spec, or the folded manifest. The effects are fire-and-forget, so a
+ * control plane that adopted the ledger mid-flight, or a store that failed once, would otherwise
+ * leave the execution running for ever. Every effect here is idempotent: blobs are
+ * content-addressed and the handlers ignore an answer that arrived already. Called on adopt
+ * (`force`) and on every tick once `STORE_RETRY_MS` have passed.
+ */
 export function resumePending(ledger: Ledger, now: number, force = false): Effect[] {
   const exec = ledger.running ? ledger.executions.get(ledger.running) : undefined;
   if (exec?.status !== "running") return [];
@@ -592,12 +593,6 @@ export function resumePending(ledger: Ledger, now: number, force = false): Effec
     return foldStage(ledger, exec, now);
   return [];
 }
-
-/** How long the default loop waits after a failed execution: doubling from five seconds to five minutes. */
-export const LOOP_BACKOFF_MIN_MS = 5_000;
-export const LOOP_BACKOFF_MAX_MS = 300_000;
-/** Ended executions kept in the ledger (and the snapshot); older ones and their tasks are pruned. */
-export const KEEP_ENDED_EXECUTIONS = 32;
 
 function isDefaultLoop(ledger: Ledger, exec: ExecutionRecord): boolean {
   return !exec.human && ledger.config.defaultLoop?.bundle === exec.bundle;
@@ -734,13 +729,6 @@ export function executionTasks(ledger: Ledger, executionId: string): TaskRecord[
 }
 
 /**
- * The loop yields to people (WP6.8): once a person's launch has ended, the loop launches nothing
- * until Start is pressed or nobody has touched the page for this long. (WP4.4's twenty-second hold
- * was not enough: the loop took the stage back from whoever was reading their result.)
- */
-export const YIELD_IDLE_MS = 10 * 60 * 1000;
-
-/**
  * The loop yields to people (design §6.7, WP6.8): once a person's launch has ended — done, failed,
  * or killed — the loop launches nothing, neither a new frame nor a queued continuation, until
  * Start is pressed or nobody has touched the machine for `YIELD_IDLE_MS`. The result stays on the
@@ -761,7 +749,7 @@ function releaseYield(ledger: Ledger): Effect[] {
 
 /** The loop's gate for automatic work: stopped, yielded and someone still around, or paused. */
 export function loopMayRun(ledger: Ledger, now: number): boolean {
-  if (ledger.meta.loopStopped || ledger.meta.pausedBy !== null) return false;
+  if (ledger.meta.loopStopped || ledger.session.pausedBy !== null) return false;
   // Nobody has touched the page for a while: the loop may come back (`releaseYield` when it does).
   return !ledger.meta.loopYielded || now - ledger.meta.lastInteractionAt >= YIELD_IDLE_MS;
 }
@@ -817,10 +805,7 @@ export function commandHalf(
     // alive, unlinked, and never replaced — WP4.4).
     if (op !== "throttle" && v.kind === "core") {
       for (const core of [...ledger.cores.values()]) {
-        if (core.nodeId === v.nodeId) {
-          ledger.cores.delete(core.microvmId);
-          effects.push({ kind: "terminateCore", microvmId: core.microvmId });
-        }
+        if (core.nodeId === v.nodeId) effects.push(forgetCloudCore(ledger, core.microvmId));
       }
     }
   }
@@ -842,9 +827,6 @@ export function resumeAll(ledger: Ledger): { effects: Effect[]; victims: string[
   }
   return { effects, victims };
 }
-
-/** Ended executions whose *tasks* are kept, so the last frames stay browsable; older ones keep the record only. */
-export const KEEP_ENDED_TASKS = 2;
 
 /**
  * Keep the ledger small (design §9.4): ended executions beyond the most recent `keep` are dropped
