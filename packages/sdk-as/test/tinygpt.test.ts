@@ -37,7 +37,7 @@ const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
 beforeAll(async () => {
   await compileProgram(path.join(programDir, "assembly", "index.ts"), out);
-  module = (await loadProgram(new Uint8Array(readFileSync(out)))).module;
+  module = loadProgram(new Uint8Array(readFileSync(out))).module;
 }, 120_000);
 
 describe.skipIf(!have)("tiny GPT", () => {
@@ -51,7 +51,7 @@ describe.skipIf(!have)("tiny GPT", () => {
     const refs = JSON.parse(readFileSync(referenceFile, "utf8")) as Reference[];
     const prompts = refs.map((r) => r.prompt).join("|");
     const started = performance.now();
-    const run = await runStaged(module, bundleInputs(), { prompts, tokens: 24 });
+    const run = runStaged(module, bundleInputs(), { prompts, tokens: 24 });
     const ms = performance.now() - started;
     expect(run.stages.map((s) => s.name)).toEqual(["generate", "collect"]);
     const stage0 = run.stages[0];
@@ -92,7 +92,7 @@ describe.skipIf(!have)("tiny GPT", () => {
       `[tinygpt] ${refs.length} prompts × 24 tokens in ${ms.toFixed(0)} ms (${(ms / (refs.length * 24)).toFixed(1)} ms per token, compared ${compared})`,
     );
     // Determinism: the same task twice gives the same bytes.
-    const again = await runStaged(module, bundleInputs(), { prompts, tokens: 24 });
+    const again = runStaged(module, bundleInputs(), { prompts, tokens: 24 });
     expect(again.stages[0]?.hashes).toEqual(stage0.hashes);
     // The collect stage joins every continuation into the text the dashboard shows.
     expect(run.final).not.toBeNull();

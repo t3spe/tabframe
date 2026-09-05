@@ -9,6 +9,7 @@
     "./host": "./scripts/host.ts"
   },
   "dependencies": {
-    "@tabframe/protocol": "workspace:*"
+    "@tabframe/protocol": "workspace:*",
+    "@tabframe/sandbox": "workspace:*"
   }
 }

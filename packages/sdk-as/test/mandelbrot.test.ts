@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { programManifest } from "@tabframe/protocol";
 import { compileProgram } from "../scripts/build-programs.ts";
-import { instantiate, loadProgram, memoryLimits, type ProgramInstance } from "../scripts/host.ts";
+import { instantiate, loadProgram, type ProgramInstance } from "../scripts/host.ts";
 
 const root = path.resolve(import.meta.dir, "../../..");
 const programDir = path.join(root, "programs", "mandelbrot");
@@ -20,16 +20,16 @@ const params = manifest.defaultParams;
 beforeAll(async () => {
   await compileProgram(path.join(programDir, "assembly", "index.ts"), out);
   wasm = new Uint8Array(readFileSync(out));
-  module = (await loadProgram(wasm)).module;
-  planner = await instantiate(module);
+  module = loadProgram(wasm).module;
+  planner = instantiate(module);
 }, 60_000);
 
 describe("module", () => {
   test("only env.abort is imported, the four exports exist, memory maximum is declared, under 32 KB", async () => {
-    const { imports, exports } = await loadProgram(wasm);
+    const { imports, exports, memory } = loadProgram(wasm);
     expect(imports).toEqual(["env.abort"]);
     expect(exports.sort()).toEqual(["alloc", "memory", "plan", "run"]);
-    expect(memoryLimits(wasm).max).toBe(256);
+    expect(memory.max).toBe(256);
     expect(wasm.length).toBeLessThan(32 * 1024);
   });
   test("manifest is valid and names the tiles view", () => {
@@ -94,8 +94,8 @@ describe("run", () => {
     const spec = planner.plan(0, params);
     if (spec.kind !== "stage") throw new Error("stage expected");
     const centre = spec.tasks[0] as (typeof spec.tasks)[number];
-    const a = (await instantiate(module)).run(0, 0, 640, centre.input);
-    const b = (await instantiate(module)).run(0, 0, 640, centre.input);
+    const a = instantiate(module).run(0, 0, 640, centre.input);
+    const b = instantiate(module).run(0, 0, 640, centre.input);
     expect(a.length).toBe(64 * 64 * 4);
     expect(a).toEqual(b);
     let black = 0;
@@ -116,19 +116,19 @@ describe("run", () => {
     if (fire.kind !== "stage" || mono.kind !== "stage" || ocean.kind !== "stage")
       throw new Error("stage expected");
     const i = 200;
-    const fireTile = (await instantiate(module)).run(
+    const fireTile = instantiate(module).run(
       0,
       i,
       640,
       (fire.tasks[i] as (typeof fire.tasks)[number]).input,
     );
-    const monoTile = (await instantiate(module)).run(
+    const monoTile = instantiate(module).run(
       0,
       i,
       640,
       (mono.tasks[i] as (typeof mono.tasks)[number]).input,
     );
-    const oceanTile = (await instantiate(module)).run(
+    const oceanTile = instantiate(module).run(
       0,
       i,
       640,
@@ -147,7 +147,7 @@ describe("run", () => {
     if (spec.kind !== "stage") throw new Error("stage expected");
     for (let i = 0; i < 640; i += 40) {
       const task = spec.tasks[i] as (typeof spec.tasks)[number];
-      const tile = (await instantiate(module)).run(0, i, 640, task.input);
+      const tile = instantiate(module).run(0, i, 640, task.input);
       expect(sha(tile)).toBe(goldens.hashes[i] as string);
     }
   }, 60_000);

@@ -33,8 +33,8 @@ export async function runGolden(
   params: Record<string, unknown>,
   sample?: number,
 ): Promise<GoldenRun> {
-  const { module } = await loadProgram(wasm);
-  const planner = await instantiate(module);
+  const { module } = loadProgram(wasm);
+  const planner = instantiate(module);
   const spec = planner.plan(0, params, { nodes: 1 });
   if (spec.kind !== "stage") throw new Error("stage 0 must be a stage");
   const times: number[] = [];
@@ -43,7 +43,7 @@ export async function runGolden(
   const step = sample ? Math.max(1, Math.floor(count / sample)) : 1;
   for (let i = 0; i < count; i += step) {
     const task = spec.tasks[i] as (typeof spec.tasks)[number];
-    const inst = await instantiate(module);
+    const inst = instantiate(module);
     // CPU time, not wall time: the pacing numbers must not depend on what else the machine is
     // doing while goldens are regenerated (WP4.3).
     const c0 = process.cpuUsage();
@@ -94,9 +94,9 @@ export async function runStagedGolden(
   params: Record<string, unknown>,
   inputs: Map<string, Uint8Array>,
 ): Promise<StagedGolden> {
-  const { module } = await loadProgram(wasm);
+  const { module } = loadProgram(wasm);
   const t0 = performance.now();
-  const r = await runStaged(module, inputs, params);
+  const r = runStaged(module, inputs, params);
   const final = r.final
     ? {
         hash: createHash("sha256").update(r.final).digest("hex"),
@@ -124,7 +124,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.log(
         `preset ${p}: ${r.taskCount} tiles, cpu ms/tile min ${r.msPerTile.min} median ${r.msPerTile.median} p95 ${r.msPerTile.p95} max ${r.msPerTile.max}, est. frame ${Math.round(r.msPerTile.total / 1000)} s`,
       );
-      const next = (await instantiate((await loadProgram(wasm)).module)).plan(1, {
+      const next = instantiate(loadProgram(wasm).module).plan(1, {
         ...manifest.defaultParams,
         preset: p,
       });

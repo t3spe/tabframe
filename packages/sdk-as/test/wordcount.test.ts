@@ -5,14 +5,7 @@ import path from "node:path";
 import { decodeBars, programManifest } from "@tabframe/protocol";
 import fc from "fast-check";
 import { compileProgram } from "../scripts/build-programs.ts";
-import {
-  ALLOWED_IMPORTS,
-  instantiate,
-  loadProgram,
-  memoryLimits,
-  ProgramError,
-  runStaged,
-} from "../scripts/host.ts";
+import { instantiate, loadProgram, ProgramError, runStaged } from "../scripts/host.ts";
 import {
   countWords,
   decodeMapOutput,
@@ -38,7 +31,7 @@ const manifest = programManifest.parse(
 beforeAll(async () => {
   await compileProgram(path.join(programDir, "assembly", "index.ts"), out);
   wasm = new Uint8Array(readFileSync(out));
-  module = (await loadProgram(wasm)).module;
+  module = loadProgram(wasm).module;
 }, 60_000);
 
 const files = (text: string | Uint8Array) =>
@@ -73,12 +66,12 @@ function mapInput(b: Uint8Array): {
 /** Run stage 0 over a text with `mapTasks` tasks; returns every task's decoded partition sections. */
 async function mapAll(text: string | Uint8Array, mapTasks: number) {
   const fs = files(text);
-  const spec = (await instantiate(module, { files: fs })).plan(0, { mapTasks });
+  const spec = instantiate(module, { files: fs }).plan(0, { mapTasks });
   if (spec.kind !== "stage") throw new Error("stage expected");
   const outputs: Array<Array<Array<[string, number]>>> = [];
   for (let i = 0; i < spec.tasks.length; i++) {
     const task = spec.tasks[i] as (typeof spec.tasks)[number];
-    const inst = await instantiate(module, { files: fs });
+    const inst = instantiate(module, { files: fs });
     outputs.push(decodeMapOutput(inst.run(0, i, spec.tasks.length, task.input)));
   }
   return { spec, outputs };
@@ -89,11 +82,10 @@ const total = (outputs: Array<Array<Array<[string, number]>>>) => merge(outputs.
 
 describe("module and manifest", () => {
   test("only allowed imports (no clock, no network, no write), the four exports, memory maximum 256, small", async () => {
-    const { imports, exports } = await loadProgram(wasm);
-    for (const i of imports) expect(ALLOWED_IMPORTS.has(i)).toBe(true);
+    const { imports, exports, memory } = loadProgram(wasm);
     expect(imports.sort()).toEqual(["env.abort", "tf.list", "tf.log", "tf.read", "tf.stat"]);
     expect(exports.sort()).toEqual(["alloc", "memory", "plan", "run"]);
-    expect(memoryLimits(wasm).max).toBe(256);
+    expect(memory.max).toBe(256);
     expect(wasm.length).toBeLessThan(64 * 1024);
   });
   test("manifest declares the bars view and the defaults", () => {
@@ -117,7 +109,7 @@ describe("plan", () => {
   const text = "Call me Ishmael. Some years ago--never mind how long precisely--having little";
 
   test("stage 0: mapTasks contiguous byte ranges covering the corpus once, eight partitions", async () => {
-    const planner = await instantiate(module, { files: files(text) });
+    const planner = instantiate(module, { files: files(text) });
     const spec = planner.plan(0, manifest.defaultParams);
     expect(spec.kind).toBe("stage");
     if (spec.kind !== "stage") return;
@@ -136,7 +128,7 @@ describe("plan", () => {
     expect(expectStart).toBe(text.length);
   });
   test("stages 1 and 2: eight reducers naming their partition and the map count, one merger with k; then done", async () => {
-    const planner = await instantiate(module, { files: files(text) });
+    const planner = instantiate(module, { files: files(text) });
     const reduce = planner.plan(1, { k: 7, mapTasks: 5 });
     if (reduce.kind !== "stage") throw new Error("stage expected");
     expect(reduce.name).toBe("reduce");
@@ -156,7 +148,7 @@ describe("plan", () => {
     expect(planner.plan(3, manifest.defaultParams)).toEqual({ kind: "done", next: null });
   });
   test("params are clamped: at least one map task, at most 4096; k between 1 and 4096; junk falls back", async () => {
-    const planner = await instantiate(module, { files: files(text) });
+    const planner = instantiate(module, { files: files(text) });
     const none = planner.plan(0, { mapTasks: 0 });
     expect(none.kind === "stage" && none.tasks.length).toBe(1);
     const many = planner.plan(0, { mapTasks: 100_000 });
@@ -170,7 +162,7 @@ describe("plan", () => {
     ).toBe(1);
   });
   test("a missing corpus is a program fault at plan time", async () => {
-    const planner = await instantiate(module, { files: new Map() });
+    const planner = instantiate(module, { files: new Map() });
     expect(() => planner.plan(0, manifest.defaultParams)).toThrow(ProgramError);
     expect(() => planner.plan(0, manifest.defaultParams)).toThrow(/missing \/in\/corpus.txt/);
   });
@@ -294,7 +286,7 @@ describe("reduce and merge", () => {
   const reference = countWords(text);
 
   test("reducers own disjoint partitions, sorted by count then word; the merge is the exact top-K", async () => {
-    const run = await runStaged(module, files(text), { k: 12, mapTasks: 7 });
+    const run = runStaged(module, files(text), { k: 12, mapTasks: 7 });
     expect(run.stages.map((s) => [s.name, s.taskCount])).toEqual([
       ["map", 7],
       ["reduce", PARTITIONS],
@@ -320,8 +312,8 @@ describe("reduce and merge", () => {
     expect(run.final).not.toBeNull();
     const bars = decodeBars(run.final as Uint8Array).map((b) => [b.label, b.value]);
     expect(bars).toEqual(topK(reference, 12));
-    const mergeLog = (run.stages[2] as (typeof run.stages)[number]).logs[0] as string[];
-    expect(mergeLog.join(" ")).toContain(`${reference.size} distinct words`);
+    const mergeLog = (run.stages[2] as (typeof run.stages)[number]).logs[0];
+    expect(mergeLog).toContain(`${reference.size} distinct words`);
     // Files as the control plane would fold them.
     expect(run.files.has("/out/0/6")).toBe(true);
     expect(run.files.has("/out/1/7")).toBe(true);
@@ -329,15 +321,15 @@ describe("reduce and merge", () => {
   });
 
   test("the same execution twice is byte for byte the same", async () => {
-    const a = await runStaged(module, files(text), { k: 5, mapTasks: 3 });
-    const b = await runStaged(module, files(text), { k: 5, mapTasks: 3 });
+    const a = runStaged(module, files(text), { k: 5, mapTasks: 3 });
+    const b = runStaged(module, files(text), { k: 5, mapTasks: 3 });
     expect(a.stages.map((s) => s.hashes)).toEqual(b.stages.map((s) => s.hashes));
     expect(sha(a.final as Uint8Array)).toBe(sha(b.final as Uint8Array));
   });
 
   test("the split does not change the answer", async () => {
-    const one = await runStaged(module, files(text), { k: 10, mapTasks: 1 });
-    const many = await runStaged(module, files(text), { k: 10, mapTasks: 23 });
+    const one = runStaged(module, files(text), { k: 10, mapTasks: 1 });
+    const many = runStaged(module, files(text), { k: 10, mapTasks: 23 });
     expect(sha(one.final as Uint8Array)).toBe(sha(many.final as Uint8Array));
     // Reduce outputs are identical too: partition sums do not depend on the map split.
     expect((one.stages[1] as { hashes: string[] }).hashes).toEqual(
@@ -356,7 +348,7 @@ describe("goldens", () => {
 
   test("the whole corpus, single-threaded, matches goldens.json stage for stage", async () => {
     expect(goldens.params).toEqual(manifest.defaultParams);
-    const run = await runStaged(module, bundleInputs(), manifest.defaultParams);
+    const run = runStaged(module, bundleInputs(), manifest.defaultParams);
     expect(
       run.stages.map((s) => ({ name: s.name, taskCount: s.taskCount, hashes: s.hashes })),
     ).toEqual(goldens.stages);
