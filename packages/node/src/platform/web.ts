@@ -5,7 +5,8 @@
  * receives status.
  */
 import { createWebSandboxHost } from "@tabframe/sandbox/adapters/web-host";
-import { Orchestrator, type SocketLike, type Status } from "../orchestrator.ts";
+import { Orchestrator, type Status } from "../orchestrator.ts";
+import { globalTimers, webSocketLike } from "./socket.ts";
 
 interface InitMessage {
   type: "init";
@@ -41,11 +42,8 @@ scope.onmessage = (ev: MessageEvent<HostToWorker>) => {
         cores: scope.navigator?.hardwareConcurrency ?? 1,
         sandboxVersion: "1",
         fetch: (url) => fetch(url, { cache: "no-store" }),
-        connect: (url, protocols) => new WebSocket(url, protocols) as unknown as SocketLike,
-        timers: {
-          setTimeout: (fn, ms) => setTimeout(fn, ms),
-          clearTimeout: (h) => clearTimeout(h as number),
-        },
+        connect: webSocketLike,
+        timers: globalTimers,
         createSandbox: (storeBase) => createWebSandboxHost(sandboxUrl, storeBase),
         onStatus: (status) => {
           scope.postMessage({ type: "status", ...status } satisfies WorkerToHost);

@@ -95,17 +95,14 @@ describe("Mandelbrot through the runner and the real sandbox", () => {
 
   test("plan stage 0 uploads a stage spec with 640 tasks", async () => {
     const input = encodePlanInput({ stage: 0, params: goldens.params, hints: {} });
-    const outcome = await runner.run(
-      {
-        ...base("plan-0"),
-        kind: "plan",
-        stage: 0,
-        index: 0,
-        count: 1,
-        input: Buffer.from(input).toString("base64"),
-      },
-      1,
-    );
+    const outcome = await runner.run({
+      ...base("plan-0"),
+      kind: "plan",
+      stage: 0,
+      index: 0,
+      count: 1,
+      input: Buffer.from(input).toString("base64"),
+    });
     expect(outcome.kind).toBe("result");
     if (outcome.kind !== "result") return;
     expect(outcome.msg.error).toBeUndefined();
@@ -120,17 +117,14 @@ describe("Mandelbrot through the runner and the real sandbox", () => {
   test("tile 0 renders 64×64 RGBA bytes matching the golden hash", async () => {
     if (spec.kind !== "stage") throw new Error("no spec");
     const task = spec.tasks[0] as { input: Uint8Array };
-    const outcome = await runner.run(
-      {
-        ...base("tile-0"),
-        kind: "run",
-        stage: 0,
-        index: 0,
-        count: spec.tasks.length,
-        input: Buffer.from(task.input).toString("base64"),
-      },
-      1,
-    );
+    const outcome = await runner.run({
+      ...base("tile-0"),
+      kind: "run",
+      stage: 0,
+      index: 0,
+      count: spec.tasks.length,
+      input: Buffer.from(task.input).toString("base64"),
+    });
     expect(outcome.kind).toBe("result");
     if (outcome.kind !== "result") return;
     expect(outcome.msg.error).toBeUndefined();

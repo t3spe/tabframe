@@ -12,16 +12,15 @@ import { sha256Hex } from "@tabframe/store";
 import { Backoff } from "./backoff.ts";
 import {
   OFF_POLL_MS,
-  Orchestrator,
   parseRotating,
   resolveStoreBase,
   type SocketLike,
-  type Status,
-  THROTTLE_MIN_MS,
   type Timers,
-} from "./orchestrator.ts";
+} from "./connection.ts";
+import { Orchestrator, type Status } from "./orchestrator.ts";
 import { fetchSession, socketProtocols } from "./session.ts";
-import type { SandboxRunner } from "./tasks.ts";
+import { THROTTLE_MIN_MS } from "./task-loop.ts";
+import { GRACE_MS, type SandboxRunner } from "./tasks.ts";
 
 /** Manually advanced timers. */
 class FakeTimers implements Timers {
@@ -290,7 +289,7 @@ describe("orchestrator", () => {
     await off.o.start();
     expect(off.statuses.at(-1)?.state).toBe("off");
     expect(off.sockets.length).toBe(0);
-    // An off machine is asked again (WP8.2): when it comes back, the node joins without a reload.
+    // An off machine is asked again: when it comes back, the node joins without a reload.
     expect(off.timers.pending).toBe(1);
     off.setSession(sessionOn);
     await off.timers.advance(OFF_POLL_MS);
@@ -472,7 +471,7 @@ describe("task loop", () => {
     expect(h.statuses.at(-1)?.state).toBe("busy");
     await untilRunning(h);
     const run = h.sandbox.runs[0] as { request: HostRequest; deadlineMs: number };
-    expect(run.deadlineMs).toBe(4_000); // the control plane's deadline plus a grace second
+    expect(run.deadlineMs).toBe(3_000 + GRACE_MS); // the control plane's deadline plus the grace
     expect(run.request.kind).toBe("run");
     expect(run.request.manifest).toEqual({ version: 1, files: {} });
     expect(run.request.limits).toEqual(limits);

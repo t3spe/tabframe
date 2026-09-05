@@ -3,7 +3,7 @@
 // as a test: what it proves is that the ledger, the clients, and the work survive a generation
 // change on the same machine the deploy path uses on AWS.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { HttpControlPlaneClient } from "@tabframe/fleet/cp-client";
@@ -13,6 +13,7 @@ import type { MicrovmClient, MicrovmInfo, PortSpec, RunMicrovmParams } from "@ta
 import { consoleLogger, realClock, realSleeper } from "@tabframe/fleet/types";
 import { PROTOCOL_VERSION } from "@tabframe/protocol";
 import { buildFixturePrograms } from "./fixtures.ts";
+import { spawnProcess, until } from "./testing.ts";
 
 const root = path.resolve(import.meta.dir, "../../..");
 const children: ChildProcess[] = [];
@@ -34,10 +35,9 @@ class LocalMicrovms implements MicrovmClient {
   }
   async run(params: RunMicrovmParams): Promise<MicrovmInfo> {
     const microvmId = `microvm-local-${++this.counter}`;
-    const child = spawn("node", [path.join(root, "packages/control-plane/src/main.ts")], {
-      cwd: root,
-      env: {
-        ...process.env,
+    const started = await spawnProcess(
+      path.join(root, "packages/control-plane/src/main.ts"),
+      {
         TABFRAME_MODE: "local",
         TABFRAME_PUBLIC_PORT: "0",
         TABFRAME_PRIVATE_PORT: "0",
@@ -45,34 +45,25 @@ class LocalMicrovms implements MicrovmClient {
         TABFRAME_LOCAL_NEUTRAL: "1",
         TABFRAME_PROGRAMS_DIR: programsDir,
       },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    children.push(child);
-    const ports = await new Promise<{ publicPort: number; privatePort: number }>(
-      (resolve, reject) => {
-        let buf = "";
-        child.stdout?.on("data", (d: Buffer) => {
-          buf += d.toString();
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-          for (const line of lines) if (line.includes('"listening"')) resolve(JSON.parse(line));
-        });
-        child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[cp] ${d.toString()}`));
-        child.stdout?.on("data", (d: Buffer) => {
-          for (const line of d.toString().split("\n")) {
-            if (
-              /"event":"(seed|task-failed|bad-message|role|fetch-failed|put-failed|presign-failed)"/.test(
-                line,
-              )
-            ) {
-              process.stderr.write(`[cp] ${line}\n`);
-            }
+      '"listening"',
+      {
+        cwd: root,
+        timeoutMs: 20_000,
+        stderrPrefix: "[cp] ",
+        onLine: (line) => {
+          if (
+            /"event":"(seed|task-failed|bad-message|role|fetch-failed|put-failed|presign-failed)"/.test(
+              line,
+            )
+          ) {
+            process.stderr.write(`[cp] ${line}\n`);
           }
-        });
-        child.on("exit", (code) => reject(new Error(`control plane exited with ${code}`)));
-        setTimeout(() => reject(new Error("control plane did not start")), 20_000);
+        },
       },
     );
+    const child = started.child;
+    children.push(child);
+    const ports = started.line as { publicPort: number; privatePort: number };
     const info: MicrovmInfo = {
       microvmId,
       state: "RUNNING",
@@ -184,14 +175,15 @@ afterAll(() => {
   sessionServer?.close();
 });
 
-function startNode(name: string): ChildProcess {
-  const child = spawn("node", [path.join(root, "packages/node/src/platform/node.ts")], {
-    cwd: root,
-    env: { ...process.env, TABFRAME_SESSION_URL: sessionUrl, TABFRAME_HOST_ID: name },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  children.push(child);
-  return child;
+async function startNode(name: string): Promise<ChildProcess> {
+  const started = await spawnProcess(
+    path.join(root, "packages/node/src/platform/node.ts"),
+    { TABFRAME_SESSION_URL: sessionUrl, TABFRAME_HOST_ID: name },
+    '"status"',
+    { cwd: root },
+  );
+  children.push(started.child);
+  return started.child;
 }
 
 /** Watch a control plane as an observer, keeping the subscription alive. */
@@ -218,14 +210,6 @@ async function observe(port: number, gen: number) {
   };
 }
 
-const until = async (pred: () => boolean, ms: number, what: string) => {
-  const deadline = Date.now() + ms;
-  while (!pred()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(100);
-  }
-};
-
 describe("a handover between two processes", () => {
   test("the ledger, the programs, and the nodes survive a generation change", async () => {
     const first = await rotate();
@@ -234,8 +218,8 @@ describe("a handover between two processes", () => {
     const oldPort = microvms.publicPortOf(oldId);
     const oldObserver = await observe(oldPort, 1);
 
-    startNode("core-1");
-    startNode("core-2");
+    await startNode("core-1");
+    await startNode("core-2");
     await until(
       () => oldObserver.events.filter((e) => e.t === "nodeJoined").length >= 2,
       30_000,

@@ -13,7 +13,7 @@ export async function buildFixturePrograms(): Promise<string> {
   mkdirSync(out, { recursive: true });
   const built = path.join(out, "program.wasm");
   // Rebuild when absent or older than any program or SDK source: a stale fixture no longer
-  // matches its goldens, which failed a deploy after the pacing change (WP4.8).
+  // matches its goldens.
   const sources = [path.join(src, "assembly"), path.join(ROOT, "packages/sdk-as/assembly")].flatMap(
     (d) => (existsSync(d) ? readdirSync(d).map((f) => path.join(d, f)) : []),
   );
@@ -22,7 +22,7 @@ export async function buildFixturePrograms(): Promise<string> {
     sources.some((f) => f.endsWith(".ts") && statSync(f).mtimeMs > statSync(built).mtimeMs);
   if (stale) await compileProgram(path.join(src, "assembly/index.ts"), built);
   copyFileSync(path.join(src, "manifest.json"), path.join(out, "manifest.json"));
-  copyFileSync(path.join(src, "assembly/index.ts"), path.join(out, "source.ts")); // as the image ships it (WP7.6)
+  copyFileSync(path.join(src, "assembly/index.ts"), path.join(out, "source.ts")); // as the image ships it
   return PROGRAMS_DIR;
 }
 

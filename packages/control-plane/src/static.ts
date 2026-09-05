@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { LOCAL_PAGE_CSP } from "@tabframe/protocol";
+import { send } from "./http.ts";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -23,8 +24,8 @@ const FALLBACK_PAGE = `<!doctype html><meta charset="utf-8"><title>Tabframe</tit
 <p><a href="/health" style="color:#8cf">/health</a></p></body>`;
 
 /**
- * Serve the web bundle from a directory, refusing anything outside it. Missing directory or
- * file falls back to index.html for the root, or 404.
+ * Serve the web bundle from a directory, refusing anything outside it. A missing directory or
+ * file falls back to the placeholder page for the root, or 404.
  */
 export async function serveStatic(
   webDir: string | null,
@@ -45,21 +46,20 @@ export async function serveStatic(
   try {
     const data = await fs.readFile(file);
     const type = MIME[path.extname(file)] ?? "application/octet-stream";
-    // Nothing here carries a content hash in its name (WP8.2), so nothing is immutable: pages,
-    // styles, and scripts are revalidated; a year-long cache made a protocol bump lean on a reload.
+    // Nothing here carries a content hash in its name, so nothing is immutable: pages, styles and
+    // scripts are revalidated, or a protocol bump would lean on a reload.
     const cache =
       rel.endsWith(".html") || rel.endsWith(".json") || rel.endsWith(".js") || rel.endsWith(".css")
         ? "no-cache"
         : "public, max-age=86400";
-    // The page runs under the deployed policy locally too (WP8.2), so the browser suites would
-    // catch a script or a connection the policy refuses before CloudFront does.
+    // The page runs under the deployed policy locally too, so the browser suites catch a script
+    // or a connection the policy refuses before CloudFront does. Scripts carry it as well: a
+    // worker's policy comes from its script's response.
     res.writeHead(200, {
       "content-type": type,
       "content-length": data.length,
       "cache-control": cache,
       "x-content-type-options": "nosniff",
-      // Pages and scripts both (WP8.4): a worker's policy comes from its script's response, and
-      // CloudFront attaches the policy to every page response, so the local server must too.
       ...(rel.endsWith(".html") || rel.endsWith(".js")
         ? { "content-security-policy": LOCAL_PAGE_CSP }
         : {}),
@@ -69,41 +69,4 @@ export async function serveStatic(
     if (rel === "/index.html") return send(res, 200, "text/html; charset=utf-8", FALLBACK_PAGE);
     send(res, 404, "text/plain", "not found");
   }
-}
-
-export function send(
-  res: ServerResponse,
-  status: number,
-  type: string,
-  body: string | Uint8Array,
-): void {
-  res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(body) });
-  res.end(body);
-}
-
-export function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  send(res, status, "application/json; charset=utf-8", JSON.stringify(body));
-}
-
-/**
- * Read a request body up to a cap. Oversized bodies return null; the stream is drained rather
- * than abandoned so the response is delivered the same way on every runtime.
- */
-export async function readBody(req: IncomingMessage, maxBytes: number): Promise<Uint8Array | null> {
-  const declared = Number(req.headers["content-length"] ?? "0");
-  let oversized = Number.isFinite(declared) && declared > maxBytes;
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    if (oversized) continue;
-    const buf = chunk as Buffer;
-    total += buf.length;
-    if (total > maxBytes) {
-      oversized = true;
-      chunks.length = 0;
-      continue;
-    }
-    chunks.push(buf);
-  }
-  return oversized ? null : new Uint8Array(Buffer.concat(chunks));
 }

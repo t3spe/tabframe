@@ -1,72 +1,37 @@
-import { promises as dns } from "node:dns";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Socket } from "node:net";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { type Clock, type Ledger, systemClock } from "@tabframe/core";
 import {
-  adoptLedger,
-  apply,
-  beginHandover,
-  type Clock,
-  createLedger,
-  DEFAULT_TASK_LIMITS,
-  deserializeLedger,
-  drain,
-  type Effect,
-  type Event,
-  type Ledger,
-  systemClock,
-} from "@tabframe/core";
-import { SsmPointerStore } from "@tabframe/fleet/aws";
-import { CLOSE, encode, LIMITS, PROTOCOL_VERSION } from "@tabframe/protocol";
-import {
-  HASH_RE,
   LocalStore,
   MemorySnapshots,
-  parseRange,
   S3Snapshots,
   S3Store,
   type SnapshotStore,
   type StoreDriver,
 } from "@tabframe/store";
-import { type WebSocket, WebSocketServer } from "ws";
-import { resolveBundle } from "./bundles.ts";
+import { createAuthority, type PointerReader } from "./authority.ts";
 import type { Config, Role } from "./config.ts";
-import { type CoreFleet, type CoreFleetConfig, createCoreFleet } from "./cores.ts";
-import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
+import type { CoreFleet, CoreFleetConfig } from "./cores.ts";
+import { createEffectExecutor } from "./effects.ts";
+import { createFleetGate } from "./fleet-gate.ts";
+import { type BuildStamp, diagReport, healthReport, probeDiag } from "./health.ts";
+import { type Address, closeServer, fail, listen, sendJson } from "./http.ts";
+import { Inflight } from "./inflight.ts";
+import { createLifecycle } from "./lifecycle.ts";
 import { log } from "./log.ts";
-import { type DiscoveredProgram, discoverPrograms, seedPrograms } from "./seed.ts";
+import { startLoops } from "./loops.ts";
+import { createBundleResolver } from "./resolutions.ts";
+import { createRotation } from "./rotation.ts";
+import { createPrivateRouter } from "./routes-private.ts";
+import { createPublicRouter } from "./routes-public.ts";
+import { createHookHost } from "./run-hook.ts";
+import type { DiscoveredProgram } from "./seed.ts";
+import { selfTest } from "./self-test.ts";
+import { createSnapshotWriter } from "./snapshot-policy.ts";
 import { type SnapshotStatus, Snapshotter } from "./snapshotter.ts";
-import { readBody, send, sendJson, serveStatic } from "./static.ts";
+import { createSocketGateway } from "./sockets.ts";
+import { createProcessState, type Phase } from "./state.ts";
 
-/** An unshipped program nobody has run in the ledger's memory is retired at seeding after this long. */
-const STALE_DROP_MS = 60 * 60 * 1000;
-
-/** The local blob route accepts what the protocol allows an output to be (WP8.1: it was 8 MB against a 16 MB cap). */
-const MAX_BLOB_BYTES = LIMITS.maxOutputBytes;
-/** What the control plane will read from the store on an untrusted party's say-so (WP8.1). */
-const FETCH_CAPS = { stageSpec: 1024 * 1024, inheritRoot: 4 * 1024 * 1024 } as const;
-/** A serialized ledger: tasks carry base64 inputs, so it is bigger than the blob cap. */
-const MAX_LEDGER_BYTES = 64 * 1024 * 1024;
-/** Private routes that require the fleet secret from the run payload (design §8). */
-const FLEET_ROUTES = new Set(["/handover", "/adopt", "/drain", "/snapshot", "/diag"]);
-
-/** Client sockets the control plane accepts: the endpoint's sixteen minus two for the fleet (WP8.2). */
-const CLIENT_CONNECTION_CAP = 14;
-let loggedForwarding = false;
-
-function parseNext(body: Uint8Array | null): number | null {
-  if (!body || body.length === 0) return null;
-  try {
-    const v = (JSON.parse(new TextDecoder().decode(body)) as { next?: unknown }).next;
-    return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-export interface Address {
-  host: string;
-  port: number;
-}
+export type { Address } from "./http.ts";
 
 export interface ControlPlane {
   readonly publicAddress: Address;
@@ -78,99 +43,71 @@ export interface ControlPlane {
   readonly store: StoreDriver;
   readonly snapshots: SnapshotStatus;
   /** The rotation phase of this control plane (design §9.4). */
-  readonly phase: "neutral" | "active" | "handing-over" | "drained";
+  readonly phase: Phase;
   /** Resolves when seeding has run for the current ledger (tests wait on it). */
   seeded(): Promise<void>;
   /** Write a snapshot now if the ledger changed; the key written, or null. */
   snapshot(force?: boolean): Promise<string | null>;
+  /** Resolves once every store, fleet and pointer call the process started has settled. */
+  idle(): Promise<void>;
   close(): Promise<void>;
 }
 
-/** Seams the tests use: an injected store, snapshot store, or program list. */
+/** What the composition takes from outside: the platform's adapters, or a test's stand-ins. */
 export interface ControlPlaneDeps {
   store?: StoreDriver;
   snapshots?: SnapshotStore;
   programs?: DiscoveredProgram[];
-  /** Injected in tests; in the image it is built from the run payload. */
+  /** A fleet to use as is (tests); the image builds one through `coreFleet` when it gets a ledger. */
   cores?: CoreFleet;
-  /** Who the fleet's pointer names (WP8.2); in the image it reads the SSM parameter. */
-  pointer?: () => Promise<{ microvmId: string | null; generation: number }>;
+  /** The platform's core fleet, wired by main.ts; absent, the machine runs on tabs alone. */
+  coreFleet?: (config: CoreFleetConfig) => CoreFleet;
+  /** Who the fleet's pointer names; absent (a laptop, most tests) the process is authoritative at once. */
+  pointer?: PointerReader;
+  /** The build stamp /health reports. */
+  build?: BuildStamp;
 }
+
+type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void> | void;
 
 /**
  * The control-plane process (design §9.3): boots neutral, becomes a control plane at boot in
  * local mode or on the /run hook in the image, and from then on turns socket activity and timer
- * ticks into core events and core effects into socket sends and closes.
+ * ticks into core events and core effects into socket sends and closes. This file only composes
+ * the pieces; each of them takes what it needs as a parameter.
  */
 export async function createControlPlane(
   config: Config,
   clock: Clock = systemClock,
   deps: ControlPlaneDeps = {},
 ): Promise<ControlPlane> {
-  let role: Role = "neutral";
-  let generation = config.generation;
-  let ledger: Ledger | null = null;
-  let fleetSecret: string | null = null;
-  let cores: CoreFleet | null = deps.cores ?? null;
-  let fleetConfig: CoreFleetConfig | null = null;
-  let selfMicrovmId: string | null = null;
-  /** The image version this process runs, asked of the platform after /run (WP8.3). */
-  let runningImageVersion: string | null = null;
-  /**
-   * Standby until named (WP8.3): a successor is a control plane from /run, but it launches no
-   * cores and writes no `latest` until the pointer names it or a handover is adopted into it —
-   * before that, a rotation that dies leaves nothing of it behind but itself.
-   */
-  let authoritative = true;
-  let authorityTimer: ReturnType<typeof setInterval> | null = null;
-  const readPointer =
-    deps.pointer ??
-    (config.mode === "image" && config.pointerParam
-      ? (() => {
-          const ssm = new SsmPointerStore(config.pointerParam);
-          return () => ssm.read();
-        })()
-      : null);
-  authoritative = readPointer === null;
-  /** Poll the pointer until it names this process; a handover adopted into it settles it sooner. */
-  function awaitAuthority(): void {
-    if (authoritative || !readPointer || authorityTimer) return;
-    const check = () =>
-      readPointer()
-        .then((p) => {
-          if (p.microvmId !== null && p.microvmId === selfMicrovmId) grantAuthority("pointer");
-        })
-        .catch((err) => log("authority-check-failed", { error: String(err) }));
-    void check();
-    authorityTimer = setInterval(() => void check(), AUTHORITY_POLL_MS);
-  }
-  function grantAuthority(how: string): void {
-    if (authoritative) return;
-    authoritative = true;
-    if (authorityTimer) clearInterval(authorityTimer);
-    authorityTimer = null;
-    log("authoritative", { how });
-    if (ledger) dispatch({ kind: "tick" });
-  }
-  let sessionUrl: string | null = config.sessionUrl;
-  let seeding: Promise<void> = Promise.resolve();
   const startedAt = clock.now();
+  const inflight = new Inflight();
+  const state = createProcessState({
+    clock,
+    generation: config.generation,
+    sessionUrl: config.sessionUrl,
+  });
+  const gateway = createSocketGateway({
+    dispatch: (event) => state.dispatch(event),
+    accepting: () => state.role === "control-plane" && state.ledger?.meta.phase === "active",
+    log,
+  });
 
-  const rng = () => Math.random();
-  const conns = new Map<string, WebSocket>();
-  let connCounter = 0;
-  const wss = new WebSocketServer({ noServer: true, maxPayload: LIMITS.maxMessageBytes });
-
+  // The listeners come up before the routers exist (the store base needs the public port), so a
+  // request in that window meets a 503 rather than a half-built process.
+  const notReady: Handler = (_req, res) => sendJson(res, 503, { error: "starting" });
+  const routes = { public: notReady, private: notReady };
   const publicServer = createServer(
-    (req, res) => void handlePublic(req, res).catch((err) => fail(res, err)),
+    (req, res) => void Promise.resolve(routes.public(req, res)).catch((err) => fail(res, err)),
   );
   const privateServer = createServer(
-    (req, res) => void handlePrivate(req, res).catch((err) => fail(res, err)),
+    (req, res) => void Promise.resolve(routes.private(req, res)).catch((err) => fail(res, err)),
   );
-  publicServer.on("upgrade", onUpgrade);
-
+  publicServer.on("upgrade", gateway.onUpgrade);
   const publicAddress = await listen(publicServer, config.publicPort, config.host);
   const privateAddress = await listen(privateServer, config.privatePort, config.host);
+
   const storeBase = config.storeBase ?? `http://${publicAddress.host}:${publicAddress.port}/blob`;
   const local = new LocalStore(storeBase);
   // Image mode writes to the blob bucket behind CloudFront; local mode serves blobs itself.
@@ -186,831 +123,158 @@ export async function createControlPlane(
       : new MemorySnapshots());
   const snapshotter = new Snapshotter(snapshots);
 
-  /** Fresh or adopted, the ledger is ours from here: announce the role and seed the programs. */
-  /** Cloud cores need the image, the core role, and a session URL to point the cores at. */
-  function canRunCores(): boolean {
-    return Boolean(
-      deps.cores ??
-        (config.imageArn && config.coreRoleArn && sessionUrl && config.mode === "image"),
-    );
-  }
-
-  function becomeControlPlane(gen: number, base: string, adopted: Ledger | null): void {
-    generation = gen;
-    if (adopted) {
-      execute(adoptLedger(adopted, gen, clock.now()));
-      adopted.meta.storeBase = base;
-      ledger = adopted;
-    } else {
-      // The ledger's clocks start now: with the default of zero a fresh control plane believes
-      // nobody has watched it for fifty years and is born asleep (found by the reaper test).
-      ledger = createLedger(gen, { storeBase: base, cloudCores: canRunCores() }, clock.now());
-    }
-    ledger.config.cloudCores = canRunCores();
-    if (canRunCores() && !cores) {
-      fleetConfig = {
-        imageArn: config.imageArn as string,
-        imageVersion: runningImageVersion ?? config.imageVersion,
-        coreRoleArn: config.coreRoleArn as string,
-        region: config.region,
-        sessionUrl: sessionUrl as string,
-        storeBase: base,
-        generation: gen,
-        fleetSecret,
-      };
-      cores = createCoreFleet(fleetConfig);
-    }
-    role = "control-plane";
-    log("role", { role, generation, adopted: adopted !== null });
-    const mine = ledger;
-    seeding = seed(mine).catch((err) => log("seed-failed", { error: String(err) }));
-  }
-
-  /**
-   * Seeding (design §5.6): the demo programs go into the store as bundles on the first adopt of
-   * a ledger without programs; the configured default program becomes the machine's loop.
-   */
-  async function seed(target: Ledger): Promise<void> {
-    const programs =
-      deps.programs ?? (config.programsDir ? discoverPrograms(config.programsDir) : []);
-    if (programs.length === 0) {
-      log("seed", { programs: [], note: "no programs found", dir: config.programsDir });
-      return;
-    }
-    const { seeded, rejected } = await seedPrograms(store, programs);
-    for (const r of rejected) log("seed-rejected", r);
-    if (ledger !== target) return; // the role changed under us
-    // Seeding is by bundle hash, not "have we ever seeded": a deploy that ships a new program has
-    // to reach a machine that keeps adopting its predecessor's ledger, and a bundle already in the
-    // ledger is left alone.
-    const added = seeded.filter((p) => !target.programs.has(p.bundle));
-    for (const p of added) {
-      dispatch({
-        kind: "programAdded",
-        bundle: p.bundle,
-        module: p.module,
-        manifest: p.manifest,
-        files: p.files,
-      });
-    }
-    // The image owns the names it ships (WP4.9): a record under a shipped name with another bundle
-    // is the previous deploy's version (or a drop that borrowed the name) and is retired, so the
-    // list shows one `mandelbrot` and the old one's follow-up chain ends.
-    const shipped = new Set(seeded.map((p) => p.bundle));
-    const names = new Set(seeded.map((p) => p.name));
-    const retired = [...target.programs.values()].filter(
-      (p) => !p.retired && !shipped.has(p.bundle) && names.has(p.manifest.name),
-    );
-    // Drops stay as long as they are used: an unshipped program that no remaining execution refers
-    // to (the ledger keeps the last 32) and that is over an hour old is retired too, so runbook
-    // uploads and abandoned experiments do not clutter the list for ever.
-    const referenced = new Set([...target.executions.values()].map((e) => e.bundle));
-    const stale = [...target.programs.values()].filter(
-      (p) =>
-        !p.retired &&
-        !shipped.has(p.bundle) &&
-        !names.has(p.manifest.name) &&
-        !referenced.has(p.bundle) &&
-        clock.now() - p.addedAt > STALE_DROP_MS,
-    );
-    for (const p of [...retired, ...stale]) dispatch({ kind: "programRetired", bundle: p.bundle });
-    // The machine's own loop follows the shipped program: set when there is none, moved when the
-    // one it points at was just retired or is gone (the old frame kept rendering forever before).
-    const loop = seeded.find((p) => p.name === config.defaultProgram) ?? seeded[0] ?? null;
-    const current = target.config.defaultLoop;
-    const currentProgram = current ? target.programs.get(current.bundle) : undefined;
-    const moved = loop !== null && (!current || !currentProgram || currentProgram.retired === true);
-    if (loop && moved) {
-      dispatch({
-        kind: "setDefaultLoop",
-        loop: { bundle: loop.bundle, params: loop.manifest.defaultParams },
-      });
-    }
-    log("seed", {
-      programs: seeded.map((p) => ({ name: p.name, bundle: p.bundle.slice(0, 12) })),
-      added: added.map((p) => p.name),
-      retired: retired.map((p) => `${p.manifest.name}@${p.bundle.slice(0, 12)}`),
-      stale: stale.map((p) => `${p.manifest.name}@${p.bundle.slice(0, 12)}`),
-      defaultLoop: loop?.name ?? null,
-      loopMoved: moved,
-    });
-  }
-
-  if (config.mode === "local" && !config.localNeutral) {
-    becomeControlPlane(config.generation, storeBase, null);
-  }
-
-  const timer = setInterval(() => {
-    if (!ledger) return;
-    const before = ledger.meta.phase;
-    dispatch({ kind: "tick" });
-    if (before === "handing-over" && ledger.meta.phase === "active") void leaseExpired();
-  }, config.tickMs);
-
-  /**
-   * The handover lease ran out (WP8.2): a rotation that died between the pointer flip and the
-   * drain would leave two active generations fighting over the cores. Before carrying on, ask the
-   * pointer; if it names a newer generation elsewhere, this one drains and terminates itself.
-   */
-  async function leaseExpired(): Promise<void> {
-    if (!ledger || !readPointer) {
-      log("lease-expired", { checked: false });
-      return;
-    }
-    let named: { microvmId: string | null; generation: number } | null = null;
-    try {
-      named = await readPointer();
-    } catch (err) {
-      // Not knowing is not permission (WP8.3): the lease is re-armed and the question asked again.
-      log("lease-expired", { checked: false, rearmed: true, error: String(err) });
-      if (ledger.meta.phase === "active") beginHandover(ledger, clock.now());
-      return;
-    }
-    const superseded =
-      named.microvmId !== null &&
-      named.microvmId !== selfMicrovmId &&
-      named.generation > ledger.meta.generation;
-    log("lease-expired", { checked: true, superseded, pointer: named.generation });
-    if (!superseded || !ledger || ledger.meta.phase !== "active") return;
-    const clients = ledger.conns.size;
-    execute(drain(ledger, named.generation, rng));
-    for (const ws of conns.values()) ws.close(1001, "rotating");
-    conns.clear();
-    log("superseded", { by: named.generation, clients, self: selfMicrovmId });
-    if (selfMicrovmId && cores) {
-      await cores
-        .terminate(selfMicrovmId)
-        .catch((err) => log("self-terminate-failed", { error: String(err) }));
-    }
-  }
-  // The core's fleet policy counts records; only a `coreGone` removes one. Without this poll a
-  // core whose MicroVM died would keep its record until the age ceiling and never be replaced
-  // (found by the churn simulation, WP1.9 sim cores).
-  const coreReaper = setInterval(() => {
-    if (!ledger || role !== "control-plane" || !cores || ledger.cores.size === 0) return;
-    const ids = [...ledger.cores.keys()];
-    void cores
-      .gone(ids)
-      .then((dead) => {
-        for (const microvmId of dead) {
-          log("core-gone", { microvmId });
-          dispatch({ kind: "coreGone", microvmId });
-        }
-      })
-      .catch((err) => log("core-check-failed", { error: String(err) }));
-  }, config.coreCheckMs);
-  const snapshotTimer = setInterval(() => {
-    // Only the named, active control plane writes `latest` (WP8.2 gated the hook path; WP8.3 the
-    // timer): a predecessor after its handover and a successor before its adopt both used to.
-    if (ledger && role === "control-plane" && ledger.meta.phase === "active" && authoritative) {
-      void snapshotter
-        .write(ledger, clock.now())
-        .catch((err) => log("snapshot-failed", { error: String(err) }));
-    }
-  }, config.snapshotEveryMs);
-
-  function dispatch(event: Event): void {
-    if (!ledger) return;
-    execute(apply(ledger, event, clock.now()));
-  }
-
-  // Bundle resolutions are memoised, rejections included, and never run twice at once (WP8.3):
-  // one uploaded eight-megabyte module used to cost a fetch and a validation per launch attempt.
-  const resolutions = new Map<string, ReturnType<typeof resolveBundle>>();
-  function resolveMemo(bundle: string): ReturnType<typeof resolveBundle> {
-    const known = resolutions.get(bundle);
-    if (known) return known;
-    const pending = resolveBundle(store, bundle, DEFAULT_TASK_LIMITS.memoryPagesMax);
-    resolutions.set(bundle, pending);
-    while (resolutions.size > RESOLUTION_MEMO) {
-      const oldest = resolutions.keys().next().value;
-      if (oldest === undefined) break;
-      resolutions.delete(oldest);
-    }
-    return pending;
-  }
-
-  function execute(effects: Effect[]): void {
-    for (const e of effects) {
-      switch (e.kind) {
-        case "send": {
-          const ws = conns.get(e.connId);
-          if (!ws || ws.readyState !== ws.OPEN) break;
-          try {
-            ws.send(encode(e.msg));
-          } catch (err) {
-            // A frame the protocol refuses to encode (over 64 KB) closes that connection instead
-            // of throwing through the dispatch (WP8.1): the ledger is already advanced.
-            log("send-failed", { connId: e.connId, t: e.msg.t, error: String(err) });
-            ws.close(CLOSE.invalidMessage, "frame too large");
-          }
-          break;
-        }
-        case "close": {
-          const ws = conns.get(e.connId);
-          if (ws) ws.close(e.code, e.reason.slice(0, 120));
-          break;
-        }
-        case "presign":
-          void store
-            .presign(e.items)
-            .then((urls) => {
-              const ws = conns.get(e.connId);
-              if (!ws || ws.readyState !== ws.OPEN) return;
-              try {
-                ws.send(encode({ t: "presigned", v: PROTOCOL_VERSION, gen: generation, urls }));
-              } catch (err) {
-                // A reply the protocol refuses to encode closes the socket, like "send" (WP8.2).
-                log("send-failed", { connId: e.connId, t: "presigned", error: String(err) });
-                ws.close(CLOSE.invalidMessage, "frame too large");
-              }
-            })
-            .catch((err) => log("presign-failed", { error: String(err) }));
-          break;
-        case "fetchBlob":
-          void store
-            .get(
-              e.hash,
-              e.purpose.type === "stageSpec" ? FETCH_CAPS.stageSpec : FETCH_CAPS.inheritRoot,
-            )
-            .then((bytes) =>
-              dispatch({ kind: "blobFetched", hash: e.hash, bytes, purpose: e.purpose }),
-            )
-            .catch((err) => {
-              // An error is not "missing" (WP8.2): the core retries the effect and fails only past a cap.
-              log("fetch-failed", { hash: e.hash, error: String(err) });
-              dispatch({
-                kind: "blobFetched",
-                hash: e.hash,
-                bytes: null,
-                purpose: e.purpose,
-                error: String(err).slice(0, 200),
-              });
-            });
-          break;
-        case "launchCore": {
-          if (!cores) break;
-          if (!authoritative) {
-            log("core-launch-deferred", { reason: "not yet named by the pointer" });
-            break;
-          }
-          void cores
-            .launch()
-            .then(({ microvmId, token }) => {
-              if (!ledger || ledger.meta.phase !== "active") {
-                // Acked after a handover (WP8.3): no surviving ledger would know this core.
-                log("core-launched-late", { microvmId });
-                void cores?.terminate(microvmId).catch(() => {});
-                return;
-              }
-              log("core-launched", { microvmId });
-              dispatch({ kind: "coreLaunched", microvmId, token });
-            })
-            .catch((err) => log("core-launch-failed", { error: String(err) }));
-          break;
-        }
-        case "terminateCore": {
-          const { microvmId } = e;
-          if (!cores) break;
-          void cores
-            .terminate(microvmId)
-            .then(() => log("core-terminated", { microvmId }))
-            .catch((err) => log("core-terminate-failed", { microvmId, error: String(err) }));
-          break;
-        }
-        case "resolveBundle": {
-          const { bundle, connId, params, inherit } = e;
-          void resolveMemo(bundle)
-            .then((r) => {
-              if (!r.ok) {
-                log("bundle-rejected", { bundle: bundle.slice(0, 12), reason: r.reason });
-                dispatch({ kind: "bundleRejected", bundle, connId, reason: r.reason });
-                return;
-              }
-              log("bundle-accepted", { bundle: bundle.slice(0, 12), name: r.manifest.name });
-              dispatch({
-                kind: "programAdded",
-                bundle: r.bundle,
-                module: r.module,
-                manifest: r.manifest,
-                files: r.files,
-              });
-              dispatch({ kind: "launch", bundle, params, human: true, inherit, connId });
-            })
-            .catch((err) => {
-              log("bundle-failed", { bundle: bundle.slice(0, 12), error: String(err) });
-              dispatch({ kind: "bundleRejected", bundle, connId, reason: `store error` });
-            });
-          break;
-        }
-        case "putBlob":
-          void store
-            .put(e.bytes)
-            .then((hash) =>
-              dispatch({ kind: "blobStored", hash, size: e.bytes.length, purpose: e.purpose }),
-            )
-            .catch((err) => log("put-failed", { error: String(err) }));
-          break;
-      }
-    }
-  }
-
-  function onUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
-    const path = new URL(req.url ?? "/", "http://x").pathname;
-    const connRole = path === "/node" ? "node" : path === "/observer" ? "observer" : null;
-    // A control plane that has handed over takes no new clients; they belong to its successor.
-    if (!connRole || role !== "control-plane" || ledger?.meta.phase !== "active") {
-      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-    // The endpoint holds sixteen connections (design §9.7); two stay free for the fleet's own
-    // calls, so a full house of tabs cannot block a handover or a drain (WP8.2). The client's
-    // address is logged once, to learn whether the proxy forwards it (a per-address quota needs it).
-    if (conns.size >= CLIENT_CONNECTION_CAP) {
-      // The handshake completes and the socket closes at once with a code the page can read
-      // (WP8.3): a browser learns nothing from a refused upgrade but "it failed".
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        ws.close(
-          CLOSE.machineFull,
-          `machine full: ${CLIENT_CONNECTION_CAP} clients; retry in 10 s`,
-        );
-      });
-      return;
-    }
-    if (!loggedForwarding) {
-      loggedForwarding = true;
-      log("upgrade-headers", {
-        forwardedFor: req.headers["x-forwarded-for"] ?? null,
-        realIp: req.headers["x-real-ip"] ?? null,
-      });
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      const connId = `c${++connCounter}`;
-      conns.set(connId, ws);
-      dispatch({ kind: "connected", connId, role: connRole });
-      ws.on("message", (data, isBinary) => {
-        dispatch({ kind: "message", connId, raw: isBinary ? data : data.toString() });
-      });
-      ws.on("close", () => {
-        conns.delete(connId);
-        dispatch({ kind: "disconnected", connId });
-      });
-      ws.on("error", (err) => log("socket-error", { connId, error: String(err) }));
-    });
-  }
-
-  async function handlePublic(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", "http://x");
-    if (config.mode === "local" && url.pathname === "/session" && req.method === "GET") {
-      if (config.localOff) return sendJson(res, 200, { off: true });
-      return sendJson(res, 200, {
-        endpoint: `ws://${publicAddress.host}:${publicAddress.port}`,
-        token: "local",
-        expiresAt: clock.now() + 30 * 60_000,
-        storeBase,
-        generation,
-      });
-    }
-    if (config.mode === "local" && url.pathname === "/config.json") {
-      return sendJson(res, 200, { sessionUrl: "/session" });
-    }
-    if (config.mode === "local" && url.pathname.startsWith("/blob/"))
-      return handleBlob(url.pathname.slice(6), req, res);
-    return serveStatic(config.webDir, req, res);
-  }
-
-  async function handleBlob(
-    hash: string,
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<void> {
-    if (!HASH_RE.test(hash)) return send(res, 400, "text/plain", "not a sha-256 hex key");
-    if (req.method === "PUT") {
-      const body = await readBody(req, MAX_BLOB_BYTES);
-      if (!body) return send(res, 413, "text/plain", "blob too large");
-      const r = await local.putVerified(hash, body);
-      if (!r.ok) return sendJson(res, 400, { error: "bytes do not hash to key", actual: r.actual });
-      return sendJson(res, 200, { hash, size: r.size });
-    }
-    const bytes = local.getSync(hash);
-    if (!bytes) return send(res, 404, "text/plain", "unknown blob");
-    const headers: Record<string, string | number> = {
-      "content-type": "application/octet-stream",
-      "cache-control": "public, max-age=31536000, immutable",
-      "accept-ranges": "bytes",
-      "access-control-allow-origin": "*",
-    };
-    if (req.method === "HEAD") {
-      res.writeHead(200, { ...headers, "content-length": bytes.length });
-      res.end();
-      return;
-    }
-    const range = parseRange(req.headers.range, bytes.length);
-    if (range === null) {
-      res.writeHead(416, { "content-range": `bytes */${bytes.length}` });
-      res.end();
-      return;
-    }
-    if (range) {
-      const slice = bytes.subarray(range.start, range.end + 1);
-      res.writeHead(206, {
-        ...headers,
-        "content-length": slice.length,
-        "content-range": `bytes ${range.start}-${range.end}/${bytes.length}`,
-      });
-      res.end(slice);
-      return;
-    }
-    res.writeHead(200, { ...headers, "content-length": bytes.length });
-    res.end(bytes);
-  }
-
-  const hookHost: HookHost = {
+  const authority = createAuthority({
+    readPointer: deps.pointer ?? null,
+    self: () => state.microvmId,
+    onGranted: () => state.dispatch({ kind: "tick" }),
+    inflight,
+    log,
+  });
+  const lifecycle = createLifecycle({
+    state,
+    config,
+    clock,
+    store,
+    programs: deps.programs,
+    cores: deps.cores,
+    coreFleet: deps.coreFleet,
+    inflight,
+    log,
+  });
+  state.bind(
+    createEffectExecutor({
+      gateway,
+      store,
+      cores: lifecycle.cores,
+      authoritative: () => authority.authoritative,
+      resolve: createBundleResolver(store),
+      dispatch: (event) => state.dispatch(event),
+      ledger: () => state.ledger,
+      generation: () => state.generation,
+      inflight,
+      log,
+    }),
+  );
+  const snapshotWriter = createSnapshotWriter({ state, authority, snapshotter, clock, log });
+  const rotation = createRotation({
+    state,
+    gateway,
+    snapshots: snapshotWriter,
+    authority,
+    lifecycle,
+    storeBase,
+    rng: Math.random,
+    clock,
+    log,
+  });
+  const hookHost = createHookHost({
+    state,
+    snapshotter,
+    snapshots: snapshotWriter,
+    authority,
+    lifecycle,
+    storeBase,
     isListening: () => publicServer.listening && privateServer.listening,
-    onValidate: () => selfTest(),
-    async onRun(payload: RunPayload, microvmId: string | null): Promise<boolean> {
-      if (role !== "neutral") {
-        log("run-refused", { reason: "role already assumed", role });
-        return false;
-      }
-      fleetSecret = payload.fleetSecret;
-      sessionUrl = payload.sessionUrl ?? sessionUrl;
-      selfMicrovmId = microvmId;
-      // Cores follow the version this process runs (WP8.3): a rolled-back control plane used to
-      // launch cores at the image's latest version.
-      if (microvmId && cores?.describe) {
-        void cores
-          .describe(microvmId)
-          .then((info) => {
-            runningImageVersion = info?.imageVersion ?? null;
-            if (fleetConfig) fleetConfig.imageVersion = runningImageVersion ?? config.imageVersion;
-            log("image-version", { imageVersion: runningImageVersion });
-          })
-          .catch((err) => log("image-version-failed", { error: String(err) }));
-      }
-      log("run", {
-        microvmId,
-        role: payload.role,
-        generation: payload.generation,
-        snapshotKey: payload.snapshotKey,
-        hasSecret: fleetSecret !== null,
-      });
-      if (payload.role === "control-plane") {
-        // Adopt from a snapshot when the fleet names one (design §9.4); a missing or unreadable
-        // snapshot means a fresh ledger, which idempotency makes safe.
-        let adopted: Ledger | null = null;
-        if (payload.snapshotKey) {
-          try {
-            adopted = await snapshotter.read(payload.snapshotKey);
-            log(adopted ? "snapshot-adopted" : "snapshot-missing", { key: payload.snapshotKey });
-          } catch (err) {
-            log("snapshot-unreadable", { key: payload.snapshotKey, error: String(err) });
-          }
-        }
-        if (role !== "neutral") return false; // a second /run raced us while we read
-        becomeControlPlane(payload.generation, payload.storeBase ?? storeBase, adopted);
-        awaitAuthority();
-        return true;
-      }
-      role = "core";
-      generation = payload.generation;
-      if (!payload.sessionUrl) {
-        log("run-refused", { reason: "a core needs a session URL" });
-        return false;
-      }
-      // The node orchestrator is the same code a browser tab runs (design §4, §9.3). It is
-      // started here rather than as a separate process so the image stays one entry point.
+    validate: selfTest,
+    startCore: async (opts) => {
       const { startCore } = await import("./core-node.ts");
-      startCore({
-        sessionUrl: payload.sessionUrl,
-        microvmId,
-        coreToken: payload.coreToken ?? null,
-        log,
-      });
-      log("role", { role, generation, hostId: `core-${microvmId ?? "unknown"}` });
-      return true;
+      startCore(opts);
     },
-    async onSuspend() {
-      log("suspend", { nodes: ledger?.nodes.size ?? 0 });
-      await snapshotNow("suspend");
-    },
-    async onResume() {
-      log("resume", {});
-    },
-    async onTerminate() {
-      log("terminate", {});
-      await snapshotNow("terminate");
-    },
-  };
-
-  /** The lifecycle hooks write a snapshot whatever the change state; failures are logged. */
-  async function snapshotNow(reason: string): Promise<string | null> {
-    if (!ledger || role !== "control-plane") return null;
-    // A control plane that handed over or drained writes no `latest` (WP8.2): the successor owns
-    // the lineage now, and a heal must not boot from a drained predecessor's ledger.
-    if (ledger.meta.phase !== "active" && reason !== "handover") return null;
-    try {
-      const key = await snapshotter.write(ledger, clock.now(), true);
-      log("snapshot", { reason, key });
-      return key;
-    } catch (err) {
-      log("snapshot-failed", { reason, error: String(err) });
-      return null;
-    }
-  }
-
-  /**
-   * The fleet's routes carry the secret from the run payload (design §8, §9.3). In local mode
-   * there is no payload and no secret, so they are open — the private port is not routable from a
-   * browser in either case, and locally it is bound to the loopback address.
-   */
-  let adoptedOnce = false;
-  function fleetAuthorized(req: IncomingMessage): boolean {
-    // A core gates no fleet route and never becomes a control plane (WP8.2).
-    if (role === "core") return false;
-    // Without a secret the fleet routes are open only on a laptop (WP8.1): an image that has not
-    // received its run payload yet refuses /adopt and the rest instead of failing open.
-    if (!fleetSecret) return config.mode !== "image" || config.allowOpenFleetRoutes === true;
-    const header = req.headers["x-tabframe-fleet-secret"];
-    const given = Array.isArray(header) ? header[0] : header;
-    if (typeof given !== "string" || given.length !== fleetSecret.length) return false;
-    // Constant-time enough for a secret compared a handful of times an hour.
-    let diff = 0;
-    for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ fleetSecret.charCodeAt(i);
-    return diff === 0;
-  }
-
-  async function handlePrivate(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", "http://x");
-    if (url.pathname.startsWith(HOOK_PREFIX))
-      return handleHook(hookHost, url.pathname.slice(HOOK_PREFIX.length), req, res);
-    if (FLEET_ROUTES.has(url.pathname) && !fleetAuthorized(req)) {
-      log("fleet-unauthorized", { path: url.pathname });
-      return sendJson(res, 403, { error: "fleet secret required" });
-    }
-    if (url.pathname === "/handover" && req.method === "POST") {
-      // Step 2 of a rotation: stop assigning, pause intake, hand the ledger over (design §9.4).
-      if (!ledger || role !== "control-plane") return sendJson(res, 409, { error: "no ledger" });
-      // A drained control plane has let its clients go; a handover from it would resurrect a
-      // generation that is over (WP8.2).
-      if (ledger.meta.phase === "drained") return sendJson(res, 409, { error: "already drained" });
-      const { json, generation: gen } = beginHandover(ledger, clock.now());
-      await snapshotNow("handover");
-      log("handover", { generation: gen, nodes: ledger.nodes.size, bytes: json.length });
-      return send(res, 200, "application/json", `{"generation":${gen},"ledger":${json}}`);
-    }
-    if (url.pathname === "/adopt" && req.method === "POST") {
-      // Step 3: become the active control plane with the ledger the previous one handed over.
-      const body = await readBody(req, MAX_LEDGER_BYTES);
-      if (!body) return sendJson(res, 413, { error: "ledger too large" });
-      let adopted: Ledger;
-      try {
-        adopted = deserializeLedger(new TextDecoder().decode(body));
-      } catch (err) {
-        log("adopt-failed", { error: String(err) });
-        return sendJson(res, 400, { error: "unreadable ledger" });
-      }
-      // A ledger from a *later* generation would be a rollback; anything at or before ours is
-      // either the handover we were launched for or a retry of it, and adopting twice is safe.
-      if (adopted.meta.generation > generation) {
-        log("adopt-refused", { theirs: adopted.meta.generation, ours: generation });
-        return sendJson(res, 409, { error: "that ledger is newer than this control plane" });
-      }
-      const gen = generation;
-      if (role === "control-plane" && ledger && adoptedOnce) {
-        // A retried adopt after this process already took a handover (WP8.2): swapping the ledger
-        // under live sockets would orphan them and roll the machine back; the first adopt stands.
-        // A successor that booted from a snapshot has taken none yet and takes this one.
-        log("adopt-repeat", { generation: gen, ours: ledger.meta.seq, theirs: adopted.meta.seq });
-        return sendJson(res, 200, { adopted: true, generation: gen, repeated: true });
-      }
-      becomeControlPlane(gen, adopted.meta.storeBase || storeBase, adopted);
-      adoptedOnce = true;
-      grantAuthority("adopt");
-      await seeding;
-      dispatch({ kind: "tick" });
-      log("adopt", { generation: gen, nodes: adopted.nodes.size });
-      return sendJson(res, 200, { adopted: true, generation: gen });
-    }
-    if (url.pathname === "/drain" && req.method === "POST") {
-      // Step 5: let every client go with a jittered reconnect delay (design §8.4, §9.4).
-      if (!ledger || role !== "control-plane") return sendJson(res, 409, { error: "no ledger" });
-      const body = await readBody(req, 4096);
-      const next = parseNext(body) ?? generation + 1;
-      const clients = ledger.conns.size;
-      execute(drain(ledger, next, rng));
-      for (const ws of conns.values()) ws.close(1001, "rotating");
-      conns.clear();
-      await snapshotNow("drain");
-      log("drain", { next, clients });
-      return sendJson(res, 200, { drained: clients, next });
-    }
-    if (url.pathname === "/health") {
-      // Everything an operator needs at a glance and nothing a browser could not learn from the
-      // dashboard: counts, phases, the fleet, and whether the snapshotter is keeping up.
-      const nodes = [...(ledger?.nodes.values() ?? [])];
-      return sendJson(res, 200, {
-        ok: true,
-        role,
-        phase: role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral",
-        mode: config.mode,
-        generation,
-        protocol: PROTOCOL_VERSION,
-        build: buildStamp(),
-        imageVersion: runningImageVersion ?? config.imageVersion ?? null,
-        authoritative,
-        awake: ledger?.meta.awake ?? null,
-        sleepReason: ledger?.meta.sleepReason ?? null,
-        nodes: nodes.length,
-        nodesByKind: {
-          tab: nodes.filter((n) => n.kind === "tab").length,
-          core: nodes.filter((n) => n.kind === "core").length,
-        },
-        cores: [...(ledger?.cores.values() ?? [])].map((c) => ({
-          // The tail only (WP8.3): the whole id is what an impostor would need, and /health
-          // answers any holder of the private-port token.
-          microvmId: `…${c.microvmId.slice(-8)}`,
-          ageMs: clock.now() - c.launchedAt,
-          linked: c.nodeId !== null,
-        })),
-        cloudCores: ledger?.config.cloudCores ?? false,
-        observers: ledger?.observers.size ?? 0,
-        programs: [...(ledger?.programs.values() ?? [])]
-          .filter((p) => !p.retired)
-          .map((p) => p.manifest.name),
-        running: ledger?.running ?? null,
-        queue: ledger?.queue.length ?? 0,
-        executions: ledger?.executions.size ?? 0,
-        tasks: ledger?.tasks.size ?? 0,
-        loopBackoffMs: ledger?.meta.loopBackoffMs ?? 0,
-        snapshots: snapshotter.status,
-        uptimeMs: clock.now() - startedAt,
-      });
-    }
-    if (url.pathname === "/snapshot" && req.method === "GET") {
-      // The ledger as it stands (design §9.4); the handover path of M3 reads the same shape.
-      if (!ledger) return sendJson(res, 503, { error: "no ledger" });
-      return send(res, 200, "application/json", snapshotter.current(ledger));
-    }
-    if (url.pathname === "/diag") {
-      const t0 = Date.now();
-      let dnsResult: string;
-      try {
-        const addrs = await dns.resolve4("s3.us-west-2.amazonaws.com");
-        dnsResult = `ok (${addrs.length} addresses, ${Date.now() - t0} ms)`;
-      } catch (err) {
-        dnsResult = `failed: ${String(err)}`;
-      }
-      // The store round trip proves credentials, the bucket, and the network in one call.
-      let storeResult: string;
-      const t1 = Date.now();
-      try {
-        const probe = new TextEncoder().encode(`diag ${generation}`);
-        const hash = await store.put(probe);
-        const back = await store.get(hash);
-        storeResult = back
-          ? `ok (put and get ${probe.length} bytes in ${Date.now() - t1} ms)`
-          : "put succeeded but get returned nothing";
-      } catch (err) {
-        storeResult = `failed: ${String(err).slice(0, 160)}`;
-      }
-      const mem = process.memoryUsage();
-      return sendJson(res, 200, {
-        dns: dnsResult,
-        store: storeResult,
-        storeBase: ledger?.meta.storeBase ?? storeBase,
-        storeDriver: store === local ? "local" : "s3",
-        localBlobs: local.size,
-        snapshots: snapshotter.status,
-        role,
-        generation,
-        phase: role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral",
-        node: process.version,
-        memoryMiB: {
-          rss: Math.round(mem.rss / 1048576),
-          heapUsed: Math.round(mem.heapUsed / 1048576),
-        },
-        uptimeMs: clock.now() - startedAt,
-        env: {
+    log,
+  });
+  const view = () => ({
+    role: state.role,
+    phase: state.phase(),
+    mode: config.mode,
+    generation: state.generation,
+    build: deps.build ?? null,
+    imageVersion: lifecycle.imageVersion(),
+    authoritative: authority.authoritative,
+    ledger: state.ledger,
+    snapshots: snapshotter.status,
+    startedAt,
+  });
+  routes.private = createPrivateRouter({
+    hookHost,
+    rotation,
+    health: () => healthReport(view(), clock.now()),
+    diag: async () =>
+      diagReport(
+        {
+          ...view(),
+          storeBase: state.ledger?.meta.storeBase ?? storeBase,
+          storeDriver: store === local ? "local" : "s3",
+          localBlobs: local.size,
           programsDir: config.programsDir,
           sandboxWorker: process.env.TABFRAME_SANDBOX_WORKER ?? null,
-          cloudCores: ledger?.config.cloudCores ?? false,
         },
-      });
-    }
-    sendJson(res, 404, { error: "not found" });
-  }
+        await probeDiag(store, state.generation),
+        clock.now(),
+      ),
+    snapshot: () => (state.ledger ? snapshotter.current(state.ledger) : null),
+    gate: createFleetGate({
+      role: () => state.role,
+      secret: () => state.fleetSecret,
+      open: config.mode !== "image" || config.allowOpenFleetRoutes === true,
+    }),
+    log,
+  });
+  routes.public = createPublicRouter({
+    local: config.mode === "local" ? local : null,
+    session: () =>
+      config.mode === "local" && config.localOff
+        ? { off: true }
+        : {
+            endpoint: `ws://${publicAddress.host}:${publicAddress.port}`,
+            token: "local",
+            expiresAt: clock.now() + 30 * 60_000,
+            storeBase,
+            generation: state.generation,
+          },
+    webDir: config.webDir,
+  });
+
+  const stopLoops = startLoops({
+    state,
+    config,
+    lifecycle,
+    snapshots: snapshotWriter,
+    inflight,
+    onLeaseExpired: () => rotation.leaseExpired(),
+    log,
+  });
+  if (config.mode === "local" && !config.localNeutral)
+    lifecycle.becomeControlPlane(storeBase, null);
 
   return {
-    get phase() {
-      return role === "control-plane" ? (ledger?.meta.phase ?? "active") : "neutral";
-    },
-    get publicAddress() {
-      return publicAddress;
-    },
-    get privateAddress() {
-      return privateAddress;
-    },
+    publicAddress,
+    privateAddress,
+    store,
     get role() {
-      return role;
+      return state.role;
     },
     get generation() {
-      return generation;
+      return state.generation;
     },
     get ledger() {
-      return ledger;
+      return state.ledger;
     },
-    store,
     get snapshots() {
       return snapshotter.status;
     },
-    seeded: () => seeding,
-    snapshot: (force = false) =>
-      ledger && role === "control-plane"
-        ? snapshotter.write(ledger, clock.now(), force)
-        : Promise.resolve(null),
+    get phase() {
+      return state.phase();
+    },
+    seeded: () => lifecycle.seeded(),
+    snapshot: (force = false) => snapshotWriter.probe(force),
+    idle: () => inflight.settled(),
     async close() {
-      clearInterval(timer);
-      clearInterval(snapshotTimer);
-      if (authorityTimer) clearInterval(authorityTimer);
-      clearInterval(coreReaper);
-      for (const ws of conns.values()) ws.terminate();
-      conns.clear();
-      wss.close();
+      stopLoops();
+      authority.stop();
+      state.close();
+      gateway.terminateAll();
       await Promise.all([closeServer(publicServer), closeServer(privateServer)]);
+      await inflight.settled();
     },
   };
-}
-
-/** How often a standby control plane asks the pointer whether it is named (WP8.3). */
-const AUTHORITY_POLL_MS = 5_000;
-/** Bundle resolutions remembered per process (WP8.3). */
-const RESOLUTION_MEMO = 32;
-
-/** The /validate self-test: a hello, a heartbeat, and a tick against a scratch ledger. */
-export function selfTest(): boolean {
-  const scratch = createLedger(0, { storeBase: "http://self-test/blob" });
-  const now = 1_000;
-  apply(scratch, { kind: "connected", connId: "t", role: "node" }, now);
-  const hello = JSON.stringify({
-    t: "hello",
-    v: PROTOCOL_VERSION,
-    gen: 0,
-    hostId: "self",
-    kind: "core",
-    cores: 1,
-    sandboxVersion: "1",
-  });
-  const effects = apply(scratch, { kind: "message", connId: "t", raw: hello }, now);
-  const welcomed = effects.some((e) => e.kind === "send" && e.msg.t === "welcome");
-  const heartbeat = JSON.stringify({
-    t: "heartbeat",
-    v: PROTOCOL_VERSION,
-    gen: 0,
-    visible: true,
-    queue: 0,
-    lastTaskMs: null,
-    tasksDone: 0,
-  });
-  apply(scratch, { kind: "message", connId: "t", raw: heartbeat }, now + 1_000);
-  apply(scratch, { kind: "tick" }, now + 2_000);
-  return welcomed && scratch.nodes.size === 1;
-}
-
-function listen(server: Server, port: number, host: string): Promise<Address> {
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      const addr = server.address();
-      if (!addr || typeof addr === "string") return reject(new Error("no address"));
-      resolve({ host, port: addr.port });
-    });
-  });
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve) => {
-    server.closeAllConnections?.();
-    server.close(() => resolve());
-  });
-}
-
-function fail(res: ServerResponse, err: unknown): void {
-  log("request-error", { error: String(err) });
-  if (!res.headersSent) sendJson(res, 500, { error: "internal" });
-  else res.end();
-}
-
-/** The build stamp the image was staged with (WP8.1), whole since WP8.3: sha, branch, ungated, at. */
-function buildStamp(): Record<string, unknown> | string | null {
-  const whole = process.env.TABFRAME_BUILD_JSON;
-  if (whole) {
-    try {
-      return JSON.parse(whole) as Record<string, unknown>;
-    } catch {
-      // fall through to the short form
-    }
-  }
-  return process.env.TABFRAME_BUILD ?? null;
 }

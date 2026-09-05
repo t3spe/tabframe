@@ -18,7 +18,7 @@ export interface StoreDriver {
   presign(items: PresignItem[]): Promise<PresignedUpload[]>;
   exists(hash: string): Promise<boolean>;
   /**
-   * Fetch a blob by hash; `maxBytes` refuses a larger one before it is read (WP8.1), so a hash an
+   * Fetch a blob by hash; `maxBytes` refuses a larger one before it is read, so a hash an
    * untrusted party named cannot make the control plane load a gigabyte.
    */
   get(hash: string, maxBytes?: number): Promise<Uint8Array | null>;

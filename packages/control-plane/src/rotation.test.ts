@@ -2,38 +2,15 @@
 // drain, and the fleet secret that gates them (design §9.3, §9.4).
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { HANDOVER_LEASE_MS } from "@tabframe/core";
-import { PROTOCOL_VERSION } from "@tabframe/protocol";
+import { CLOSE, PROTOCOL_VERSION } from "@tabframe/protocol";
 import { LocalStore, MemorySnapshots } from "@tabframe/store";
-import type { Config } from "./config.ts";
 import { buildFixturePrograms } from "./fixtures.ts";
 import { discoverPrograms } from "./seed.ts";
 import { type ControlPlane, createControlPlane } from "./server.ts";
+import { privateUrl, runHook, testConfig, until } from "./testing.ts";
 
 const SECRET = "fleet-secret-for-the-test";
-const imageConfig: Config = {
-  mode: "image",
-  allowOpenFleetRoutes: true,
-  publicPort: 0,
-  privatePort: 0,
-  host: "127.0.0.1",
-  generation: 1,
-  storeBase: null,
-  webDir: null,
-  blobBucket: null,
-  localOff: false,
-  localNeutral: false,
-  tickMs: 50,
-  programsDir: null,
-  defaultProgram: "mandelbrot",
-  snapshotBucket: null,
-  snapshotEveryMs: 60_000,
-  coreCheckMs: 60_000,
-  imageArn: null,
-  imageVersion: null,
-  coreRoleArn: null,
-  region: "us-west-2",
-  sessionUrl: null,
-};
+const imageConfig = testConfig();
 
 const planes: ControlPlane[] = [];
 let programsDir = "";
@@ -56,22 +33,14 @@ async function boot(generation: number, seed = true): Promise<ControlPlane> {
   return cp;
 }
 
-const priv = (cp: ControlPlane, path: string) =>
-  `http://127.0.0.1:${cp.privateAddress.port}${path}`;
+const priv = privateUrl;
 
 async function run(cp: ControlPlane, generation: number): Promise<void> {
-  const res = await fetch(priv(cp, "/aws/lambda-microvms/runtime/v1/run"), {
-    method: "POST",
-    body: JSON.stringify({
-      microvmId: `vm-${generation}`,
-      runHookPayload: JSON.stringify({
-        role: "control-plane",
-        generation,
-        snapshotKey: null,
-        fleetSecret: SECRET,
-      }),
-    }),
-  });
+  const res = await runHook(
+    cp,
+    { role: "control-plane", generation, snapshotKey: null, fleetSecret: SECRET },
+    `vm-${generation}`,
+  );
   expect(res.status).toBe(200);
 }
 
@@ -171,7 +140,7 @@ describe("rotation", () => {
     expect(drain.status).toBe(200);
     expect((await drain.json()) as { drained: number }).toMatchObject({ drained: 1, next: 5 });
     const close = await node.closed;
-    expect(close.code).toBe(4005);
+    expect(close.code).toBe(CLOSE.rotatingReconnect);
     const reason = JSON.parse(close.reason) as {
       gen: number;
       next: number;
@@ -214,7 +183,7 @@ describe("rotation", () => {
   }, 30_000);
 });
 
-describe("lease expiry (WP8.2)", () => {
+describe("lease expiry", () => {
   test("a control plane whose lease ran out drains and terminates itself when the pointer names a newer generation", async () => {
     let t = 1_000_000;
     const clock = { now: () => t };
@@ -239,9 +208,8 @@ describe("lease expiry (WP8.2)", () => {
     expect(cp.phase).toBe("handing-over");
     // The rotation died after the flip: nobody drains this one. The lease runs out.
     t += HANDOVER_LEASE_MS + 1_000;
-    const deadline = Date.now() + 5_000;
-    while (cp.phase !== "drained" && Date.now() < deadline) await Bun.sleep(25);
-    expect(cp.phase).toBe("drained");
+    await until(() => cp.phase === "drained", 5_000, "the superseded control plane to drain");
+    await cp.idle();
     expect(terminated).toEqual(["vm-3"]);
   });
 
@@ -268,14 +236,17 @@ describe("lease expiry (WP8.2)", () => {
       (await fetch(priv(cp, "/handover"), { method: "POST", headers: withSecret() })).status,
     ).toBe(200);
     t += HANDOVER_LEASE_MS + 1_000;
-    const deadline = Date.now() + 2_000;
-    while (cp.phase !== "active" && Date.now() < deadline) await Bun.sleep(25);
-    expect(cp.phase).toBe("active");
+    await until(
+      () => cp.phase === "active",
+      2_000,
+      "the lease to run out and the tick to carry on",
+    );
+    await cp.idle();
     expect(terminated).toEqual([]);
   });
 });
 
-describe("standby (WP8.3)", () => {
+describe("standby until named", () => {
   test("a control plane the pointer does not name is not authoritative until it is", async () => {
     let named = "vm-9";
     const cp = await createControlPlane({ ...imageConfig, generation: 6 }, undefined, {
@@ -296,8 +267,11 @@ describe("standby (WP8.3)", () => {
     expect((await health()).authoritative).toBe(false);
     // The pointer flips to this process: the next poll notices.
     named = "vm-6";
-    const deadline = Date.now() + 8_000;
-    while (!(await health()).authoritative && Date.now() < deadline) await Bun.sleep(100);
-    expect((await health()).authoritative).toBe(true);
+    await until(
+      async () => (await health()).authoritative,
+      8_000,
+      "the pointer to name this process",
+      100,
+    );
   }, 15_000);
 });

@@ -1,6 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
-import { HOOK_PREFIX, type HookHost, handleHook, type RunPayload } from "./hooks.ts";
+import {
+  HOOK_PREFIX,
+  type HookHost,
+  handleHook,
+  hookName,
+  parseRunBody,
+  type RunPayload,
+} from "./hooks.ts";
 
 // handleHook in-process behind a tiny http server, so every branch is measured here; the
 // process-level test covers the same routes through the real private listener.
@@ -14,7 +21,9 @@ const host: HookHost = {
   async onRun(payload) {
     runPayload = payload;
     calls.push("run");
-    return payload.role === "control-plane";
+    return payload.role === "control-plane"
+      ? { ok: true, role: "control-plane" }
+      : { ok: false, reason: "a core needs a session URL" };
   },
   async onSuspend() {
     calls.push("suspend");
@@ -32,7 +41,7 @@ let base = "";
 beforeAll(async () => {
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
-    void handleHook(host, url.pathname.slice(HOOK_PREFIX.length), req, res);
+    void handleHook(host, hookName(url.pathname) ?? "", req, res);
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const addr = server.address();
@@ -59,17 +68,22 @@ describe("handleHook", () => {
     expect((await post("validate")).status).toBe(503);
     validateOk = true;
   });
-  test("run parses the payload and reports the host's verdict", async () => {
+  test("run parses the payload and reports the host's verdict, with the reason on a refusal", async () => {
     const ok = await post("run", {
       microvmId: "mvm-1",
       runHookPayload: JSON.stringify({ role: "control-plane", generation: 4, fleetSecret: "s" }),
     });
     expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ role: "control-plane", ok: true });
     expect(runPayload?.generation).toBe(4);
     expect(runPayload?.fleetSecret).toBe("s");
     const refused = await post("run", { runHookPayload: { role: "core", generation: 5 } });
     expect(refused.status).toBe(400);
-    expect(((await refused.json()) as { ok: boolean }).ok).toBe(false);
+    expect(await refused.json()).toEqual({
+      role: "core",
+      ok: false,
+      reason: "a core needs a session URL",
+    });
     expect((await post("run", "garbage")).status).toBe(400);
     expect((await post("run")).status).toBe(400);
   });
@@ -83,5 +97,43 @@ describe("handleHook", () => {
   test("oversized run bodies are refused", async () => {
     const big = { runHookPayload: "x".repeat(70 * 1024) };
     expect((await post("run", big)).status).toBe(400);
+  });
+});
+
+describe("hookName", () => {
+  test("names the hook under the prefix and nothing else", () => {
+    expect(hookName(`${HOOK_PREFIX}run`)).toBe("run");
+    expect(hookName(`${HOOK_PREFIX}`)).toBe("");
+    expect(hookName("/health")).toBeNull();
+    expect(hookName("/aws/lambda-microvms/runtime/v2/run")).toBeNull();
+  });
+});
+
+describe("parseRunBody", () => {
+  test("accepts a stringified or object payload and rejects junk", () => {
+    const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+    const a = parseRunBody(
+      enc({
+        microvmId: "m",
+        runHookPayload: JSON.stringify({
+          role: "control-plane",
+          generation: 3,
+          storeBase: "https://s/blob",
+        }),
+      }),
+    );
+    expect(a?.payload.role).toBe("control-plane");
+    expect(a?.payload.generation).toBe(3);
+    expect(a?.payload.storeBase).toBe("https://s/blob");
+    expect(a?.payload.snapshotKey).toBeNull();
+    const b = parseRunBody(enc({ runHookPayload: { role: "core", generation: 0 } }));
+    expect(b?.payload.role).toBe("core");
+    expect(b?.microvmId).toBeNull();
+    expect(parseRunBody(null)).toBeNull();
+    expect(parseRunBody(new TextEncoder().encode("{"))).toBeNull();
+    expect(parseRunBody(enc({ runHookPayload: "{" }))).toBeNull();
+    expect(parseRunBody(enc({ runHookPayload: { role: "root", generation: 1 } }))).toBeNull();
+    expect(parseRunBody(enc({ runHookPayload: { role: "core", generation: -1 } }))).toBeNull();
+    expect(parseRunBody(enc([1]))).toBeNull();
   });
 });

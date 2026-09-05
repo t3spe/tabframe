@@ -1,9 +1,9 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
+import { isNotFound, s3Client } from "./s3-common.ts";
 
 /**
  * Keyed objects for ledger snapshots (design §9.4): not content-addressed, overwritten in place,
- * expired by the bucket's one-day rule. The same two drivers as blobs: memory locally, S3 in
- * the image.
+ * expired by the bucket's one-day rule. Memory locally, S3 in the image.
  */
 export interface SnapshotStore {
   write(key: string, bytes: Uint8Array, contentType?: string): Promise<void>;
@@ -32,7 +32,7 @@ export class S3Snapshots implements SnapshotStore {
 
   constructor(opts: { bucket: string; region?: string; client?: S3Client }) {
     this.bucket = opts.bucket;
-    this.s3 = opts.client ?? new S3Client(opts.region ? { region: opts.region } : {});
+    this.s3 = s3Client(opts);
   }
 
   async write(key: string, bytes: Uint8Array, contentType = "application/gzip"): Promise<void> {
@@ -52,9 +52,7 @@ export class S3Snapshots implements SnapshotStore {
       if (!out.Body) return null;
       return await out.Body.transformToByteArray();
     } catch (err) {
-      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-      if (e?.name === "NoSuchKey" || e?.name === "NotFound" || e?.$metadata?.httpStatusCode === 404)
-        return null;
+      if (isNotFound(err)) return null;
       throw err;
     }
   }

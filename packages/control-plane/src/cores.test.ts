@@ -4,7 +4,7 @@ import { CORE_MAX_DURATION_SECONDS, corePayload, createCoreFleet } from "./cores
 
 const config = {
   imageArn: "arn:aws:lambda:us-west-2:000000000000:microvm-image:tabframe",
-  imageVersion: "4",
+  imageVersion: () => "4",
   coreRoleArn: "arn:aws:iam::000000000000:role/tabframe-core",
   region: "us-west-2",
   sessionUrl: "https://session.example/",
@@ -22,6 +22,7 @@ describe("the cloud-core fleet", () => {
     const run = microvms.runs[0];
     if (!run) throw new Error("no run");
     expect(run.params.executionRoleArn).toBe(config.coreRoleArn);
+    expect(run.params.imageVersion).toBe("4");
     expect(run.params.ingressConnectors).toEqual([]);
     expect(run.params.egressConnectors).toEqual([
       "arn:aws:lambda:us-west-2:aws:network-connector:aws-network-connector:INTERNET_EGRESS",
@@ -36,7 +37,7 @@ describe("the cloud-core fleet", () => {
       snapshotKey: null,
       sessionUrl: config.sessionUrl,
       storeBase: config.storeBase,
-      fleetSecret: null, // a core gets no fleet secret (WP8.2)
+      fleetSecret: null, // a core gets no fleet secret
       coreToken: token,
     });
   });

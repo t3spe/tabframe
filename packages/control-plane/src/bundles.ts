@@ -26,7 +26,7 @@ export type BundleResolution =
 /** Total bytes a bundle's own files may occupy, so an upload cannot fill the store on its own. */
 export const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
 
-/** What a launch may make the control plane read before it says no (WP8.1). */
+/** What a launch may make the control plane read before it says no. */
 const BUNDLE_MANIFEST_CAP = 1024 * 1024;
 const PROGRAM_MANIFEST_CAP = 64 * 1024;
 
@@ -78,7 +78,7 @@ export async function resolveBundle(
 
   const wasm = await store.get(moduleEntry.hash, LIMITS.maxModuleBytes);
   if (!wasm) return { ok: false, reason: "the module is not in the store" };
-  // Shape from the binary's sections, no compile on the control plane (WP8.2).
+  // Shape from the binary's sections: the control plane never compiles an upload.
   const check = validateModuleBytes(wasm, { memoryPagesMax }, { compile: false });
   if (!check.ok) return { ok: false, reason: check.reason };
 

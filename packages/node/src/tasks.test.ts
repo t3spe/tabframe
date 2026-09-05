@@ -7,14 +7,9 @@ import {
   RELEASED,
 } from "@tabframe/protocol";
 import type { HostRequest, TaskResult } from "@tabframe/sandbox";
-import { type PresignRequester, StoreClient, sha256Hex } from "@tabframe/store";
-import {
-  fromBase64,
-  hostFailure,
-  type SandboxRunner,
-  SocketPresigner,
-  TaskRunner,
-} from "./tasks.ts";
+import { type PresignRequester, StoreClient, StoreError, sha256Hex } from "@tabframe/store";
+import { SocketPresigner } from "./presign.ts";
+import { fromBase64, hostFailure, type SandboxRunner, TaskRunner } from "./tasks.ts";
 
 const BASE = "http://store.test/blob";
 const PROGRAM = "a".repeat(64);
@@ -122,8 +117,8 @@ describe("TaskRunner", () => {
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 4 },
       { ok: true, output: new Uint8Array([2]), writes: new Map(), log: "", computeMs: 4 },
     ]);
-    await w.runner.run(assign(), 1);
-    await w.runner.run(assign({ kind: "plan", taskId: "t2" }), 1);
+    await w.runner.run(assign());
+    await w.runner.run(assign({ kind: "plan", taskId: "t2" }));
     expect(w.gets).toEqual([PROGRAM]);
     expect(w.counts().compiled).toBe(1);
     expect(w.counts().created).toBe(1);
@@ -147,9 +142,9 @@ describe("TaskRunner", () => {
       files: { "/in/x": { hash: "d".repeat(64), size: 3 } },
     };
     w.blobs.set(ROOT, new TextEncoder().encode(JSON.stringify(manifest)));
-    await w.runner.run(assign({ fsRoot: ROOT }), 1);
-    await w.runner.run(assign({ fsRoot: ROOT, taskId: "t2" }), 1);
-    await w.runner.run(assign({ taskId: "t3" }), 1);
+    await w.runner.run(assign({ fsRoot: ROOT }));
+    await w.runner.run(assign({ fsRoot: ROOT, taskId: "t2" }));
+    await w.runner.run(assign({ taskId: "t3" }));
     expect(w.gets.filter((g) => g === ROOT)).toEqual([ROOT]);
     expect((w.requests[0] as HostRequest).manifest).toEqual(manifest);
     expect((w.requests[2] as HostRequest).manifest).toEqual({ version: 1, files: {} });
@@ -172,7 +167,7 @@ describe("TaskRunner", () => {
         computeMs: 42,
       },
     ]);
-    const outcome = await w.runner.run(assign(), 1);
+    const outcome = await w.runner.run(assign());
     expect(outcome.kind).toBe("result");
     if (outcome.kind !== "result") return;
     const m = outcome.msg;
@@ -195,8 +190,8 @@ describe("TaskRunner", () => {
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "note", computeMs: 0 },
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 9.6 },
     ]);
-    const a = await w.runner.run(assign(), 1);
-    const b = await w.runner.run(assign({ taskId: "t2" }), 1);
+    const a = await w.runner.run(assign());
+    const b = await w.runner.run(assign({ taskId: "t2" }));
     if (a.kind !== "result" || b.kind !== "result") throw new Error("expected results");
     expect(a.msg.log).toEqual({ text: "note" });
     expect(a.msg.computeMs).toBe(1);
@@ -217,17 +212,17 @@ describe("TaskRunner", () => {
       },
       { ok: false, error: "disposed", log: "" },
     ]);
-    const trap = await w.runner.run(assign(), 1);
+    const trap = await w.runner.run(assign());
     expect(trap).toMatchObject({
       kind: "result",
       msg: { error: "trap: unreachable", log: { text: "before the trap" }, writes: [] },
     });
-    const late = await w.runner.run(assign(), 1);
+    const late = await w.runner.run(assign());
     expect(late).toMatchObject({ kind: "result", msg: { error: RELEASED } });
     // The host could not run the module at all: not the program's fault, another node's turn.
-    const starved = await w.runner.run(assign(), 1);
+    const starved = await w.runner.run(assign());
     expect(starved).toMatchObject({ kind: "result", msg: { error: RELEASED } });
-    const gone = await w.runner.run(assign(), 1);
+    const gone = await w.runner.run(assign());
     expect(gone).toEqual({ kind: "dropped", reason: "cancelled" });
     expect(w.puts).toEqual([]);
   });
@@ -236,19 +231,19 @@ describe("TaskRunner", () => {
     const w = world([
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 1 },
     ]);
-    const missing = await w.runner.run(assign({ program: "b".repeat(64) }), 1);
+    const missing = await w.runner.run(assign({ program: "b".repeat(64) }));
     expect(missing).toMatchObject({
       kind: "result",
       msg: { error: expect.stringContaining("node:") },
     });
-    const noRoot = await w.runner.run(assign({ fsRoot: ROOT }), 1);
+    const noRoot = await w.runner.run(assign({ fsRoot: ROOT }));
     expect(noRoot).toMatchObject({
       kind: "result",
       msg: { error: expect.stringContaining("manifest") },
     });
     // The failed fetch is not cached: once the store has it, the task runs.
     w.blobs.set(ROOT, new TextEncoder().encode(JSON.stringify({ version: 1, files: {} })));
-    const ok = await w.runner.run(assign({ fsRoot: ROOT }), 1);
+    const ok = await w.runner.run(assign({ fsRoot: ROOT }));
     expect(ok.kind).toBe("result");
     expect(w.gets.filter((g) => g === ROOT).length).toBe(2);
   });
@@ -258,10 +253,10 @@ describe("TaskRunner", () => {
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 1 },
       { ok: true, output: new Uint8Array([1]), writes: new Map(), log: "", computeMs: 1 },
     ]);
-    await w.runner.run(assign(), 1);
+    await w.runner.run(assign());
     w.runner.abort();
     expect(w.counts().disposed).toBe(1);
-    await w.runner.run(assign(), 1);
+    await w.runner.run(assign());
     expect(w.counts().created).toBe(2);
     expect(w.runner.runningTaskId).toBeNull();
   });
@@ -309,26 +304,85 @@ describe("fromBase64", () => {
   });
 });
 
-describe("host and store failures are releases, not program faults (WP8.1)", () => {
-  test("a fetch that failed, an upload that failed, a presign that timed out: released; a trap: a fault", () => {
-    expect(hostFailure("Error: fetch of abc failed: 503")).toBe(true);
-    expect(hostFailure("Error: upload of abc failed: 500")).toBe(true);
-    expect(hostFailure("Error: presign timed out")).toBe(true);
-    // What the program says about itself is a program fault, whatever words it uses (WP8.2).
+describe("host and store failures are releases, not program faults", () => {
+  test("the sandbox's host strings: memory the host could not give is released; what the program says about itself is a fault", () => {
+    expect(
+      hostFailure(
+        "WebAssembly.Instance(): Out of memory: Cannot allocate Wasm memory for new instance",
+      ),
+    ).toBe(true);
+    expect(hostFailure("worker error: RangeError: WebAssembly.Memory(): could not allocate")).toBe(
+      true,
+    );
     expect(hostFailure("abort: out of memory in tile 4 (assembly/index.ts:10:3)")).toBe(false);
     expect(hostFailure("trap: unreachable network error")).toBe(false);
     expect(hostFailure("link: fetch of x failed")).toBe(false);
-    expect(hostFailure("TypeError: Failed to fetch")).toBe(true);
     expect(hostFailure("abort: this planner refuses to plan")).toBe(false);
     expect(hostFailure("RuntimeError: unreachable")).toBe(false);
+    // Store and network prose is the store's to classify, as a StoreError, not the node's to match.
+    expect(hostFailure("Error: fetch of abc failed: 503")).toBe(false);
+    expect(hostFailure("TypeError: Failed to fetch")).toBe(false);
   });
 
-  test("a presign nobody answers rejects after the timeout instead of holding the node for ever", async () => {
+  test("a store that cannot be reached is a StoreError, and the task is released whatever it says", async () => {
+    const runner = new TaskRunner({
+      store: new StoreClient({
+        base: BASE,
+        presign: async () => [],
+        fetch: async () => new Response(null, { status: 503 }),
+        retry: { sleep: async () => {} },
+      }),
+      createSandbox: () => ({
+        run: async () => ({ ok: false, error: "never runs", log: "" }),
+        dispose: () => {},
+      }),
+      compile: async () => ({}) as WebAssembly.Module,
+      now: () => 0,
+    });
+    const outcome = await runner.run(assign());
+    expect(outcome).toMatchObject({ kind: "result", msg: { error: RELEASED, computeMs: 0 } });
+  });
+
+  test("an upload that fails after the program ran is released too", async () => {
+    const program = new Uint8Array([0, 97, 115, 109]);
+    const runner = new TaskRunner({
+      store: new StoreClient({
+        base: BASE,
+        presign: async (items) =>
+          items.map((it) => ({ hash: it.hash, url: `${BASE}/${it.hash}`, headers: {} })),
+        fetch: async (url, init) =>
+          init?.method === "PUT"
+            ? new Response(null, { status: 500 })
+            : new Response(url.endsWith(`/${PROGRAM}`) ? (program as unknown as BodyInit) : null, {
+                status: url.endsWith(`/${PROGRAM}`) ? 200 : 404,
+              }),
+        retry: { sleep: async () => {} },
+      }),
+      createSandbox: () => ({
+        run: async () => ({
+          ok: true,
+          output: new Uint8Array([1]),
+          writes: new Map(),
+          log: "",
+          computeMs: 3,
+        }),
+        dispose: () => {},
+      }),
+      compile: async () => ({}) as WebAssembly.Module,
+      now: () => 0,
+    });
+    const outcome = await runner.run(assign());
+    expect(outcome).toMatchObject({ kind: "result", msg: { error: RELEASED } });
+  });
+
+  test("a presign nobody answers rejects with a StoreError after the timeout instead of holding the node for ever", async () => {
     const sent: string[] = [];
     const presigner = new SocketPresigner((text) => sent.push(text), 20);
-    await expect(presigner.presign([{ hash: "a".repeat(64), size: 1 }])).rejects.toThrow(
-      "presign timed out",
-    );
+    const timedOut = await presigner
+      .presign([{ hash: "a".repeat(64), size: 1 }])
+      .catch((e: unknown) => e);
+    expect(timedOut).toBeInstanceOf(StoreError);
+    expect(timedOut).toMatchObject({ kind: "presign", message: "presign timed out" });
     expect(sent.length).toBe(1);
     const p = presigner.presign([{ hash: "b".repeat(64), size: 1 }]);
     expect(presigner.deliver([{ hash: "b".repeat(64), url: null, headers: {} }])).toBe(true);
@@ -336,7 +390,7 @@ describe("host and store failures are releases, not program faults (WP8.1)", () 
   });
 });
 
-test("a module fetch that hangs releases the task at the deadline instead of holding it for ever (WP8.3)", async () => {
+test("a module fetch that hangs releases the task at the deadline instead of holding it for ever", async () => {
   const runner = new TaskRunner({
     store: new StoreClient(
       BASE,
@@ -351,7 +405,7 @@ test("a module fetch that hangs releases the task at the deadline instead of hol
     now: () => 0,
   });
   const started = Date.now();
-  const outcome = await runner.run(assign({ deadlineMs: 50 }), 1);
+  const outcome = await runner.run(assign({ deadlineMs: 50 }));
   expect(outcome).toMatchObject({ kind: "result", msg: { error: RELEASED, computeMs: 0 } });
   expect(Date.now() - started).toBeLessThan(3_000);
 });

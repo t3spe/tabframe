@@ -1,8 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Role } from "./config.ts";
-import { readBody, sendJson } from "./static.ts";
+import { readBody, sendJson } from "./http.ts";
 
 export const HOOK_PREFIX = "/aws/lambda-microvms/runtime/v1/";
+
+/** The hook a private-port path names, or null for any other path. */
+export function hookName(pathname: string): string | null {
+  return pathname.startsWith(HOOK_PREFIX) ? pathname.slice(HOOK_PREFIX.length) : null;
+}
 
 /** What the fleet function puts in the run-hook payload (design §9.3). */
 export interface RunPayload {
@@ -12,14 +17,19 @@ export interface RunPayload {
   sessionUrl: string | null;
   storeBase: string | null;
   fleetSecret: string | null;
-  /** A core's proof of identity for its hello (WP8.2); the control plane that launched it knows it. */
+  /** A core's proof of identity for its hello; the control plane that launched it knows it. */
   coreToken?: string | null;
 }
 
+/** What /run decided; a refusal's reason travels in the 400 body, where the platform keeps it. */
+export type RunVerdict =
+  | { ok: true; role: Exclude<Role, "neutral"> }
+  | { ok: false; reason: string };
+
 export interface HookHost {
-  /** Called on /run with the parsed payload; returns false if the payload is unusable. */
-  onRun(payload: RunPayload, microvmId: string | null): Promise<boolean>;
-  /** Called on /validate; runs the in-process self-test and returns true when it passes. */
+  /** Called on /run with the parsed payload. */
+  onRun(payload: RunPayload, microvmId: string | null): Promise<RunVerdict>;
+  /** Called on /validate; runs the in-process self-test. */
   onValidate(): boolean;
   onSuspend(): Promise<void>;
   onResume(): Promise<void>;
@@ -47,8 +57,11 @@ export async function handleHook(
       const body = await readBody(req, 64 * 1024);
       const parsed = parseRunBody(body);
       if (!parsed) return sendJson(res, 400, { error: "bad run payload" });
-      const ok = await host.onRun(parsed.payload, parsed.microvmId);
-      return sendJson(res, ok ? 200 : 400, { role: parsed.payload.role, ok });
+      const verdict = await host.onRun(parsed.payload, parsed.microvmId);
+      const role = parsed.payload.role;
+      return verdict.ok
+        ? sendJson(res, 200, { role, ok: true })
+        : sendJson(res, 400, { role, ok: false, reason: verdict.reason });
     }
     case "resume":
       await host.onResume();
@@ -64,6 +77,7 @@ export async function handleHook(
   }
 }
 
+/** The run body: `{ microvmId, runHookPayload }`, the payload an object or a JSON string. */
 export function parseRunBody(
   body: Uint8Array | null,
 ): { payload: RunPayload; microvmId: string | null } | null {
