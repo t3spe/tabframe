@@ -1,103 +1,55 @@
-// The money shot (plan WP2.6): ten browser nodes render a Mandelbrot frame, half of them are
-// killed mid-frame, and every tile the page painted hashes to the golden the SDK suite pins.
-// Nothing here is simulated: the tabs run the real sandbox, upload to the real store, and the
-// control plane is the real process behind the Playwright web server.
+// The money shot: ten browser nodes render a Mandelbrot frame, half of them are killed mid-frame,
+// and every tile the page painted hashes to the golden the SDK suite pins. Nothing here is
+// simulated: the tabs run the real sandbox, upload to the real store, and the control plane is the
+// real process behind the Playwright web server.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import {
+  ACCEPTED,
+  counter,
+  dropModule,
+  installWatcher,
+  launchFromEditor,
+  openEditorTab,
+  watched,
+} from "./helpers.ts";
 
 const goldens = JSON.parse(
   readFileSync(path.resolve(import.meta.dirname, "../programs/mandelbrot/goldens.json"), "utf8"),
 ) as { params: Record<string, unknown>; taskCount: number; hashes: string[] };
 
-type Watch = {
-  done: Record<string, string>;
-  failed: string[];
-  finished: string | null;
-};
-
-/**
- * Watch the machine from inside the page: a second observer socket collects the events the
- * dashboard is reacting to, so the test can check hashes the page never shows.
- */
-function installWatcher(): void {
-  const w = window as unknown as { __watch: Watch };
-  w.__watch = { done: {}, failed: [], finished: null };
-  void (async () => {
-    const config = (await (await fetch("/config.json")).json()) as { sessionUrl: string };
-    const session = (await (await fetch(config.sessionUrl)).json()) as {
-      endpoint?: string;
-      generation?: number;
-    };
-    if (!session.endpoint) return;
-    const gen = session.generation ?? 1;
-    const ws = new WebSocket(`${session.endpoint}/observer`);
-    ws.onopen = () => ws.send(JSON.stringify({ t: "subscribe", v: 1, gen }));
-    ws.onmessage = (m) => {
-      const e = JSON.parse(String(m.data)) as {
-        t: string;
-        taskId?: string;
-        output?: string;
-        place?: unknown;
-        reason?: string;
-        executionId?: string;
-      };
-      if (e.t === "taskDone" && e.place && e.taskId && e.output)
-        w.__watch.done[e.taskId] = e.output;
-      if (e.t === "taskFailed" || e.t === "executionFailed") w.__watch.failed.push(e.reason ?? "?");
-      if (e.t === "executionDone") w.__watch.finished = e.executionId ?? null;
-    };
-    setInterval(() => {
-      if (ws.readyState === 1) ws.send(JSON.stringify({ t: "ping", v: 1, gen }));
-    }, 1_500);
-  })();
-}
-
 /**
  * Finished tiles by task id with their output hashes, from the dashboard's own state — which
  * resubscribes for a snapshot whenever it misses an event — merged with what the watcher saw.
  * A slow runner floods a raw observer socket into a gap; the dashboard recovers, the watcher
- * alone does not (a CI run stalled at 259 of 640 that way).
+ * alone does not (a CI run stalled at 259 of 640 that way). Self-contained: `page.evaluate` ships
+ * only the function it is given.
  */
 function tileOutputs(): Record<string, string> {
-  const w = (window as unknown as { __watch?: Watch }).__watch;
-  const out: Record<string, string> = { ...(w?.done ?? {}) };
-  const tf = (
-    window as unknown as {
-      tabframe?: {
-        state: { tasks: Map<string, { kind: string; status: string; output: string | null }> };
-      };
-    }
-  ).tabframe;
-  if (tf) {
-    for (const [id, t] of tf.state.tasks) {
+  const out: Record<string, string> = { ...(window.__watch?.done ?? {}) };
+  const debug = window.tabframe;
+  if (debug && "tiles" in debug) {
+    for (const [id, t] of debug.state.tasks) {
       if (t.kind === "run" && t.status === "done" && t.output) out[id] = t.output;
     }
   }
   return out;
 }
 
-/** The same count, self-contained: `page.evaluate` ships only the function it is given. */
+/** The same count, self-contained for the same reason. */
 function tilesDone(): number {
-  const w = (window as unknown as { __watch?: Watch }).__watch;
+  const w = window.__watch;
   if (!w) return -1;
   const seen = new Set(Object.keys(w.done));
-  const tf = (
-    window as unknown as {
-      tabframe?: {
-        state: { tasks: Map<string, { kind: string; status: string; output: string | null }> };
-      };
-    }
-  ).tabframe;
-  if (tf) {
-    for (const [id, t] of tf.state.tasks) {
+  const debug = window.tabframe;
+  if (debug && "tiles" in debug) {
+    for (const [id, t] of debug.state.tasks) {
       if (t.kind === "run" && t.status === "done" && t.output) seen.add(id);
     }
   }
   return seen.size;
 }
-
-const wasmPath = path.resolve(import.meta.dirname, "../programs/mandelbrot/dist/program.wasm");
 
 test("ten tabs render a frame, half are killed mid-frame, and every tile matches its golden", async ({
   page,
@@ -112,22 +64,16 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
   await expect(page.locator("#counts")).toHaveText(/10 nodes/, { timeout: 60_000 });
 
   // The Playwright control plane seeds nothing, so the frame is launched the way a visitor would:
-  // drop the built module into the editor and launch it with the golden parameters.
-  const editor = await page.context().newPage();
-  await editor.goto("/editor.html");
-  // The drop door is live once the editor says the compiler is ready.
-  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  await editor.locator("#wasmFile").setInputFiles(wasmPath);
-  await expect(editor.locator("#launch")).toBeEnabled({ timeout: 30_000 });
-  // A name of its own: the suites share one control plane, and two programs called the same
-  // thing would make the panels suite's launch button ambiguous.
-  await editor.locator("#programName").fill("mandelbrot-money-shot");
-  await editor.locator("#programView").selectOption("tiles");
-  await editor.locator("#programParams").fill(JSON.stringify(goldens.params));
-  await editor.click("#launch");
-  await expect(editor.locator("#launchInfo")).toContainText(/queued as|running as/, {
-    timeout: 60_000,
-  });
+  // drop the built module into the editor and launch it with the golden parameters. A name of its
+  // own: the suites share one control plane, and two programs called the same thing would make the
+  // panels suite's launch button ambiguous.
+  const editor = await openEditorTab(page.context());
+  await dropModule(editor);
+  await launchFromEditor(
+    editor,
+    { name: "mandelbrot-money-shot", view: "tiles", params: JSON.stringify(goldens.params) },
+    ACCEPTED,
+  );
   await editor.close(); // the tab's pause (lifted by the launch) is gone with it
 
   // Wait until the frame is well under way, then kill half.
@@ -143,19 +89,14 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
   // runner where overdue attempts had already been twinned, their twins carrying on: either way
   // the counters move (a CI run saw five departures and no "taken back" line at all).
   await expect(page.locator("#activity")).toContainText("left (closed)", { timeout: 20_000 });
-  const counter = (name: string) =>
-    page
-      .locator(`[data-counter="${name}"] b`)
-      .textContent()
-      .then((t) => Number(t ?? "0"));
   // Whether the recovery is *visible* depends on what the victims held at that instant: on a fast
   // machine the frame can be over before the kill lands (a 14 s run has been seen), and a CI
   // runner has twice shown five departures with nothing taken back. The proof this test owns is
   // the frame completing with every tile matching; the counters are reported for the record.
   await page.waitForTimeout(2_000);
   const recovery = {
-    reassigned: await counter("reassigned"),
-    speculated: await counter("speculated"),
+    reassigned: await counter(page, "reassigned"),
+    speculated: await counter(page, "speculated"),
     doneAtKill: beforeKill,
     doneNow: await page.evaluate(tilesDone),
     nodes: await page.locator("#counts").textContent(),
@@ -175,7 +116,7 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
       .toBeGreaterThanOrEqual(goldens.taskCount);
   } catch (err) {
     const dump = await page.evaluate(() => {
-      const w = (window as unknown as { __watch?: Watch }).__watch;
+      const w = window.__watch;
       const text = (sel: string) => document.querySelector(sel)?.textContent ?? "";
       const rows = [...document.querySelectorAll("#nodes tbody tr")].map((r) => r.textContent);
       const activity = [...document.querySelectorAll("#activity li")]
@@ -199,9 +140,7 @@ test("ten tabs render a frame, half are killed mid-frame, and every tile matches
   expect(beforeKill).toBeLessThan(goldens.taskCount);
 
   const outputs = Object.values(await page.evaluate(tileOutputs));
-  const failures = await page.evaluate(
-    () => (window as unknown as { __watch: Watch }).__watch.failed,
-  );
+  const failures = await page.evaluate(watched).then((w) => w.failed);
   expect(failures).toEqual([]);
   // The frame repeats tiles in its flat regions, so compare multisets.
   const sorted = [...outputs].sort().slice(0, goldens.taskCount);

@@ -1,11 +1,10 @@
-// The walkthrough (WP7.7): every state a visitor can land in, and for each the sentence of state,
-// which of Stop / Start / Resume the header offers, and exactly which controls are enabled — with
-// the reason in the tooltip of every control that is not. Live, against the local control plane
-// (no programs seeded, so the machine idles until someone launches).
-import path from "node:path";
-import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+// The walkthrough: every state a visitor can land in, and for each the sentence of state, which of
+// Stop / Start / Resume the header offers, and exactly which controls are enabled — with the reason
+// in the tooltip of every control that is not. Live, against the local control plane (no programs
+// seeded, so the machine idles until someone launches).
+import { expect, type Page, test } from "@playwright/test";
+import { dropModule, launchFromEditor } from "./helpers.ts";
 
-const wasmPath = path.resolve("programs/mandelbrot/dist/program.wasm");
 const CONTROLS = [
   "#stop",
   "#start",
@@ -138,15 +137,10 @@ test("the dashboard says what the machine does in every state and offers only wh
   p = await sentence(page, /^paused · the editor tab is open/);
   expect(p.slot).toBe("#resume");
   await shot(page, "paused");
-  await editor.locator("#wasmFile").setInputFiles(wasmPath);
-  await expect(editor.locator("#launch")).toBeEnabled({ timeout: 15_000 });
+  await dropModule(editor);
   await expect(editor.locator("#source")).toHaveValue(/has no source here/);
   await expect(editor.locator("#compile")).toBeDisabled();
-  await editor.locator("#programName").fill("walk");
-  await editor.click("#launch");
-  await expect(editor.locator("#launchInfo")).toContainText(/answered|queued as|running as/, {
-    timeout: 30_000,
-  });
+  await launchFromEditor(editor, { name: "walk" });
   await expect(editor.locator("#pauseState")).toContainText("launched · the pause ended");
   // 4. A person's launch runs (planning: there are no nodes); Stop is back, and so are the
   // controls that need something running.

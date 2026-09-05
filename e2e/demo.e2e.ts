@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+import { counter, counts } from "./helpers.ts";
 
-// WP4.4: the demo script of design §13, run unattended against the deployed machine in the order
-// the video follows: one tab plus two cloud cores rendering → two more tabs → spawn ten (bounded by
-// cores, said on screen) → kill half → freeze half → throttle half → redundancy on → editor: change
-// the palette, compile in the browser, launch → word count: three stages and a bar chart → a
-// rotation: banner, reconnect, render continues → ledger and files panels. Skipped locally: it
+// The demo script of design §13, run unattended against the deployed machine in the order the
+// video follows: one tab plus two cloud cores rendering → two more tabs → spawn ten (bounded by
+// CPU threads, said on screen) → kill half → freeze half → throttle half → redundancy on → editor:
+// change the palette, compile in the browser, launch → word count: three stages and a bar chart →
+// a rotation: banner, reconnect, render continues → ledger and files panels. Skipped locally: it
 // wants the seeded programs, cloud cores, and a real rotation, none of which the Playwright control
 // plane has. `mise run demo` points it at the machine; TABFRAME_VIDEO=1 records the browser.
 const url = process.env.TABFRAME_URL;
@@ -14,26 +15,12 @@ test.use({
   video: process.env.TABFRAME_VIDEO ? "on" : "off",
   viewport: { width: 1440, height: 1000 },
 });
-
-const counter = (page: Page, name: string): Promise<number> =>
-  page
-    .locator(`[data-counter="${name}"] b`)
-    .textContent()
-    .then((t) => Number((t ?? "0").replace(/[^\d]/g, "") || "0"));
-const counts = (page: Page): Promise<{ nodes: number; hosts: number }> =>
-  page
-    .locator("#counts")
-    .textContent()
-    .then((t) => {
-      const m = /(\d+) nodes · (\d+) hosts/.exec(t ?? "");
-      return { nodes: Number(m?.[1] ?? 0), hosts: Number(m?.[2] ?? 0) };
-    });
 const generation = (page: Page): Promise<number> =>
   page
     .locator("#gen")
     .textContent()
     .then((t) => Number(/gen (\d+)/.exec(t ?? "")?.[1] ?? "0"));
-/** Regions that must keep their box for the whole run (WP6.2): measured at every beat. */
+/** Regions that must keep their box for the whole run: measured at every beat. */
 const LAYOUT_SELECTORS = [
   "header",
   "#machineBanner",
@@ -121,14 +108,14 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 1. one tab, and the cloud cores the machine launches for it ------------------------------
   // Back-to-back repetitions: the previous run's dozen sockets are still closing at the endpoint,
-  // which counts connections per MicroVM (WP4.5); a person would not reopen the page that fast.
+  // which counts connections per MicroVM; a person would not reopen the page that fast.
   if (test.info().repeatEachIndex > 0) await page.waitForTimeout(15_000);
   beat("open the dashboard");
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#machine")).toHaveText(/live/, { timeout: 120_000 });
   await expect(page.locator("#gen")).toHaveText(/gen \d+/, { timeout: 30_000 });
   const startGeneration = await generation(page);
-  // An earlier visitor may have left the loop yielded, or the machine stopped (WP6.8): the header
+  // An earlier visitor may have left the loop yielded, or the machine stopped: the header
   // shows Start, and a person who wants the show presses it.
   if (await page.locator("#start").isVisible()) {
     await page.click("#start");
@@ -136,8 +123,8 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   }
   // The default loop starts a frame as soon as someone watches; the fleet adds two cores.
   await expect(page.locator("#exec")).toContainText("mandelbrot", { timeout: 120_000 });
-  // Three nodes: this tab's and the two cloud cores. The cores share one host label ("fleet",
-  // WP8.2), so the host count is two here, not three as before that change.
+  // Three nodes: this tab's and the two cloud cores. The cores share one host label ("fleet"),
+  // so the host count is two here, not three.
   await expect
     .poll(() => counts(page).then((c) => c.nodes), { timeout: 150_000 })
     .toBeGreaterThanOrEqual(3);
@@ -147,7 +134,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   await expect.poll(() => counter(page, "done"), { timeout: 120_000 }).toBeGreaterThan(10);
 
   // ---- 2. another real tab -------------------------------------------------------------------------
-  // The script says two more; with the endpoint's sixteen connections (WP4.5) one more is what
+  // The script says two more; with the endpoint's sixteen connections one more is what
   // leaves room for the reconnects the beats below cause — see the spawn note.
   await beatAndMeasure("another tab");
   const before = await counts(page);
@@ -157,7 +144,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
     .toBeGreaterThanOrEqual(before.hosts + 1);
 
   // ---- 3. spawn more, bounded by what this browser reports — and by the endpoint -------------------
-  // The script says ten; the MicroVM endpoint allows 16 connections in all (WP4.5): two
+  // The script says ten; the MicroVM endpoint allows 16 connections in all: two
   // dashboards, their two nodes, and two cores are six, so four more nodes here keeps the machine
   // at ten with room for the reconnects the beats below cause. Runs that spawned ten, then six,
   // saw the dashboard's own socket refused and a control lost or held past its window.
@@ -309,7 +296,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 8. the editor: change the palette cycle, compile in the browser, launch ---------------------
   await beatAndMeasure("editor");
-  // The editor opens in its own tab and holds the machine paused while it lives (WP6.4).
+  // The editor opens in its own tab and holds the machine paused while it lives.
   const editorOpened = context.waitForEvent("page");
   await page.click("#openEditor");
   const editor = await editorOpened;
@@ -319,7 +306,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat("paused while the editor is open");
   await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
   // The editor lists every program on the machine and opens one from the store, source and all
-  // (WP7.6): tiny GPT's forward pass, with its weights kept by hash.
+  //: tiny GPT's forward pass, with its weights kept by hash.
   await expect(editor.locator("#example optgroup[label='on the machine'] option")).not.toHaveCount(
     0,
     { timeout: 30_000 },
@@ -345,7 +332,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   });
   await expect(editor.locator("#diagnostics li")).toHaveCount(0);
   await expect(editor.locator("#launch")).toBeEnabled();
-  // Its own name: the shipped one is reserved for the image (WP4.9).
+  // Its own name: the shipped one is reserved for the image.
   await editor.locator("#programName").fill("mandelbrot-palette");
   await editor.locator("#programView").selectOption("tiles");
   await editor.locator("#programParams").fill('{"palette":"fire","preset":0}');
@@ -396,7 +383,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
           last = line;
         }
         if (s.exec.startsWith("wordcount")) seenStages = Math.max(seenStages, s.stages);
-        // While a person's launch runs the slot offers Stop, whatever the loop's state (WP7.1).
+        // While a person's launch runs the slot offers Stop, whatever the loop's state.
         if (
           s.exec.startsWith("wordcount") &&
           !s.exec.startsWith("wordcount · done") &&
@@ -430,7 +417,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
   beat(
     `tiny GPT wrote: ${JSON.stringify(((await page.locator("#result .text-view").textContent()) ?? "").slice(0, 80))}`,
   );
-  // The loop yielded to the person's launches and waits for Start (WP6.8): the text stays on the
+  // The loop yielded to the person's launches and waits for Start: the text stays on the
   // stage until someone asks for the loop back.
   await expect(page.locator("#loop")).toContainText("yielded to you", { timeout: 30_000 });
   await expect(page.locator("#start")).toBeVisible();
@@ -456,12 +443,12 @@ test("the demo script runs unattended against the deployed machine", async ({ co
         const seen = await page.evaluate(() => {
           const box = document.getElementById("machineBanner");
           const shown = box !== null && !box.hidden;
-          const w = window as unknown as { tabframe: { state: { machine: unknown } } };
+          const d = window.tabframe;
           return {
             shown,
             kind: shown ? (box?.dataset.kind ?? "?") : null,
             text: shown ? (box?.textContent ?? "").slice(0, 80) : "",
-            machine: JSON.stringify(w.tabframe.state.machine),
+            machine: JSON.stringify(d && "state" in d ? d.state.machine : null),
           };
         });
         if (seen.shown && seen.kind !== null && !bannersSeen.has(seen.kind)) {
@@ -487,7 +474,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   // ---- 11. the ledger and files panels: hashes everywhere, no bytes in the control plane -----------
   await beatAndMeasure("ledger and files");
-  // The dashboard keeps one-line summaries; the panels open full-width in their own tabs (WP6.3).
+  // The dashboard keeps one-line summaries; the panels open full-width in their own tabs.
   await expect(page.locator("#ledgerSummary")).toContainText("hashes, not bytes");
   const ledgerOpened = context.waitForEvent("page");
   await page.click("#ledgerPanel .open-panel");
@@ -517,7 +504,7 @@ test("the demo script runs unattended against the deployed machine", async ({ co
 
   await tab2.close();
   await beatAndMeasure("done");
-  // Nothing changed size across the whole run (WP6.2).
+  // Nothing changed size across the whole run.
   expect(layoutChanges).toEqual([]);
   beat("layout held");
 });

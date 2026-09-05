@@ -1,27 +1,13 @@
 import { expect, type Page, test } from "@playwright/test";
+import { tf, waitDemoPaused } from "./helpers.ts";
 
-// WP4.1: dashboard polish. Everything here runs against the demo mode, paused at a known tile
-// count or held after an execution ends, so nothing depends on the timing of a live render: the
-// legend, the flash log, the throughput figure, the spawn hint, the ledger, the rotation banner
-// with its countdown, and the sleep banner.
+// Dashboard polish. Everything here runs against the demo mode, paused at a known tile count or
+// held after an execution ends, so nothing depends on the timing of a live render: the legend, the
+// flash log, the throughput figure, the spawn hint, the ledger, the rotation banner with its
+// countdown, and the sleep banner.
 
-const waitPaused = async (page: Page) => {
-  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
-  await page.waitForFunction(
-    () =>
-      (window as unknown as { tabframe: { tiles: { stats: { inFlight: number } } } }).tabframe.tiles
-        .stats.inFlight === 0,
-    null,
-    { timeout: 30_000 },
-  );
-};
-
-const pulseKinds = (page: Page): Promise<string[]> =>
-  page.evaluate(() =>
-    (
-      window as unknown as { tabframe: { state: { pulses: { kind: string }[] } } }
-    ).tabframe.state.pulses.map((p) => p.kind),
-  );
+const pulseKinds = async (page: Page): Promise<string[]> =>
+  (await tf(page)).evaluate((d) => d.state.pulses.map((p) => p.kind));
 
 test("demo: legend, flash log, throughput, spawn hint, and the ledger explain the frame", async ({
   page,
@@ -33,10 +19,10 @@ test("demo: legend, flash log, throughput, spawn hint, and the ledger explain th
   const hint = page.locator("#spawnHint");
   await expect(hint).toHaveAttribute("data-cores", /^\d+$/);
   await expect(hint).toHaveAttribute("data-default", /^\d+$/);
-  // In the demo the nodes are scripted, and the hint says so (WP8.1); the live page counts cores.
+  // In the demo the nodes are scripted, and the hint says so; the live page counts CPU threads.
   await expect(hint).toContainText(/Demo: the nodes are scripted inside this page/);
   await expect(hint).toContainText("open the live address to lend real cores");
-  await waitPaused(page);
+  await waitDemoPaused(page);
 
   // The legend names every colour and both overlays.
   await expect(page.locator("#legend .legend-item")).toHaveCount(10);
@@ -87,7 +73,7 @@ test("demo: legend, flash log, throughput, spawn hint, and the ledger explain th
   await expect(page.locator("#filesNote")).toContainText("named by its hash");
   // No banner: the machine is plainly live.
   await expect(page.locator("#machineBanner")).toBeHidden();
-  // The status line says what the machine does (WP7.7).
+  // The status line says what the machine does.
   await expect(page.locator("#notice")).toHaveClass(/sentence/);
   await expect(page.locator("#notice")).toContainText("demo · a scripted cluster inside this page");
 });
@@ -95,7 +81,7 @@ test("demo: legend, flash log, throughput, spawn hint, and the ledger explain th
 test("demo: the rotation banner counts down to the next generation", async ({ page }) => {
   test.setTimeout(150_000);
   await page.goto("/?demo=1&speed=12&pause=520");
-  await waitPaused(page);
+  await waitDemoPaused(page);
   const banner = page.locator("#machineBanner");
   await expect(banner).toBeVisible();
   await expect(banner).toHaveAttribute("data-kind", "rotating");
@@ -113,7 +99,7 @@ test("demo: the rotation banner counts down to the next generation", async ({ pa
 test("demo: a machine with nothing to do says it is going to sleep, and why", async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto("/?demo=1&speed=12&program=broken&hold=1");
-  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await waitDemoPaused(page);
   const banner = page.locator("#machineBanner");
   await expect(banner).toBeVisible();
   await expect(banner).toHaveAttribute("data-kind", "sleeping");
@@ -160,7 +146,7 @@ test("demo: nothing changes size — the page's regions keep their boxes from id
   await page.goto("/?demo=1&speed=12&pause=300");
   await expect(page.locator("#machine")).toHaveText("live · demo");
   const atStart = await boxes();
-  await waitPaused(page);
+  await waitDemoPaused(page);
   const atPause = await boxes();
   expect(atPause).toEqual(atStart);
   // Controls that toggle keep their slot too.
@@ -169,7 +155,7 @@ test("demo: nothing changes size — the page's regions keep their boxes from id
   expect(await boxes()).toEqual(atStart);
 });
 
-test("demo: the throughput line is crisp on a slow scale; counters, toggle, and flashes fit their rows (WP7.2)", async ({
+test("demo: the throughput line is crisp on a slow scale; counters, toggle, and flashes fit their rows", async ({
   page,
 }) => {
   await page.goto("/?demo=1&speed=12&pause=300");
@@ -207,8 +193,8 @@ test("demo: the throughput line is crisp on a slow scale; counters, toggle, and 
   // every state update and a locator can resolve to a detached one between two round trips.
   const fit = await page.evaluate(() => {
     const box = (document.querySelector("#counters") as HTMLElement).getBoundingClientRect();
-    return [...document.querySelectorAll("#counters .chip")].map((el) => {
-      const b = el.getBoundingClientRect();
+    return [...document.querySelectorAll("#counters .chip")].map((chip) => {
+      const b = chip.getBoundingClientRect();
       return b.width > 0 && b.right <= box.right + 1 && b.bottom <= box.bottom + 1;
     });
   });

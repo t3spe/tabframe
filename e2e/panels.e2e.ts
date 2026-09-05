@@ -1,21 +1,18 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import {
+  dropModule,
+  killRunning,
+  launchFromEditor,
+  openEditorTab,
+  tf,
+  waitDemoPaused,
+} from "./helpers.ts";
 
-// WP2.5: dashboard v2. The demo machine now cycles through three programs, so the panels can be
-// checked without a cluster: a word count (three stages, a bars result, a filesystem to browse,
-// logs on the tasks) and a broken program (the failure banner). Against the real local control
-// plane: an uploaded program appears in the programs panel, launches from it, and the running
-// execution can be killed from the page.
-
-const wasmPath = path.resolve(
-  fileURLToPath(new URL(".", import.meta.url)),
-  "../programs/mandelbrot/dist/program.wasm",
-);
-
-const waitHeld = async (page: Page) => {
-  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
-};
+// Dashboard v2. The demo machine cycles through three programs, so the panels can be checked
+// without a cluster: a word count (three stages, a bars result, a filesystem to browse, logs on the
+// tasks) and a broken program (the failure banner). Against the real local control plane: an
+// uploaded program appears in the programs panel, launches from it, and the running execution can
+// be killed from the page.
 
 test("demo: word count runs three stages, draws its bars, and its files can be browsed", async ({
   page,
@@ -33,7 +30,7 @@ test("demo: word count runs three stages, draws its bars, and its files can be b
   await expect(page.locator("#queue")).toContainText("wordcount e39");
   await expect(page.locator('#queue [data-drop="e39"]')).toBeVisible();
 
-  await waitHeld(page);
+  await waitDemoPaused(page);
   await expect(page.locator("#exec")).toHaveText("wordcount · done · 1/1");
   // Three stages in the strip, all done, with their tallies.
   const stages = page.locator("#strip .stage");
@@ -52,7 +49,7 @@ test("demo: word count runs three stages, draws its bars, and its files can be b
   await expect(page.locator("#result .bar-row").first()).toHaveAttribute("data-label", "the");
   await expect(page.locator("#result .bar-row").first()).toContainText("14,529");
   await expect(page.locator("#result")).toContainText("/out/2/0");
-  // The dashboard keeps a one-line summary of the filesystem and a link to its own tab (WP6.3).
+  // The dashboard keeps a one-line summary of the filesystem and a link to its own tab.
   await expect(page.locator("#filesRoot")).not.toHaveText("—");
   await expect(page.locator("#filesSummary")).toContainText(/root \S+ · \d+ files/);
   await expect(page.locator("#filesPanel .open-panel")).toHaveAttribute("href", /panel=files/);
@@ -60,7 +57,7 @@ test("demo: word count runs three stages, draws its bars, and its files can be b
   // The files tab follows the execution's root: bundle files, the corpus, every stage's outputs.
   const files = await page.context().newPage();
   await files.goto("/?demo=1&speed=12&program=wordcount&hold=1&panel=files");
-  await waitHeld(files);
+  await waitDemoPaused(files);
   await expect(files.locator("#filesPanel .panel-explain")).toBeVisible();
   await expect(files.locator(".hero")).toBeHidden();
   await expect(files.locator("#files")).toContainText("/program.wasm");
@@ -108,7 +105,7 @@ test("demo: a program that traps fails visibly, and the banner can be dismissed"
 }) => {
   test.setTimeout(120_000);
   await page.goto("/?demo=1&speed=12&program=broken&hold=1");
-  await waitHeld(page);
+  await waitDemoPaused(page);
   await expect(page.locator("#exec")).toHaveText("broken · failed · 0/0");
   await expect(page.locator("#exec")).toHaveClass(/off/);
   await expect(page.locator("#failure")).toBeVisible();
@@ -132,23 +129,15 @@ test("live: an upload shows up in the programs panel, launches from it, and can 
   const programsBefore = await page.locator("#programs .program").count();
 
   // Upload through the editor's drop door; the control plane validates the bundle and the
-  // program shows up in the panel, with its view, whether it was known before or not.
-  const editor = await page.context().newPage();
-  await editor.goto("/editor.html");
-  // The drop-door handler attaches only once the compiler reports ready; on a slow CI runner
-  // that can take longer than the file drop below would wait.
-  await expect(editor.locator("#editorStatus")).toHaveText(/ready in/, { timeout: 180_000 });
-  await editor.locator("#wasmFile").setInputFiles(wasmPath);
-  await expect(editor.locator("#launch")).toBeEnabled({ timeout: 15_000 });
-  // A dropped module is named after its file; give it the program's real name.
-  await editor.locator("#programName").fill("mandelbrot");
-  await editor.locator("#programParams").fill('{"preset": 2, "palette": "ocean"}');
-  await editor.click("#launch");
-  await expect(editor.locator("#launchInfo")).toContainText("launch sent", { timeout: 30_000 });
-  // Controls leave the tab spaced under the observer rate: wait for the control plane's answer
-  // before closing it, or the launch may still be in the outbox.
-  await expect(editor.locator("#launchInfo")).toContainText(/answered|queued as|running as/, {
-    timeout: 30_000,
+  // program shows up in the panel, with its view, whether it was known before or not. A dropped
+  // module is named after its file; give it the program's real name. Controls leave the tab spaced
+  // under the observer rate: the launch is awaited before the tab closes, or it may still be in the
+  // outbox.
+  const editor = await openEditorTab(page.context());
+  await dropModule(editor);
+  await launchFromEditor(editor, {
+    name: "mandelbrot",
+    params: '{"preset": 2, "palette": "ocean"}',
   });
   await editor.close();
   await expect(page.locator('[data-launch="mandelbrot"]')).toBeVisible({ timeout: 30_000 });
@@ -169,11 +158,7 @@ test("live: an upload shows up in the programs panel, launches from it, and can 
   });
   await expect(mandelbrotRow).toContainText("running");
   // Kill the running execution from the page: the failure banner names the reason.
-  await expect(page.locator("#killExecution")).toBeVisible();
-  await page.click("#killExecution");
-  await expect(page.locator("#failure")).toContainText("cancelled by an operator", {
-    timeout: 15_000,
-  });
+  await killRunning(page);
 
   // Launch from the programs panel with edited params: queued by a person, then running or
   // waiting behind whatever was already queued.
@@ -209,7 +194,7 @@ test("demo: the ledger and the activity log open full-width in their own tabs, t
 }) => {
   test.setTimeout(150_000);
   await page.goto("/?demo=1&speed=12&pause=300");
-  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await waitDemoPaused(page);
   await expect(page.locator("#ledgerSummary")).toContainText(
     /\d+ settled tasks · .* · hashes, not bytes/,
   );
@@ -221,7 +206,7 @@ test("demo: the ledger and the activity log open full-width in their own tabs, t
   // The ledger tab: the explanation, every settled task, nothing else on the page.
   const ledger = await context.newPage();
   await ledger.goto("/?demo=1&speed=12&pause=300&panel=ledger");
-  await ledger.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await waitDemoPaused(ledger);
   await expect(ledger.locator("#ledgerPanel .panel-explain")).toContainText("hashes");
   await expect(ledger.locator(".hero")).toBeHidden();
   await expect(ledger.locator("#programs")).toBeHidden();
@@ -231,13 +216,9 @@ test("demo: the ledger and the activity log open full-width in their own tabs, t
   // The activity tab keeps the whole log, not the dashboard's last fourteen lines.
   const activity = await context.newPage();
   await activity.goto("/?demo=1&speed=12&pause=300&panel=activity");
-  await activity.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await waitDemoPaused(activity);
   await expect(activity.locator("#activityPanel .panel-explain")).toBeVisible();
-  const held = await activity.evaluate(
-    () =>
-      (window as unknown as { tabframe: { state: { activity: unknown[] } } }).tabframe.state
-        .activity.length,
-  );
+  const held = await (await tf(activity)).evaluate((d) => d.state.activity.length);
   expect(held).toBeGreaterThan(0);
   expect(await activity.locator("#activity li").count()).toBe(held);
   await activity.close();
@@ -257,7 +238,7 @@ test("demo: the ledger tab shows whole hashes and addresses, and can pause its u
   await page.click("#freezePanel");
   await expect(page.locator("#freezePanel")).toHaveAttribute("data-frozen", "1");
   const frozenRows = await page.locator("#ledger tbody tr[data-hash]").count();
-  await page.waitForSelector("body[data-demo-paused]", { timeout: 90_000 });
+  await waitDemoPaused(page);
   await expect(page.locator("#freezePanel")).toContainText(/resume updates \(\d+ held\)/);
   expect(await page.locator("#ledger tbody tr[data-hash]").count()).toBe(frozenRows);
   await page.click("#freezePanel");
@@ -266,8 +247,8 @@ test("demo: the ledger tab shows whole hashes and addresses, and can pause its u
   const hash =
     (await page.locator("#ledger tbody tr[data-hash] td.hash").first().textContent()) ?? "";
   expect(hash).toMatch(/^[0-9a-f]{64}$/);
-  // A row shows its bytes in the page (WP7.4): the preview names the task and the hash and renders
-  // the tile; the store address stays text with a small raw link beside it.
+  // A row shows its bytes in the page: the preview names the task and the hash and renders the
+  // tile; the store address stays text with a small raw link beside it.
   await expect(page.locator("#ledgerPreview")).toContainText("Click a row");
   await page.click("#ledger tbody tr[data-hash]");
   await expect(page.locator("#ledgerPreview")).toContainText(hash, { timeout: 15_000 });
@@ -278,13 +259,13 @@ test("demo: the ledger tab shows whole hashes and addresses, and can pause its u
   expect(await page.locator("#ledger tbody tr[data-hash] td:nth-child(5) a").count()).toBe(0); // demo: no store address
 });
 
-test("demo: a file's name shows the file in the page; the small arrow opens it in its own tab (WP7.4)", async ({
+test("demo: a file's name shows the file in the page; the small arrow opens it in its own tab", async ({
   page,
   context,
 }) => {
   test.setTimeout(150_000);
   await page.goto("/?demo=1&speed=12&program=wordcount&hold=1&panel=files");
-  await waitHeld(page);
+  await waitDemoPaused(page);
   // The preview box is there before anything is chosen, and explains itself.
   await expect(page.locator("#filePreview")).toContainText("Click a file");
   const row = page.locator('#files li[data-path="/out/2/0"]');
@@ -305,13 +286,13 @@ test("demo: a file's name shows the file in the page; the small arrow opens it i
   await link.click();
   const viewer = await opened;
   await expect(viewer).toHaveURL(/panel=files/);
-  await waitHeld(viewer);
+  await waitDemoPaused(viewer);
   await expect(viewer.locator("#filePreview .bars .bar-row")).toHaveCount(25, { timeout: 30_000 });
   await expect(viewer.locator("#filePreview")).toContainText("/out/2/0");
   await viewer.close();
 });
 
-test("demo: typing params in a program's launch form keeps the caret while the machine streams events (WP7.3)", async ({
+test("demo: typing params in a program's launch form keeps the caret while the machine streams events", async ({
   page,
 }) => {
   await page.goto("/?demo=1&speed=12&program=mandelbrot");

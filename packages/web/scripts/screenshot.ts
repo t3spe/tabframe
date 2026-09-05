@@ -52,11 +52,10 @@ if (demo) {
     await page.locator("#grid").click({ position: { x: 4, y: 4 } });
     await page.waitForSelector("#taskDetail .task-log .text-view", { timeout: 30_000 });
   }
-  await page.waitForFunction(
-    () =>
-      (window as unknown as { tabframe: { tiles: { stats: { inFlight: number } } } }).tabframe.tiles
-        .stats.inFlight === 0,
-  );
+  await page.waitForFunction(() => {
+    const debug = window.tabframe;
+    return !!debug && "tiles" in debug && debug.tiles.stats.inFlight === 0;
+  });
   await page.waitForTimeout(400);
   await page.screenshot({ path: out, fullPage: true });
 } else {
