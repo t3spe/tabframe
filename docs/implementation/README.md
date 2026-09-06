@@ -75,3 +75,4 @@ Screenshots and other evidence live under `assets/wp-<m>.<n>/`.
 | WP9.7 | [wp-9.7-figures.md](wp-9.7-figures.md) | 2026-09-05 | The README's architecture picture and the design record's runtime picture as SVG files under `docs/diagrams/`, embedded as images |
 | WP9.8 | [wp-9.8-readme.md](wp-9.8-readme.md) | 2026-09-05 | The README as a front door: what Tabframe is, with pointers; `docs/evidence.md` and `docs/development.md` written; the tour, the deploy prerequisites, and the attribution moved to their pages |
 | WP9.9 | [wp-9.9-humanize.md](wp-9.9-humanize.md) | 2026-09-06 | One editing pass over every reader-facing document, structure untouched: the em dashes became the punctuation they stood in for; quoted page sentences kept |
+| WP9.10 | [wp-9.10-leak-audit.md](wp-9.10-leak-audit.md) | 2026-09-06 | A leak audit over the tree and every commit: no credential or account id anywhere; three internal identifiers replaced in the tree |

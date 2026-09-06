@@ -30,7 +30,7 @@ The workspace exists and every tool the build needs installs through mise. Concr
 - `mise install` → "all tools are installed"; inside the repo: node v22.23.2, bun 1.3.13, aws-cli 2.36.37, gh 2.97.0, cdk 2.1139.0.
 - `bun test` → 3 pass, 0 fail; coverage 100 % lines on `packages/infra/scripts/mask.ts`.
 - `mise run lint` → Biome clean, `tsc --noEmit` clean.
-- `mise run whoami` → `whoami ok: account ********6595, arn:aws:iam::********6595:user/tab, region us-west-2`.
+- `mise run whoami` → `whoami ok: account ************, arn:aws:iam::************:user/tab, region us-west-2`.
 - `mise run test` → lint, unit tests, and Playwright (no tests yet) all pass.
 
 ## Dependencies introduced

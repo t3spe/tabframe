@@ -7,7 +7,7 @@ repository of its own, so that this one makes sense to anyone who comes across i
 
 ## What moved
 
-To `/home/mircea/homework/tracking` (git, local only, one commit): `docs/plan.md`, `docs/timelog.md`,
+To a sibling repository outside this one (git, local only, one commit): `docs/plan.md`, `docs/timelog.md`,
 `docs/rationale.md`, `docs/submission-checklist.md`, `docs/m0…m3-verification.md` (as
 `verification/m0…m3.md`), `docs/transcripts/` (27 scrubbed exports), the transcript exporter
 (`scripts/transcripts/export.ts` and `packages/dev/src/transcripts.ts` with its test, now
