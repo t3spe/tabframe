@@ -2,7 +2,7 @@
 
 A visitor should be able to land anywhere, in any state, and answer three questions without help:
 what is the machine doing, what can I do here, and what just happened because of what I did. This
-document is the inventory that makes that testable — for each screen, every state it can be in, what
+document is the inventory that makes that testable: for each screen, every state it can be in, what
 the page must say, what can be clicked and what happens, and what must not be on the screen. It is
 the page's contract; `e2e/walkthrough.e2e.ts` drives the machine through the states below and
 asserts the sentence, the header's slot, and the exact set of enabled controls, with a screenshot
@@ -13,11 +13,13 @@ per state in the test's output. Written 2026-09-04; the test keeps it honest.
 Open **https://d2w9z8juw4oo76.cloudfront.net**: the page lends one core when it opens and shows the
 machine rendering a Mandelbrot frame with whoever else is there. Then, on the dashboard (Screen A):
 
-1. **spawn N** — N is one fewer than your machine's CPU threads, so the tab keeps one; the counters follow.
-2. **kill half** — tiles are taken back and finish elsewhere.
-3. **redundancy on** — the verified counter moves: two cores agree byte for byte before a tile counts.
-4. **editor ↗** — change `CYCLE`, compile, launch; your program goes ahead of the loop (Screen C).
-5. **the ledger tab** — hashes, not bytes (Screen B).
+1. **spawn N.** N is one fewer than your machine's CPU threads, so the tab keeps one; the counters
+   follow.
+2. **kill half.** Tiles are taken back and finish elsewhere.
+3. **redundancy on.** The verified counter moves: two cores agree byte for byte before a tile
+   counts.
+4. **editor ↗.** Change `CYCLE`, compile, launch; your program goes ahead of the loop (Screen C).
+5. **the ledger tab.** Hashes, not bytes (Screen B).
 
 `?observe` lends no cores, `?demo=1` runs a scripted cluster inside the page, and a rotation banner
 every hour is expected.
@@ -59,11 +61,11 @@ every hour is expected.
 
 ## Screen A · the dashboard (`/`, `/?observe`, `/?demo=1`)
 
-Always on screen: the header (machine pill, generation, next rotation, nodes · hosts — the cloud cores count as one host, "fleet" — sequence,
-the execution pill, the loop pill, the rate, the Stop / Start / Resume slot, editor ↗), the status
-line, the execution row, the picture, the task map and legend, the flash line, the counters, the
-cluster controls, the redundancy toggle, the nodes table, and the aside (your nodes, programs,
-queue, files, ledger, activity, consent).
+Always on screen: the header (machine pill, generation, next rotation, nodes · hosts, where the
+cloud cores count as one host, "fleet", then sequence, the execution pill, the loop pill, the rate,
+the Stop / Start / Resume slot, editor ↗), the status line, the execution row, the picture, the task
+map and legend, the flash line, the counters, the cluster controls, the redundancy toggle, the nodes
+table, and the aside (your nodes, programs, queue, files, ledger, activity, consent).
 
 | State | The page says | What can be clicked, and what happens | Not there |
 |---|---|---|---|
@@ -79,7 +81,7 @@ queue, files, ledger, activity, consent).
 | Asleep | Banner with the reason; controls greyed. | The page wakes the machine by itself. | Live-looking controls. |
 | Outdated page | Connection banner "This page is out of date … Reloading…"; the page reloads itself once after 1.5 s. | Nothing needed. | Live-looking controls. |
 | Outdated, reloaded once | The same banner with the hint "Reloaded once already: hard-refresh this page (Shift+reload) to fetch the current bundle." — the reload is remembered for the session, keyed by protocol version (WP8.1), so a stale cache cannot loop the page. | Shift+reload. | A reload loop. |
-| Machine full | Connection banner "The machine is full." — the control plane keeps fourteen seats for clients and closed this socket with a code that says so (WP8.3); the page tries again in ten seconds. | Close a tab, or wait. | Live-looking controls; a silent "Connecting…". |
+| Machine full | Connection banner "The machine is full."; the control plane keeps fourteen seats for clients and closed this socket with a code that says so (WP8.3); the page tries again in ten seconds. | Close a tab, or wait. | Live-looking controls; a silent "Connecting…". |
 | Off | "The machine is off." with what an operator does and the demo link. | The demo link. | Anything suggesting waiting helps. |
 | Observe only | "observing · this tab lends no cores · …"; the spawn hint says how to lend some. | Everything but spawn; spawn greyed with the reason. | A hint that counts this browser's cores. |
 | Demo | Machine pill "live · demo"; sentence "demo · a scripted cluster inside this page, nothing is sent anywhere · …". | Everything, against the script; the editor opens in demo mode. | Links to the live machine that look like the demo. |

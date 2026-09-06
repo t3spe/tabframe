@@ -48,13 +48,14 @@ Then `mise run deploy`, step by step below.
 
 1. `main` is green in CI (`mise exec -- gh run list --branch main --limit 1`). This is a rule, not a
    preference.
-2. `mise run deploy` (with `gh` logged in: the guard asks GitHub whether CI passed on the commit, and
-   refuses a dirty tree or a HEAD that is not `origin/main`). The image build takes three to five minutes; the first build after a long
-   gap has taken fifty. If CloudFormation reports the image "did not stabilize", check the build
-   history — the platform has retried and succeeded on its own once while CloudFormation gave up;
-   `mise run deploy:stacks` then completes it (the staged image, then `up`).
-3. `up` at the end of the deploy rotates: the old control plane hands its ledger to the new one,
-   the clients are drained with a jittered reconnect delay, and the render continues on the new
+2. `mise run deploy` (with `gh` logged in: the guard asks GitHub whether CI passed on the commit,
+   and refuses a dirty tree or a HEAD that is not `origin/main`). The image build takes three to
+   five minutes; the first build after a long gap has taken fifty. If CloudFormation reports the
+   image "did not stabilize", check the build history; the platform has retried and succeeded on its
+   own once while CloudFormation gave up, and `mise run deploy:stacks` then completes it (the staged
+   image, then `up`).
+3. `up` at the end of the deploy rotates: the old control plane hands its ledger to the new one, the
+   clients are drained with a jittered reconnect delay, and the render continues on the new
    generation. Expect about eight seconds of churn.
 4. `mise run health` shows the new generation. `mise run verify:m1` if the change touched the
    scheduler, the node, or the store; `verify:m2` for the editor, seeding, or programs; `verify:m3`
@@ -89,10 +90,10 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 
 ## Observability
 
-- **`/health`** (private port, no fleet secret): role, phase, generation, awake and why not, nodes by
-  kind, cores with their age and whether their node is connected, programs, running execution,
-  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and the
-  `build` stamp (`sha` with `-dirty` when the tree was, `branch`, `ungated`, `at`) and the `imageVersion` it runs.
+- **`/health`** (private port, no fleet secret): role, phase, generation, awake and why not, nodes
+  by kind, cores with their age and whether their node is connected, programs, running execution,
+  queue, ledger sizes, loop backoff, snapshotter writes and last key, uptime, and the `build` stamp
+  (`sha` with `-dirty` when the tree was, `branch`, `ungated`, `at`) and the `imageVersion` it runs.
 - **`/diag`** (private port, fleet secret): DNS, a store put-and-get round trip with its latency,
   which store driver, snapshotter status, memory, the environment facts that matter
   (`TABFRAME_SANDBOX_WORKER`, cloud cores enabled).
@@ -101,40 +102,40 @@ idempotent. The rotate logs say which path ran: `mise run logs:fleet`.
 - **CloudWatch.** The functions log JSON lines to their own groups, kept fourteen days. The MicroVM
   group `/aws/lambda/microvms/tabframe` (seven days) gets one stream per MicroVM; the image-build
   streams carry the whole Docker build, but each *run* stream carries **only the first line the
-  process writes** — measured on 2026-09-02 with the same line written to stdout and stderr: both
-  copies arrive, nothing after. The platform forwards a process's output during boot and stops.
-  So for a running control plane the truth is `/health`, `/diag`, the snapshots in S3, and the
+  process writes**, measured on 2026-09-02 with the same line written to stdout and stderr: both
+  copies arrive, nothing after. The platform forwards a process's output during boot and stops. So
+  for a running control plane the truth is `/health`, `/diag`, the snapshots in S3, and the
   dashboard; the rotate function's log says what every rotation did. Accepted; see design §9.3.
 
 ## Cost and budget
 
 - The budget `tabframe-monthly` is $100 with notifications at 50, 80 and 100 % to the address in
-  `.env.local`; it never acts on its own (D20 — no automatic kill switch). The notification path
-  was proven on 2026-09-03 with a one-cent test budget, since deleted.
+  `.env.local`; it never acts on its own (D20: no automatic kill switch). The notification path was
+  proven on 2026-09-03 with a one-cent test budget, since deleted.
 - What costs money while the machine is up: the control plane MicroVM (always, until `down`), two
   cores while anyone is watching, snapshot writes every five seconds while the ledger changes,
   CloudFront and S3 for the page and blobs. Idle, it is one suspended MicroVM's snapshot storage
   until the platform's eight-hour ceiling ends it (an untouched machine converges to one suspended
   MicroVM: the cores go ten minutes after the last observer, the control plane suspends after
-  fifteen); after that nothing runs until a visitor's session call heals (the scheduled rule and the canary leave that heal to a visitor, so an
-  idle night no longer boots a generation an hour).
+  fifteen); after that nothing runs until a visitor's session call heals (the scheduled rule and the
+  canary leave that heal to a visitor, so an idle night no longer boots a generation an hour).
 - Cost Explorer lags a day; `aws ce get-cost-and-usage` is the query.
 
 ## Incidents seen so far, and what to do
 
 | Symptom | Cause | Action |
 |---|---|---|
-| A page cannot connect; sockets answer 429, or the banner says the machine is full | the endpoint holds **16 concurrent connections per MicroVM** (a non-adjustable quota, design §9.7) | count what is connected (`mise run health`); close what should not be there. Leaked headless browsers from a killed runbook have done this twice — `pkill -f headless_shell`. |
+| A page cannot connect; sockets answer 429, or the banner says the machine is full | the endpoint holds **16 concurrent connections per MicroVM** (a non-adjustable quota, design §9.7) | count what is connected (`mise run health`); close what should not be there. Leaked headless browsers from a killed runbook have done this twice; `pkill -f headless_shell` clears them. |
 | Rotation logs say `/handover … answered 429` | client sockets crowd out the fleet's private-port calls | nothing: the successor adopted the snapshot; the rotation completed |
 | Rotation logs say `/handover … answered 502` and `handedOver: false`; the warning carries `stateReason: Resume lifecycle hook connection was refused` | the idle policy suspended the predecessor after fifteen minutes without traffic, the platform could not resume it for the handover and terminated it (4 of 41 rotations over four days, always on a machine nobody was watching) | nothing: the suspend hook wrote the snapshot the successor adopted, and nothing had changed since |
-| Every task fails with `Cannot find module '/app/node-worker.ts'` | the bundled image cannot spawn its own file as a worker | the image stages `node-worker.js` beside `main.js`; a build without it is broken — rebuild |
+| Every task fails with `Cannot find module '/app/node-worker.ts'` | the bundled image cannot spawn its own file as a worker | the image stages `node-worker.js` beside `main.js`; a build without it is broken; rebuild |
 | Executions fail every few seconds and the loop relaunches | a program fault or an upload failure | the default loop backs off (5 s doubling to 5 min); read the failure reason on the dashboard or in `/snapshot`; `killExecution` from the page stops the current one |
 | `did not stabilize` on the image update | CloudFormation gave up before the platform's retry succeeded | re-run `mise run deploy:stacks`; check `latestActiveImageVersion` |
 | A program shipped in the image is not on the machine | the ledger was adopted from a snapshot seeded before the program existed | fixed (seeding by bundle hash); if it recurs, `mise run rotate` |
 | The session function returns `starting` for minutes | no control plane and the heal did not complete | `mise run logs:fleet`; `mise run up` |
 | The machine is up but nothing renders | asleep (ten minutes without an observer) or no nodes | open the page; the first visitor wakes it, cores follow within seconds |
 | After a deploy the machine renders the *old* frame, or the program list shows two `mandelbrot` | the adopted ledger's default loop pointed at the previous bundle (fixed: seeding retires the old record and moves the loop) | `mise run health` lists programs; if it recurs, `mise run rotate` re-seeds |
-| Right after a rotation every core is a few seconds old | before the fix the successor terminated every adopted core on its first tick; fixed — an adopted core keeps its grace from the adoption | `mise run health -- --cores`; if it recurs, check `unlinkedAt` handling in `adoptLedger` |
+| Right after a rotation every core is a few seconds old | before the fix the successor terminated every adopted core on its first tick; fixed: an adopted core keeps its grace from the adoption | `mise run health -- --cores`; if it recurs, check `unlinkedAt` handling in `adoptLedger` |
 | The dashboard shows "The machine is asleep" for a few seconds at the start of a rotation | a pending successor left by an interrupted or racing rotation was promoted without a handover, old snapshot and all (fixed: it is terminated while the current control plane serves; the hourly rule skips a rotation younger than five minutes) | `node packages/infra/scripts/rotation-probe-busy.ts` watches a rotation on a busy machine the way a browser does; `rotation-probe.ts` for a quiet one |
 | A person's launch finished and the loop's frame replaced it at once | the loop yields to a person's launch until Start or ten quiet minutes (`YIELD_IDLE_MS`, `meta.loopYielded`); if it takes the stage back sooner, check `meta.loopYielded` in a snapshot | — |
 | `/health` shows a core with `linked: false` for minutes | its node closed (a kill half picked it) or never connected | the control plane terminates a killed or frozen core at once and replaces any core unlinked for two minutes; `mise run health -- --cores` asks each core's own `/health` |

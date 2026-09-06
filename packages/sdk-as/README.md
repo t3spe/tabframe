@@ -42,13 +42,13 @@ export function run(ptr: usize, len: i32): usize {
 - **Stage** builds what `plan` returns: a name, an optional canvas (for the `tiles` view), and tasks
   with inline input (≤ 16 KB each, ≤ 4096 tasks, ≤ 1 MB spec) with or without a placement rect.
 - **fs** is the execution's filesystem: `fs.stat(path)` (size or −1), `fs.read(path)` and
-  `fs.readRange(path, offset, len)` (null when absent), `fs.readOrAbort(path)` (a missing file is
-  a program fault), `fs.outputs(stage)` (every task output of an earlier stage, in index order),
+  `fs.readRange(path, offset, len)` (null when absent), `fs.readOrAbort(path)` (a missing file is a
+  program fault), `fs.outputs(stage)` (every task output of an earlier stage, in index order),
   `fs.write(path, bytes)` (replaces the whole file; visible to the next stage once the result is
   accepted), `fs.list(prefix)`. `fs.readRc` and `fs.writeRc` return the sandbox's return codes
-  (`RC`: not found, bad arguments, cap exceeded) where the boolean forms flatten them. Results
-  land at `/out/<stage>/<task>` automatically; bundle inputs are under `/in/`. Reads cost a round
-  trip each — read whole files or large ranges.
+  (`RC`: not found, bad arguments, cap exceeded) where the boolean forms flatten them. Results land
+  at `/out/<stage>/<task>` automatically; bundle inputs are under `/in/`. Reads cost a round trip
+  each, so read whole files or large ranges.
 - **log(text)** appends to the task's log, shown in the dashboard's task detail and capped.
 - **ByteWriter / ByteReader** are for your own compact task inputs (u8/u32/i32/f32/f64, blobs,
   strings), little-endian.
@@ -63,16 +63,16 @@ output of stage 0 in order, `fs.readRange` reads a slice of one. See `programs/w
 three-stage map/reduce/merge that does exactly this.
 
 **Allowed imports:** `tf.stat`, `tf.read`, `tf.write`, `tf.list`, `tf.log`, and `env.abort`.
-Anything else — `Date.now`, `Math.random` (which needs `env.seed`), `console`, WASI — is rejected
-at upload. AssemblyScript's `Math` compiles to WebAssembly and is deterministic across browsers and
+Anything else is rejected at upload: `Date.now`, `Math.random` (which needs `env.seed`), `console`,
+WASI. AssemblyScript's `Math` compiles to WebAssembly and is deterministic across browsers and
 machines; never write NaN into an output, because NaN payload bits are not.
 
 **How long a task may run.** The control plane gives each task a deadline: the floor (two seconds)
 or three times the median of the stage's completed tasks, whichever is longer. A task that is not
 finished by then is released by its node and given to another with a doubled deadline, three
 doublings at most (so up to sixteen seconds at the floor); a task released six times fails the
-execution as a program fault. Keep tasks short and many — a few hundred milliseconds each is the
-sweet spot — rather than few and long.
+execution as a program fault. Keep tasks short and many rather than few and long; a few hundred
+milliseconds each is the sweet spot.
 
 ## Compiling
 
@@ -103,16 +103,16 @@ points return a pointer to an 8-byte `{outPtr: u32, outLen: u32}` pair, which `e
 
 ## Tooling
 
-- `scripts/build-programs.ts` — `mise run build:programs`.
-- `scripts/goldens.ts` — `mise run goldens` writes `programs/<name>/goldens.json` from a single-node
+- `scripts/build-programs.ts`: `mise run build:programs`.
+- `scripts/goldens.ts`: `mise run goldens` writes `programs/<name>/goldens.json` from a single-node
   run (params from the manifest): per-tile hashes for `tiles` programs, every stage's hashes plus
   the decoded final payload for staged ones (`--program wordcount`); `--check` compares instead of
   writing; `--all --sample 16` times every Mandelbrot preset; `--preset N` times one.
-- `scripts/programs.ts` (`@tabframe/sdk-as/programs`) — where a program lives, its manifest, inputs,
+- `scripts/programs.ts` (`@tabframe/sdk-as/programs`): where a program lives, its manifest, inputs,
   goldens, and a compiled module that is rebuilt only when its sources are newer.
-- `scripts/host.ts` — run a module under Node with in-memory files through the sandbox's own
+- `scripts/host.ts`: runs a module under Node with in-memory files through the sandbox's own
   `runTask`, and `runStaged` to run a whole execution stage by stage the way the control plane
   would; used by the goldens script and the tests. `flags.ts` holds the compiler flags the build,
   the tests, and the page share.
-- `scripts/corpus.ts` — `mise run corpus` fetches and normalizes the word-count corpus into
+- `scripts/corpus.ts`: `mise run corpus` fetches and normalizes the word-count corpus into
   `programs/wordcount/in/corpus.txt` (committed; the script is for reproducibility).
