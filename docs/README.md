@@ -10,7 +10,7 @@ In reading order; the repository README is the front door, this is the index.
 | [`../packages/sdk-as/README.md`](../packages/sdk-as/README.md) | how to write a program: the API, the limits, how a task is scheduled; the page's guide is its first half |
 | [`../programs/README.md`](../programs/README.md) | the three programs that ship, each with a README of its own |
 | [`feasibility-transformer.md`](feasibility-transformer.md) | a worked program: the small transformer on the cores, with the measured numbers |
-| [`evidence.md`](evidence.md) | what is measured against the deployed machine — the claims, the numbers, the notes behind them — and how to re-run each check |
+| [`evidence.md`](evidence.md) | what is measured against the deployed machine (the claims, the numbers, the notes behind them) and how to re-run each check |
 | [`runbook.md`](runbook.md) | operating the deployed machine: what runs, the mise tasks, deploy and rollback, `/health`, incidents |
 | [`implementation/`](implementation/README.md) | how it was built, one note per work package; historical, not kept current |
 | [`diagrams/`](diagrams/architecture.svg) | the figures the README and the design record embed, as SVG |

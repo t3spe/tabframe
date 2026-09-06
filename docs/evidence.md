@@ -12,7 +12,7 @@ with no AWS credentials.
 | Word count is exact | the top-25 over *Moby-Dick* equals the JavaScript reference **hash for hash** |
 | A program fault is visible, not fatal | a planner that traps fails its execution with its own abort message and the machine returns to its loop |
 | The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`wp-3.5-deploy-m3.md`](implementation/wp-3.5-deploy-m3.md)) |
-| Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](implementation/wp-1.9-churn-sim.md)) |
+| Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end: **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](implementation/wp-1.9-churn-sim.md)) |
 
 ## Re-running the checks
 

@@ -1,6 +1,6 @@
 # wordcount
 
-Computes the exact top-K most frequent words of *Moby-Dick* in three stages — map, reduce, merge —
+Computes the exact top-K most frequent words of *Moby-Dick* in three stages (map, reduce, merge),
 reading the previous stage's outputs as files. It is the program that shows the filesystem: a stage
 sees what the stage before it wrote, and nothing is recomputed when a core dies mid-stage.
 

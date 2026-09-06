@@ -1,4 +1,4 @@
-# Tabframe — Design Record
+# Tabframe design record
 
 **Status:** written 2026-09-01 before the build; the sections that name a work package were amended in place (§6.7, §8.3 among them) and everything else is read together with the drift log, §17 (last entry 2026-09-04), whose entries are in merge order.
 This document is the source of truth for the build. It supersedes the earlier handoff and seed
@@ -6,7 +6,7 @@ documents wherever they differ.
 
 **One line:** a fault-tolerant distributed computer whose cores are browser tabs and Firecracker
 microVMs, programmed with WebAssembly modules, whose control plane holds only metadata and hashes,
-and which stays correct while cores — and the control plane itself — come and go.
+and which stays correct while cores come and go, and the control plane with them.
 
 ---
 
@@ -57,7 +57,7 @@ and which stays correct while cores — and the control plane itself — come an
 | D19 | **Only the machine's default loop continues automatically.** A human-launched execution's follow-up params are recorded and offered as a button, never auto-enqueued; when a human execution ends the machine returns to the default loop. | Nobody's program runs unattended on the project's bill. |
 | D20 | **`mise run down` turns the machine off:** disables the rotation schedule, terminates every MicroVM, and writes an *off* state to the pointer that the session function honors with an off page. `mise run up` is the only way back. | Down means down. |
 
-**Small defaults, confirmed:** synchronous file reads through the sandbox glue; `persist` programs inherit the latest finished execution; tile results are RGBA written by the program; **blobs are kept one year**; no operator token — every control is public; heartbeat 1 s, gone at 4 s; frame 1024×640 displayed, 64-px computed tiles; **256 nodes and 64 observers, no per-IP limit**; one public-domain book as the word-count corpus (a Project Gutenberg text with the boilerplate stripped, chosen at build time); **license AGPL-3.0**.
+**Small defaults, confirmed:** synchronous file reads through the sandbox glue; `persist` programs inherit the latest finished execution; tile results are RGBA written by the program; **blobs are kept one year**; no operator token, every control is public; heartbeat 1 s, gone at 4 s; frame 1024×640 displayed, 64-px computed tiles; **256 nodes and 64 observers, no per-IP limit**; one public-domain book as the word-count corpus (a Project Gutenberg text with the boilerplate stripped, chosen at build time); **license AGPL-3.0**.
 
 **Cut on purpose:** channels between running tasks and a mutable key-value store (restartability is the whole point); a consensus control plane (single-active generation with snapshots instead); K-way voting beyond the built-in two-way verify and its tie-break; a RISC-V interpreter; a WebRTC peer mesh; intra-tab `SharedArrayBuffer` multicore; server-side C→WASM compilation (in-browser AssemblyScript and bring-your-own-WASM instead).
 
@@ -108,7 +108,7 @@ and which stays correct while cores — and the control plane itself — come an
 
 ## 4. Nodes
 
-A node is one orchestrator plus one sandbox plus one socket — a core the ledger has admitted. Browser cores run the orchestrator in a Web Worker and the sandbox in a nested worker. Cloud cores run the same orchestrator under Node with the sandbox on a worker thread. The control plane cannot tell them apart.
+A node is one orchestrator plus one sandbox plus one socket: a core the ledger has admitted. Browser cores run the orchestrator in a Web Worker and the sandbox in a nested worker. Cloud cores run the same orchestrator under Node with the sandbox on a worker thread. The control plane cannot tell them apart.
 
 ### 4.1 Lifecycle
 
@@ -119,17 +119,17 @@ A node is one orchestrator plus one sandbox plus one socket — a core the ledge
 5. **Compute** in the sandbox (§4.2). Output is deterministic bytes plus buffered file writes and a log.
 6. **Upload then report.** The orchestrator asks for presigned URLs over its socket, uploads output, written files, and log to the store, collects the hashes the store vouches for, then sends `result` with hashes only.
 7. **Cancel** drops a queued task or aborts a running one at the next opportunity; a result already on the wire is harmless.
-8. **Commands:** `close` (the worker ends itself; the socket drops), `freeze` (stop heartbeating and computing, keep the socket open — the zombie the timeout path exists for; terminal), `throttle` (sleep between tasks, a tenth of the speed, heartbeats continue), `resume`.
-9. **Death.** Tab closed, host called terminate, or `close` command — all identical to the control plane: the socket drops, nothing is sent first. A frozen zombie is caught by four seconds of silence. Once declared gone, the control plane closes the connection from its side so a zombie never lingers.
+8. **Commands:** `close` (the worker ends itself; the socket drops), `freeze` (stop heartbeating and computing, keep the socket open, the zombie the timeout path exists for; terminal), `throttle` (sleep between tasks, a tenth of the speed, heartbeats continue), `resume`.
+9. **Death.** Tab closed, host called terminate, or `close` command: all identical to the control plane. The socket drops; nothing is sent first. A frozen zombie is caught by four seconds of silence. Once declared gone, the control plane closes the connection from its side so a zombie never lingers.
 10. **Reconnect.** After an unexpected drop the orchestrator fetches a fresh session, reconnects with backoff, and says hello again as a brand-new node. Whatever it had in flight was released when the old node went silent.
 
 ### 4.2 Orchestrator and sandbox
 
-**The orchestrator never runs program code.** On assign it ensures the program module is cached (fetch by hash, compile once, keep the compiled module), fetches the stage's filesystem manifest by root hash (cached), posts the compiled module, manifest, input, and limits to the sandbox, starts a deadline timer, and on expiry terminates the sandbox outright and spawns a fresh one — the only clean way to stop a spinning loop.
+**The orchestrator never runs program code.** On assign it ensures the program module is cached (fetch by hash, compile once, keep the compiled module), fetches the stage's filesystem manifest by root hash (cached), posts the compiled module, manifest, input, and limits to the sandbox, starts a deadline timer, and on expiry terminates the sandbox outright and spawns a fresh one, the only clean way to stop a spinning loop.
 
 **The sandbox** instantiates a fresh WASM instance for every task, so no memory state leaks between tasks or programs. It binds the imports (§5.3) to glue closures:
 
-- `stat`, `read`, `list` resolve a path against the stage manifest first and the task's own write buffer second; a resolved hash is fetched from the store with a synchronous request (allowed in dedicated workers; on Node, `Atomics.wait` against the orchestrator thread — both mechanisms verified in preflight on 2026-09-01), with a byte range when asked; a per-node cache by hash makes repeated reads free; unresolvable paths return an error to the program. There is no other network access, and the module cannot name a URL, only a path.
+- `stat`, `read`, `list` resolve a path against the stage manifest first and the task's own write buffer second; a resolved hash is fetched from the store with a synchronous request (allowed in dedicated workers; on Node, `Atomics.wait` against the orchestrator thread; both mechanisms verified in preflight on 2026-09-01), with a byte range when asked; a per-node cache by hash makes repeated reads free; unresolvable paths return an error to the program. There is no other network access, and the module cannot name a URL, only a path.
 - `write` appends to an in-memory map from path to bytes, enforcing per-task caps on file count and total size; writing a path twice keeps the last.
 - `log` appends to a capped buffer.
 - A trap or abort ends the task with an error message instead of output.
@@ -161,7 +161,7 @@ A **bundle** is a directory stored as a manifest blob mapping paths to hashes: t
 
 An **execution** is one run of a program with params. Launch: upload the bundle files → `launch {bundle, params, inherit?}` on the observer socket → the control plane fetches the module, validates imports, exports, size, and declared memory maximum, mints an execution id, and queues it ahead of automatic continuations. When its turn comes, the control plane creates a `plan` task for stage 0. The planner returns a stage spec; the control plane validates it structurally (≤ 4096 tasks, ≤ 1 MB), materializes the tasks, and fills nodes. When a stage's last task lands, it folds outputs and writes into a new filesystem root and creates the next `plan` task. When the planner returns `done`, the execution finishes with its final root recorded. Follow-up params are handled per D19: for the machine's default loop they enqueue an automatic continuation that inherits the root; for a human-launched execution they are recorded and offered on the dashboard as a button. When a human execution ends, the machine returns to the default loop.
 
-**Program faults** — a trap, an over-budget execution, a write conflict, an invalid stage spec — fail the execution visibly with the message. That is the one legitimate error path in the system, and it belongs to the program author, not the runtime.
+**Program faults** (a trap, an over-budget execution, a write conflict, an invalid stage spec) fail the execution visibly with the message. That is the one legitimate error path in the system, and it belongs to the program author, not the runtime.
 
 ### 5.3 ABI
 
@@ -183,9 +183,9 @@ imports (module "env")
   abort(msg, file, line, col)                        AssemblyScript's default; captured, traps
 ```
 
-**`run` receives** a header {stage, taskIndex, taskCount} followed by the inline input bytes the planner attached — nothing else. No attempt number, node id, or clock: anything that could differ between a task and its twin is kept out.
+**`run` receives** a header {stage, taskIndex, taskCount} followed by the inline input bytes the planner attached, and nothing else. No attempt number, node id, or clock: anything that could differ between a task and its twin is kept out.
 
-**`plan` receives** the index of the stage to plan, the launch params, and hints frozen by the control plane when it created the plan task (e.g. connected node count). It reads previous outputs as files under `/out/<stage>/` and returns a stage spec — task inputs with optional placement rectangles and canvas size — or `done {next?}`.
+**`plan` receives** the index of the stage to plan, the launch params, and hints frozen by the control plane when it created the plan task (e.g. connected node count). It reads previous outputs as files under `/out/<stage>/` and returns a stage spec (task inputs with optional placement rectangles and canvas size) or `done {next?}`.
 
 ### 5.4 Filesystem
 
@@ -239,11 +239,11 @@ Result bytes are never in the ledger. A frame is 640 task records; the whole led
 
 Whenever a node has a free slot the control plane draws from three sources in strict priority:
 
-1. **Released tasks** — work that belonged to a node now gone, oldest first, so churn never starves anything.
+1. **Released tasks**: work that belonged to a node now gone, oldest first, so churn never starves anything.
 2. **Pending tasks** in stage order, centre outward for tiles.
 3. **Overdue tasks** with one open attempt past its deadline: assigning one here creates a speculative twin.
 
-Speculation is just the lowest-priority source of work; a free slot only reaches it when nothing else is left, which is exactly the end of a stage where stragglers hurt. Health never gates assignment; the deadline is the safety net.
+Speculation is the lowest-priority source of work; a free slot only reaches it when nothing else is left, which is the end of a stage, where stragglers hurt. Health never gates assignment; the deadline is the safety net.
 
 ### 6.4 Liveness, deadlines, health
 
@@ -253,7 +253,7 @@ Each attempt's deadline is assignedAt plus three times the rolling median comput
 
 Health labels are computed by the control plane: fast or slow against the cluster median; throttled when the host tab reports itself hidden; gone on silence. A change emits `nodeHealth`.
 
-The node's deadline covers the fetch of the module and the manifest as well as the run (WP8.3): a fetch that hangs releases the task rather than holding it. A task released at its deadline gets a longer one next time: the deadline doubles per release, three times at most — eight times the first, never past ten minutes (WP8.3) — so a legitimately slow program is not killed at the floor on every node for ever, while a program that never returns still fails within about a minute. Only deadline releases count toward the six that fail a task as a program fault; an attempt lost with its node is recorded as *lost* and is free.
+The node's deadline covers the fetch of the module and the manifest as well as the run (WP8.3): a fetch that hangs releases the task rather than holding it. A task released at its deadline gets a longer one next time: the deadline doubles per release, three times at most (eight times the first, never past ten minutes; WP8.3), so a legitimately slow program is not killed at the floor on every node for ever, while a program that never returns still fails within about a minute. Only deadline releases count toward the six that fail a task as a program fault; an attempt lost with its node is recorded as *lost* and is free.
 
 ### 6.5 Results and verification
 
@@ -271,9 +271,9 @@ One execution runs at a time. Human-launched executions go ahead of automatic co
 
 Observers subscribe and receive a paged snapshot, then sequence-numbered events; a gap triggers a resubscribe. Throughput is computed on the dashboard from `taskDone` timestamps.
 
-Controls: `killHalf`, `freezeHalf`, `throttleHalf` pick half the live nodes at random across the whole cluster — including cloud cores — and command them, then emit `controlApplied` naming the victims; `resumeAll`; `restart` (abandon the current execution, enqueue a fresh one of the same program at the front); `skip` (end the current execution, start the next); `killExecution {id}`; `launch`; `setRedundancy`; `ping`. Spawn is not a message: only the host page can create a thread in its own tab. Controls are rate limited per observer; the caps — 256 nodes, 64 observers, no per-IP limit — are enforced at hello and subscribe.
+Controls: `killHalf`, `freezeHalf`, `throttleHalf` pick half the live nodes at random across the whole cluster, cloud cores included, and command them, then emit `controlApplied` naming the victims; `resumeAll`; `restart` (abandon the current execution, enqueue a fresh one of the same program at the front); `skip` (end the current execution, start the next); `killExecution {id}`; `launch`; `setRedundancy`; `ping`. Spawn is not a message: only the host page can create a thread in its own tab. Controls are rate limited per observer; the caps (256 nodes, 64 observers, no per-IP limit) are enforced at hello and subscribe.
 
-**Stop, Start, and the loop's place (WP6.1, WP6.4, WP6.8).** `stop` ends the running execution, drops the loop's queued continuations (a person's queued launches stay), and holds the loop — `meta.loopStopped` — until `start`. The loop also **yields to people**: once a person's launch has ended — done, failed, or killed — it launches nothing, neither a new frame nor a queued continuation, until someone presses Start or nobody has interacted with the machine (a control, a launch, a subscribe) for ten minutes; `meta.loopYielded`, carried by snapshots and announced as it changes by the `loopYielded` event, and the machine view says `yielded`. The dashboard shows Stop in the header at all times, swapping it for Start while the machine is stopped or the loop has yielded. `pause`/`resume` are the editor tab's hold (WP6.4, in this section): nothing new is assigned or started while `meta.pausedBy` names a live socket.
+**Stop, Start, and the loop's place (WP6.1, WP6.4, WP6.8).** `stop` ends the running execution, drops the loop's queued continuations (a person's queued launches stay), and holds the loop (`meta.loopStopped`) until `start`. The loop also **yields to people**: once a person's launch has ended (done, failed, or killed) it launches nothing, neither a new frame nor a queued continuation, until someone presses Start or nobody has interacted with the machine (a control, a launch, a subscribe) for ten minutes; `meta.loopYielded`, carried by snapshots and announced as it changes by the `loopYielded` event, and the machine view says `yielded`. The dashboard shows Stop in the header at all times, swapping it for Start while the machine is stopped or the loop has yielded. `pause`/`resume` are the editor tab's hold (WP6.4, in this section): nothing new is assigned or started while `meta.pausedBy` names a live socket.
 
 ### 6.8 Fleet policy and sleep
 
@@ -292,7 +292,7 @@ Every control plane is stamped with a generation. It appears on welcome, snapsho
 - Every task completes as long as one live node exists.
 - At most two open attempts per task.
 - Released work outranks fresh work.
-- No correctness depends on a message from a dying node — or from a dying control plane.
+- No correctness depends on a message from a dying node, or from a dying control plane.
 
 ---
 
@@ -327,7 +327,7 @@ Program calls `read` → glue resolves the path to a hash through the stage mani
 
 ### 7.4 Who touches bytes
 
-Nodes read and write payloads. Observers read them. The launcher writes bundles. The control plane reads stage specs and writes filesystem manifests — small metadata — and never a payload byte. Under the MicroVM endpoint's bandwidth cap this is not a nicety; it is what makes the control plane fit in a 1 GB VM at 2 MB/s.
+Nodes read and write payloads. Observers read them. The launcher writes bundles. The control plane reads stage specs and writes filesystem manifests, small metadata, and never a payload byte. Under the MicroVM endpoint's bandwidth cap, that is what makes the control plane fit in a 1 GB VM at 2 MB/s.
 
 ### 7.5 Late joiners and gaps
 
@@ -357,7 +357,7 @@ Every socket message is one JSON text frame with a type field and the generation
 | cp → node | welcome | node id, heartbeat ms, max in flight, store base, generation |
 | node → cp | heartbeat | visible, queue length, last task ms, tasks done |
 | cp → node | assign | task id, attempt, execution id, program hash, kind, stage, index, count, input, fs root, deadline ms, limits |
-| node → cp | result | task id, attempt, output hash, writes, log hash or inline log, compute ms — or error text and log |
+| node → cp | result | task id, attempt, output hash, writes, log hash or inline log, compute ms, or error text and log |
 | node → cp | presign | list of {hash, size} |
 | cp → node | presigned | list of {hash, url, headers} |
 | cp → node | cancel | task id |
@@ -367,13 +367,13 @@ Every socket message is one JSON text frame with a type field and the generation
 
 **Subscribe** carries the protocol version and optionally the last sequence number seen. **Snapshot** pages carry nodes with health, the queue, the current execution with stage and root, every task's status, holder, output hash and placement, the counters, and the current sequence number.
 
-**Events:** nodes — `nodeJoined`, `nodeLeft`, `nodeHealth`; executions — `executionQueued`, `executionStarted`, `stageStarted`, `stageDone`, `executionDone` (carrying follow-up params when the program offered any), `executionFailed`, `budget`; tasks — `taskAssigned`, `taskDone`, `taskReassigned`, `taskSpeculated`, `taskVerified`, `taskMismatch`, `taskFailed`; system — `controlApplied`, `programAdded`, `programRetired`, `controlPlaneRotating {gen, next}`, `machineSleeping`, `loopYielded {yielded}` (WP6.8), `error`.
+**Events:** nodes: `nodeJoined`, `nodeLeft`, `nodeHealth`; executions: `executionQueued`, `executionStarted`, `stageStarted`, `stageDone`, `executionDone` (carrying follow-up params when the program offered any), `executionFailed`, `budget`; tasks: `taskAssigned`, `taskDone`, `taskReassigned`, `taskSpeculated`, `taskVerified`, `taskMismatch`, `taskFailed`; system: `controlApplied`, `programAdded`, `programRetired`, `controlPlaneRotating {gen, next}`, `machineSleeping`, `loopYielded {yielded}` (WP6.8), `error`.
 
 **Controls:** `killHalf`, `freezeHalf`, `throttleHalf`, `resumeAll`, `restart`, `skip`, `killExecution`, `launch`, `runFollowUp`, `setRedundancy`, `stop`, `start`, `pause`, `resume`, `presign` (for bundle uploads), `ping`. The machine view carries `stopped`, `paused`, and `yielded`.
 
 **The header's one slot (WP7.1).** The dashboard's header has one slot for Stop / Start / Resume and it always means "what you can do to the machine right now": Resume while an editor tab holds the machine paused; Stop while anything runs, the loop's frame or a person's launch; Start when nothing runs and the loop is held by Stop or has yielded; Stop again when the loop is free, to hold it before its next frame. A separate loop pill names the loop's state (running · held by Stop · yielded to you · paused by the editor). Every control says what it will do in its tooltip and what it did in the activity line, which the issuing page also shows as a notice for a few seconds.
 
-**The status line and the reading tabs (WP7.7).** When no control echo is showing, the status line carries one sentence of state — what the machine is doing and why, in a visitor's words (`machineSentence`); the demo and an observer say what they are first. A control that cannot apply now stays where it is, greyed, with the reason after a dash in its tooltip ("— not connected yet", "— nothing is running", "— an observer lends no cores"). A panel tab drives nothing: the machine's controls leave its header and "← dashboard" leads back with the page's mode kept. The full inventory of screens, states, and controls is `docs/walkthrough.md`, checked by `e2e/walkthrough.e2e.ts`.
+**The status line and the reading tabs (WP7.7).** When no control echo is showing, the status line carries one sentence of state, what the machine is doing and why, in a visitor's words (`machineSentence`); the demo and an observer say what they are first. A control that cannot apply now stays where it is, greyed, with the reason after a dash in its tooltip ("— not connected yet", "— nothing is running", "— an observer lends no cores"). A panel tab drives nothing: the machine's controls leave its header and "← dashboard" leads back with the page's mode kept. The full inventory of screens, states, and controls is `docs/walkthrough.md`, checked by `e2e/walkthrough.e2e.ts`.
 
 ### 8.4 Sizes, limits, codes
 
@@ -387,7 +387,7 @@ Every socket message is one JSON text frame with a type field and the generation
 | stage spec | a blob | 1 MB, 4096 tasks |
 | module | a blob | 8 MB |
 
-Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting node is a new node; a reconnecting observer resubscribes; tokens are refreshed before expiry. **Rotation jitter:** the rotating-reconnect close carries a delay the control plane drew uniformly from a window sized to its client count — 30 ms per connected client, at least 2 s — and each client waits that long before fetching a session. A rotation with 300 clients would spread its session calls and socket upgrades over roughly 9 s, about 33 per second, under the endpoint's measured limit of about 50 requests per second and well under the account's Lambda concurrency (now 1000; it was 10 when this was written). In practice one control plane never has 300 clients: a MicroVM endpoint holds **16 concurrent connections** (§9.7), so the window is rarely above its two-second floor. Protocol version mismatch closes with a dedicated code and the page reloads itself once. Rate limits: roughly twenty messages a second per node, five per observer; one launch a minute and one control a second per observer. Caps in the ledger: 256 nodes, 64 observers, no per-IP limit — but the ledger's caps are not the binding ones; the endpoint's 16 concurrent connections per MicroVM are (§9.7). **Close codes:** invalid message, version mismatch, node cap, rate limited, declared gone, rotating-reconnect-now.
+Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting node is a new node; a reconnecting observer resubscribes; tokens are refreshed before expiry. **Rotation jitter:** the rotating-reconnect close carries a delay the control plane drew uniformly from a window sized to its client count (30 ms per connected client, at least 2 s), and each client waits that long before fetching a session. A rotation with 300 clients would spread its session calls and socket upgrades over roughly 9 s, about 33 per second, under the endpoint's measured limit of about 50 requests per second and well under the account's Lambda concurrency (now 1000; it was 10 when this was written). In practice one control plane never has 300 clients: a MicroVM endpoint holds **16 concurrent connections** (§9.7), so the window is rarely above its two-second floor. Protocol version mismatch closes with a dedicated code and the page reloads itself once. Rate limits: roughly twenty messages a second per node, five per observer; one launch a minute and one control a second per observer. Caps in the ledger: 256 nodes, 64 observers, no per-IP limit, but the ledger's caps are not the binding ones; the endpoint's 16 concurrent connections per MicroVM are (§9.7). **Close codes:** invalid message, version mismatch, node cap, rate limited, declared gone, rotating-reconnect-now.
 
 **Deliberately not carried:** payload bytes, acks, resume tokens, client timestamps, or anything a node could use to learn where another node lives.
 
@@ -411,7 +411,7 @@ Reconnect with exponential backoff and jitter, 0.5 s to 30 s; a reconnecting nod
 
 ### 9.2 Topology
 
-- **Fleet functions** (two Lambdas sharing code): `session` on a public URL vends sessions — one shared token per control plane, minted every twenty-five minutes and cached — and triggers a heal when no control plane runs, or serves the off state; `rotate` runs hourly on EventBridge with reserved concurrency 1, is idempotent (it checks the pointer and the running MicroVMs before launching anything), and is the sole writer of the pointer.
+- **Fleet functions** (two Lambdas sharing code): `session` on a public URL vends sessions (one shared token per control plane, minted every twenty-five minutes and cached) and triggers a heal when no control plane runs, or serves the off state; `rotate` runs hourly on EventBridge with reserved concurrency 1, is idempotent (it checks the pointer and the running MicroVMs before launching anything), and is the sole writer of the pointer.
 - **Pointer:** one SSM parameter naming the active control-plane MicroVM and its generation.
 - **Control plane:** 1 GB (the API takes only a minimum memory; the vCPU class is the platform's, and for every size we can launch it is the 2-vCPU class, §9.7), `ALL_INGRESS` + `INTERNET_EGRESS`, idle policy suspend after 15 min with auto-resume, max duration 8 h. Public port 8080 carries sockets only; private port 8081 carries hooks and the internal endpoints; browser tokens are scoped to 8080, fleet tokens to all ports.
 - **Cloud cores:** two × 0.5 GB, `NO_INGRESS`, no idle policy, max duration 4 h.
@@ -425,7 +425,7 @@ Control plane and core are the same MicroVM image (§11.3). The process boots **
 
 Exactly one control plane is **active**, stamped with a generation. Others are booting or draining. "In flight" never means "authoritative."
 
-**Hourly handover — also the deploy path:**
+**Hourly handover, also the deploy path:**
 
 1. `rotate` launches CP(g+1) with a payload naming the generation and the latest snapshot key, and waits for its run hook.
 2. `rotate` calls CP(g) `/handover`: it stops assigning, pauses intake, serializes the ledger, and returns it.
@@ -461,23 +461,20 @@ Measured on 2026-09-02 (`packages/infra/scripts/socket-ceiling.ts`) and
 confirmed in the account's Service Quotas: a MicroVM endpoint accepts **16 concurrent connections**
 and answers 429 to the seventeenth. The quota is *Concurrent connections per 2 vCPU MicroVM*, it is
 not adjustable, and it scales only with the vCPU class (8 / 16 / 32 / 64 / 128 for 1 / 2 / 4 / 8 /
-16 vCPU). The class cannot be chosen: `RunMicrovm` takes a minimum memory and nothing else, and every
-size we launched — 512 MiB to 6 GB — behaved as the 2-vCPU class. The ceiling is per MicroVM, not per
+16 vCPU). The class cannot be chosen: `RunMicrovm` takes a minimum memory and nothing else, and every size we launched, 512 MiB to 6 GB, behaved as the 2-vCPU class. The ceiling is per MicroVM, not per
 token, client process, or source: three tokens, three processes, and a 6 GB VM all stopped at 16.
-Open WebSockets count against it, so a control plane with 16 clients cannot even be reached by the
-fleet on its private port — which is why `/handover` falls back to the snapshot (§9.4).
+Open WebSockets count against it, so a control plane with 16 clients cannot even be reached by the fleet on its private port, which is why `/handover` falls back to the snapshot (§9.4).
 
 Consequences: one control plane serves at most about seven browser tabs that each lend a node, or fourteen that only watch, plus the fleet's own
 calls; the "256 nodes" cap in the ledger is a property of the scheduler, not of the deployment; and
 "thousands of concurrent clients" cannot be reached through a MicroVM endpoint at any size. Reaching
 them needs an edge that terminates client connections somewhere else and speaks to the control plane
-over a few connections — an API Gateway WebSocket API (`PostToConnection` for pushes, a Lambda
+over a few connections: an API Gateway WebSocket API (`PostToConnection` for pushes, a Lambda
 integration for inbound), IoT Core, or a relay tier of MicroVMs (each relay is itself capped at 16
 clients, so a relay tier caps out around 240 before the control plane's own budget is spent). The
 protocol survives any of them unchanged: the core already speaks to connections through a `Transport`
 seam. **Decided 2026-09-02 (Mircea):** document the ceiling for now and scope the demo to it; after
-M5, evaluate hosting the control plane on an **EC2 instance** instead of a MicroVM — no per-VM
-connection quota, thousands of sockets on one host, the same process and protocol — at the cost of
+M5, evaluate hosting the control plane on an **EC2 instance** instead of a MicroVM (no per-VM connection quota, thousands of sockets on one host, the same process and protocol), at the cost of
 the MicroVM story (snapshot boot, hooks, suspend/resume) and a different rotation mechanism. The
 the fifteenth client's socket is closed with the machine-full code the page reads (fourteen seats; two of sixteen kept for the fleet's handover and drain calls); a full house of tabs cannot turn a rotation into a snapshot handover.
 
@@ -494,18 +491,18 @@ the fifteenth client's socket is closed with the machine-full code the page read
 |---|---|---|
 | Image build | MicroVM image builder | read the artifact bucket, write build logs |
 | Control-plane execution | MicroVM runtime | put to the blob bucket (presigning), read/write the snapshot bucket, read the pointer, run/get/list/terminate MicroVMs tagged as cores, pass the core role, write logs |
-| Core execution | MicroVM runtime | write logs — nothing else |
+| Core execution | MicroVM runtime | write logs, nothing else |
 | Session function | Lambda | mint endpoint tokens, get one MicroVM, read the pointer, invoke `rotate` |
 | Rotate function | Lambda | run/get/list/terminate control planes, mint tokens for handover calls, read/write the pointer, pass the control-plane role, read snapshots |
 | CDK roles | CDK bootstrap | conventional; the CloudFormation execution role stays administrator so deploys can create the roles above |
 
-Build and execution roles trust `lambda.amazonaws.com` for `sts:AssumeRole` and `sts:TagSession`, per the MicroVMs security guide; the control-plane and fleet roles get the `lambda:*Microvm*` actions plus `iam:PassRole` for the roles they launch with. No IAM users or static keys for the application. S3 buckets are private behind CloudFront. The browser never holds AWS credentials: it gets a JWE token scoped to one MicroVM and port 8080 only, shared by every visitor and refreshed every twenty-five minutes, and presigned S3 URLs scoped to one key with a pinned checksum and a short expiry. Privileged paths — hooks, handover, adopt, drain, health, diag — live on port 8081, which browser tokens cannot reach, and additionally require the fleet secret from the run payload.
+Build and execution roles trust `lambda.amazonaws.com` for `sts:AssumeRole` and `sts:TagSession`, per the MicroVMs security guide; the control-plane and fleet roles get the `lambda:*Microvm*` actions plus `iam:PassRole` for the roles they launch with. No IAM users or static keys for the application. S3 buckets are private behind CloudFront. The browser never holds AWS credentials: it gets a JWE token scoped to one MicroVM and port 8080 only, shared by every visitor and refreshed every twenty-five minutes, and presigned S3 URLs scoped to one key with a pinned checksum and a short expiry. Privileged paths (hooks, handover, adopt, drain, health, diag) live on port 8081, which browser tokens cannot reach, and also require the fleet secret from the run payload.
 
 ### 10.2 Hygiene rules
 
 - **Repo:** no keys, no account id, no email addresses, no CDK context that embeds the account. `.env.local` is gitignored and holds the profile override, the expected account id, and the budget address.
 - **Transcripts** are a deliverable, so no secret, token, presigned URL, or account id may appear in them. Commands whose output could include one write raw output to a scratch file; only a masked summary reaches the conversation.
-- **Hard stops only:** destructive or irreversible actions (deleting stacks, buckets, or data; rewriting pushed history; `mise run down`), spending outside the agreed design or budget, and contradicting a decision Mircea explicitly owns. Everything agreed in this record and the plan — bootstrap, the budget deploy, enabling the schedule — proceeds without asking.
+- **Hard stops only:** destructive or irreversible actions (deleting stacks, buckets, or data; rewriting pushed history; `mise run down`), spending outside the agreed design or budget, and contradicting a decision Mircea explicitly owns. Everything agreed in this record and the plan (bootstrap, the budget deploy, enabling the schedule) proceeds without asking.
 - **Budget:** $100/month, notification-only, alerts at 50/80/100 % actual and forecast 100 %, no automatic kill switch; address from `.env.local` (`TABFRAME_BUDGET_EMAIL`), never committed. Manual kill switch: `mise run down`, which turns the machine off until `mise run up` (D20).
 
 ---
@@ -519,12 +516,9 @@ Node 22 everywhere in production: the MicroVM image, the fleet Lambdas, CDK. Nod
 ### 11.2 mise.toml
 
 The tool versions and the tasks live in `mise.toml` at the repo root; this record no longer copies
-it (WP8.2), because the copy drifted. What it pins and how it is shaped: every tool at an exact
-version — Node, Bun, the AWS CLI, `gh`, and the CDK CLI (WP8.1) — so a second machine builds the same
-image; `AWS_REGION` for everything; the AWS profile and the gitignored `.env.local` only on the tasks
+it (WP8.2), because the copy drifted. What it pins and how it is shaped: every tool at an exact version (Node, Bun, the AWS CLI, `gh`, and the CDK CLI; WP8.1), so a second machine builds the same image; `AWS_REGION` for everything; the AWS profile and the gitignored `.env.local` only on the tasks
 that talk to AWS (WP8.2), so `test`, `sim`, `build`, and `dev` run without an identity; and every AWS
-task depends on `whoami`, which asserts the account. `deploy` is sequential — guard, build, test, the
-security diff gate, the stacks, then `up` (WP8.1, WP8.2).
+task depends on `whoami`, which asserts the account. `deploy` is sequential: guard, build, test, the security diff gate, the stacks, then `up` (WP8.1, WP8.2).
 
 AssemblyScript is a workspace devDependency, not a mise tool, so the build-time and in-browser compilers are the same pinned version.
 
@@ -554,8 +548,8 @@ tabframe/
 ```
 
 The image is `packages/infra/image/Dockerfile`, staged by `packages/infra/scripts/stage-image.ts`
-(WP8.2, WP8.3 — this record no longer copies it, because the copy drifted): a base pinned by digest,
-`nodejs22` from the distribution, and five things copied in — `package.json`, the bundled `main.js`,
+(WP8.2, WP8.3; this record no longer copies it, because the copy drifted): a base pinned by digest,
+`nodejs22` from the distribution, and five things copied in: `package.json`, the bundled `main.js`,
 the sandbox's `node-worker.js`, the programs, and `build.json` (the commit the image was staged
 from, served by `/health`). It exposes the public and the private port. A test checks the COPY set
 against what the staging script writes.
@@ -564,17 +558,17 @@ Lambda builds the image on ARM64 itself; Docker is optional locally. Bundling to
 
 ### 11.4 CDK
 
-Four stacks in dependency order — **Core** (buckets for artifacts, blobs, snapshots, and web, with a one-year lifecycle on blobs; one CloudFront distribution with two origins and an error-caching TTL of zero on the blob behavior; blob-bucket CORS allowing PUT with the checksum header from the page's origin; the SSM pointer with its off state; the budget), **Image** (`CfnMicrovmImage` with the base image version looked up by a script, hooks on port 8081, an environment holding only bucket names and the pointer name, and the build, control-plane, and core roles), **Fleet** (session with a public function URL, CORS for GET from the page's origin, and a modest reserved concurrency; rotate on an hourly EventBridge rule created disabled until M3, reserved concurrency 1; their roles). Outputs feed the web config (the session URL only) at deploy. Image publishing goes through CloudFormation so the operator needs no extra rights.
+Four stacks in dependency order: **Core** (buckets for artifacts, blobs, snapshots, and web, with a one-year lifecycle on blobs; one CloudFront distribution with two origins and an error-caching TTL of zero on the blob behavior; blob-bucket CORS allowing PUT with the checksum header from the page's origin; the SSM pointer with its off state; the budget), **Image** (`CfnMicrovmImage` with the base image version looked up by a script, hooks on port 8081, an environment holding only bucket names and the pointer name, and the build, control-plane, and core roles), **Fleet** (session with a public function URL, CORS for GET from the page's origin, and a modest reserved concurrency; rotate on an hourly EventBridge rule created disabled until M3, reserved concurrency 1; their roles). Outputs feed the web config (the session URL only) at deploy. Image publishing goes through CloudFormation so the operator needs no extra rights.
 
 ### 11.5 Repo policy
 
-Hosted at `github.com/t3spe/tabframe`. License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the runbook, the walkthrough, the feasibility note, and one note per work package under `implementation/`). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts** — local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` — what was done, how, why, evidence, drift, open items — so the implementation history is readable without the commits.
+Hosted at `github.com/t3spe/tabframe`. License **AGPL-3.0**. Commits under the existing GitHub noreply identity. Contents: code plus `docs/` (this record, the runbook, the walkthrough, the feasibility note, and one note per work package under `implementation/`). The seed and handoff documents stay out. Biome for lint and format. **Git flow:** a branch per work package, merged into `main` with a `--no-ff` merge commit once lint and tests are green, then deleted; no direct commits to `main`; history never rewritten; **and CI on `main` must be green before the next work package starts**; local green is not a substitute, because CI runs on a fresh checkout with nothing built. **Every work package ships a document** at `docs/implementation/wp-<m>.<n>-<slug>.md` (what was done, how, why, evidence, drift, open items), so the implementation history is readable without the commits.
 
 ---
 
 ## 12. Tests and dev loop
 
-**`mise run dev`** brings up the machine on a laptop: the control plane under `node --watch` in local mode (in-memory ledger, local store route with hash-verifying PUT, self-presign, emulated session endpoint, hooks as routes; public and private ports default to 4080 and 4081 locally because 8080 is taken on the development machine, while the image uses 8080 and 8081), **two local cores** as Node processes on the node platform entry, the web bundles in Bun watch mode, and seeding. **`mise run dev:rotate`** starts a second control plane and drives the real rotate code with a local driver — handover on a laptop before it touches AWS.
+**`mise run dev`** brings up the machine on a laptop: the control plane under `node --watch` in local mode (in-memory ledger, local store route with hash-verifying PUT, self-presign, emulated session endpoint, hooks as routes; public and private ports default to 4080 and 4081 locally because 8080 is taken on the development machine, while the image uses 8080 and 8081), **two local cores** as Node processes on the node platform entry, the web bundles in Bun watch mode, and seeding. **`mise run dev:rotate`** starts a second control plane and drives the real rotate code with a local driver: handover on a laptop before it touches AWS.
 
 | Layer | Proves | Runner |
 |---|---|---|
@@ -608,7 +602,7 @@ Plumbing: the core takes an injected clock and random source; `mise run goldens`
 
 ## 14. History
 
-The machine was built in nine milestones, each leaving something deployable, and every work package has a note under `docs/implementation/` — what it set out to do, how, why, the evidence, and what drifted from this record. The drift log below (§17) is the same history as seen from this document. There is no roadmap here: what is not built is listed as deferred, with its reason, in the notes that deferred it.
+The machine was built in nine milestones, each leaving something deployable, and every work package has a note under `docs/implementation/`: what it set out to do, how, why, the evidence, and what drifted from this record. The drift log below (§17) is the same history as seen from this document. There is no roadmap here: what is not built is listed as deferred, with its reason, in the notes that deferred it.
 
 ---
 
@@ -616,18 +610,18 @@ The machine was built in nine milestones, each leaving something deployable, and
 
 - Nodes are a bare machine: the bundle contains no application code; programs arrive as bytes by hash, and the same bytes run in a tab and in a Firecracker VM.
 - Failure is a non-event because tasks are idempotent, results are memoized by hash, and the program ABI has no failure type.
-- The control plane is metadata only; bytes live in a content-addressed store; hashes bridge the two — the seed's constraint two, done literally, and forced by a bandwidth cap.
+- The control plane is metadata only; bytes live in a content-addressed store; hashes bridge the two: the seed's constraint two, done literally, and forced by a bandwidth cap.
 - Planning runs on the cores; the control plane never executes user code.
 - Even the control plane is churn: it rotates hourly, and the ledger outlives it. Deploys are rotations.
 - Verification is live and honest: the mismatch counter should read zero forever, and the redundancy toggle proves recompute yields identical bytes across browsers and VMs.
 - Files are single-assignment per stage, which is why persistence does not break re-execution.
-- Cut on purpose: channels between running tasks and a mutable KV — restartability is the whole point.
+- Cut on purpose: channels between running tasks and a mutable KV; restartability is the whole point.
 
 ---
 
 ## 16. Glossary
 
-**Host** — a browser tab: one observer socket plus zero or more nodes. **Core** — any worker: one orchestrator, one sandbox, one socket; a tab worker or a MicroVM. **Cloud core** — the MicroVM kind. **Node** — the ledger's word for a core that has joined (WP8.2 aligned the three). **Observer** — a dashboard connection. **Program** — a WASM module with `plan` and `run` plus a manifest. **Bundle** — a program's directory as a manifest blob. **Execution** — one run of a program with params. **Stage** — a set of tasks that may run in any order. **Task** — one kernel invocation; **attempt** — one assignment of a task to a node; **twin** — a second open attempt. **Root** — the hash of an execution's filesystem manifest at a stage boundary. **Generation** — the stamp of one control-plane instance; exactly one is active. **Store** — the content-addressed blob store. **Pointer** — the SSM parameter naming the active control plane.
+**Host.** A browser tab: one observer socket plus zero or more nodes. **Core.** Any worker: one orchestrator, one sandbox, one socket; a tab worker or a MicroVM. **Cloud core.** The MicroVM kind. **Node.** The ledger's word for a core that has joined (WP8.2 aligned the three). **Observer.** A dashboard connection. **Program.** A WASM module with `plan` and `run` plus a manifest. **Bundle.** A program's directory as a manifest blob. **Execution.** One run of a program with params. **Stage.** A set of tasks that may run in any order. **Task.** One kernel invocation; **attempt.** One assignment of a task to a node; **twin.** A second open attempt. **Root.** The hash of an execution's filesystem manifest at a stage boundary. **Generation.** The stamp of one control-plane instance; exactly one is active. **Store.** The content-addressed blob store. **Pointer.** The SSM parameter naming the active control plane.
 
 ## 17. Drift log
 
@@ -661,8 +655,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   do not match it, and a request carrying it as an unsigned header is refused outright. The store
   passes `signableHeaders`/`unhoistableHeaders` for it and refuses to hand out a URL whose
   signature does not cover the checksum; clients send exactly the signed header set and nothing
-  more (§7.1, §7.3). The default loop backs off after a failed execution — five seconds, doubling
-  to five minutes, reset by a success — so a broken program cannot spin the machine (§6.8). Ended
+  more (§7.1, §7.3). The default loop backs off after a failed execution (five seconds, doubling to five minutes, reset by a success), so a broken program cannot spin the machine (§6.8). Ended
   executions beyond the most recent 32 are pruned with their tasks on every tick, keeping the
   ledger and its snapshots bounded (§9.4).
 - **2026-09-02 (WP2.1).** A bundle manifest and a filesystem manifest are the same shape, so an
@@ -679,8 +672,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
 - **2026-09-02 (WP3.1).** A ledger carries `meta.phase` (`active`, `handing-over`, `drained`);
   only an active control plane assigns work or accepts socket upgrades, and adopting always stamps
   `active` (§9.4). `/adopt` refuses a ledger from a later generation and accepts a repeat of the
-  same one, which is what makes a retried rotation safe. `/health` is **not** gated by the fleet
-  secret — the operator scripts poll it and it carries only counts; `/handover`, `/adopt`,
+  same one, which is what makes a retried rotation safe. `/health` is **not** gated by the fleet secret: the operator scripts poll it and it carries only counts; `/handover`, `/adopt`,
   `/drain`, `/snapshot`, and `/diag` are (§8).
 - **2026-09-02 (WP3.2).** The successor is always launched with the latest snapshot key, so a
   failed `/handover` costs repeated work rather than state (§9.4). The pointer carries a `pending`
@@ -690,9 +682,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   handover/adopt instead (§9.2).
 - **2026-09-02 (WP2.2).** The `bars` view has a byte format:
   `"TFBR" u32 version | u32 count | count × (str label | f64 value)`, values finite (§5.1, §5.3).
-  Word count's map tasks own the words that *start* inside their byte range — they skip a word
-  straddling the start and read past the end to finish one straddling the end — which is the
-  precise form of "extended to whitespace on both ends" (§5.6). The corpus is normalized at build
+  Word count's map tasks own the words that *start* inside their byte range (they skip a word straddling the start and read past the end to finish one straddling the end), which is the precise form of "extended to whitespace on both ends" (§5.6). The corpus is normalized at build
   time beyond stripping the boilerplate: typographic apostrophes, quotation marks, dashes, and a
   few accented letters become ASCII, and the edition's transcriber's notes go; the word rule is a
   byte rule (ASCII letters and apostrophes) and non-ASCII bytes separate words. The attribution
@@ -700,8 +690,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
 
 - **2026-09-02 (WP2.4).** The in-page compiler is asc bundled with Bun for the browser, minified
   (1.6 MB), its Node-only imports left as dynamic imports that a worker never takes; binaryen is
-  served **as is** as a sibling asset (13.6 MB, almost all of it the compiler's own WebAssembly —
-  a minifying pass made it larger), not minified as §5.6 planned. Both load in a module worker
+  served **as is** as a sibling asset (13.6 MB, almost all of it the compiler's own WebAssembly; a minifying pass made it larger), not minified as §5.6 planned. Both load in a module worker
   only when the editor opens. A page compile is byte-identical to the build's (pinned under Bun
   and in Chromium). A page-built bundle is the manifest blob seeding produces, except its
   manifest is compact JSON, so the same program uploaded from the page and shipped in the image
@@ -729,8 +718,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   links a node to the core it launched; no registration message (§6.8). Core records travel in the
   ledger and are inherited at adopt with their node links cleared. Cores launch with **no ingress
   connector** and no idle policy. The fleet policy is gated by `config.cloudCores`, true only for
-  the MicroVM image with an image ARN, a core role, and a session URL — a laptop wakes and sleeps
-  but has no fleet (§6.8, §12).
+  the MicroVM image with an image ARN, a core role, and a session URL; a laptop wakes and sleeps but has no fleet (§6.8, §12).
 - **2026-09-02 (WP3.4).** Local mode can boot neutral (`TABFRAME_LOCAL_NEUTRAL`) so `dev:rotate`
   drives the real run hook and the real rotate handler with control-plane processes standing in for
   MicroVMs (§12). A run payload with an empty `storeBase` leaves a control plane serving blobs from
@@ -741,8 +729,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   worker is bundled as a second entry point, staged beside `main.js`, and named to the process by
   `TABFRAME_SANDBOX_WORKER` (§4.2, §11.3). The fleet's private-port calls retry on 429 and 5xx
   (§9.4). **Measured:** one client holds about 16 concurrent sockets through a MicroVM endpoint
-  before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint —
-  so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1;
+  before it answers 429, and open sockets crowd out the fleet's own requests to the same endpoint, so the ledger's 256-node cap is not the binding constraint (§8.4, §9.1;
   `docs/m3-verification.md`). A rotation with a render in flight costs about 8.4 s of churn.
 - **2026-09-02 (WP2.5).** The `taskDone` observer event and the task view carry an optional
   `log` (inline text or a blob hash), the shape the node already reports to the control plane; the
@@ -760,7 +747,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
 - **2026-09-02 (WP4.5).** The endpoint ceiling is explained: **16 concurrent connections per
   MicroVM**, the account's non-adjustable *Concurrent connections per 2 vCPU MicroVM* quota, the same
   at 512 MiB and 6 GB, per MicroVM rather than per token, process, or source (§9.7). The M0 record's
-  "250 sustained sockets" was a counting error — that script attached its close handlers after the
+  "250 sustained sockets" was a counting error: that script attached its close handlers after the
   loop and never heartbeated during it, so the sockets it counted as open had already been declared
   gone; about sixteen were alive. `docs/m0-verification.md` carries the correction. The account's
   Lambda concurrency increase to 1000 was granted; the design's "default of 10" wording is
@@ -768,8 +755,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   options are in §9.7 and the plan's WP4.6.
 - **2026-09-02 (WP4.4).** The demo script runs unattended against the deployed machine
   (`mise run demo`), and its first runs fixed the fleet policy: a killed or frozen cloud core has
-  its MicroVM terminated with the command, and a core with no node for two minutes — never said
-  hello, or its node left — is retired and replaced (§6.8). Before, a `kill half` that picked a
+  its MicroVM terminated with the command, and a core with no node for two minutes (never said hello, or its node left) is retired and replaced (§6.8). Before, a `kill half` that picked a
   core left a live, unlinked MicroVM that the policy (which counts records) never replaced.
   Seeding also retires unshipped drops nobody has run in the ledger's memory after an hour, so
   runbook uploads do not clutter the program list; the snapshot diet clears file maps on their
@@ -782,8 +768,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   numbers are in `docs/feasibility-transformer.md`.
 
 - **2026-09-03 (WP6.7).** The "asleep" banner at the start of a rotation and the half-hour-old
-  successor were one thing: the rotate function's repair path promoted a pending successor from an
-  interrupted rotation without a handover — its own boot snapshot, asleep. Now a pending successor
+  successor were one thing: the rotate function's repair path promoted a pending successor from an interrupted rotation without a handover: its own boot snapshot, asleep. Now a pending successor
   is terminated while the current control plane serves and the rotation starts afresh; it is
   promoted only when nothing else serves; and the hourly rule skips a rotation younger than five
   minutes (§9.4). A rotation on a busy machine measured clean: reconnect in two seconds, awake
@@ -791,7 +776,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
 
 - **2026-09-03 (WP6.6).** The editor explains itself (§5.6): the SDK's README is embedded at
   build time and rendered as a guide under the source, with the machine's limits stated in
-  numbers; three examples load from a select — Mandelbrot, a new `hello` (one task, a line of
+  numbers; three examples load from a select: Mandelbrot, a new `hello` (one task, a line of
   text; the SDK's tutorial example), and word count (to read; the editor ships no inputs).
 
 - **2026-09-03 (WP6.2).** Nothing on the dashboard changes size as the machine runs (§8.3):
@@ -811,14 +796,13 @@ Dated deviations discovered while building, recorded before the code landed (pla
   away, on a restore, and on adoption. An execution ended by Stop is shown as stopped, not failed.
 
 - **2026-09-02 (WP6.1).** Stop and Start from the page (§6.7): Stop ends the running execution,
-  drops the loop's queued continuations (a person's queued launches stay), and holds the loop —
-  `meta.loopStopped`, carried by snapshots and rotations — until Start, which also clears any hold
+  drops the loop's queued continuations (a person's queued launches stay), and holds the loop (`meta.loopStopped`, carried by snapshots and rotations) until Start, which also clears any hold
   or backoff (§6.8). The snapshot's machine view says `stopped`.
 
 - **2026-09-02 (WP4.4, later the same day).** What the unattended runs kept finding, each fixed
   in the core: agreement under redundancy is counted and announced as a verification (it never
   was, so the toggle's counter never moved); a person's launch holds the stage for twenty seconds
-  before the loop — its new launches *and* its queued continuations — takes it back (§6.7, §6.8),
+  before the loop (its new launches *and* its queued continuations) takes it back (§6.7, §6.8),
   and the snapshot shows the execution that ended last when nothing runs (§8.3); an adopted core's
   link grace runs from the adoption, not its launch (every rotation had been terminating every
   core); a node whose host cannot instantiate the module reports *released*, not a program fault
@@ -858,7 +842,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   `logRetention`, because Lambda created them before any stack could. `/diag` performs a store
   put-and-get round trip.
 - **2026-09-02 (WP4.3).** Mandelbrot gets exact interior shortcuts (cardioid, period-2 bulb, and
-  Brent periodicity on f64 equality — output unchanged, checked against the goldens) and retuned
+  Brent periodicity on f64 equality; output unchanged, checked against the goldens) and retuned
   presets that keep `ss² × maxIter` at or under about 7 000, so the worst tile is about 300 ms
   under Node and under the two-second deadline floor in a tab; the default frame is 22 s of Node
   compute, about a minute in one browser tab (§5.6, §6.4). Word count needs no read batching: the
@@ -866,8 +850,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   their tasks for only the last two (`KEEP_ENDED_TASKS`), which takes the deployed five-second
   snapshot from 2.2 MB gzipped to about a tenth of that (§9.4).
 
-- **2026-09-02 (WP4.1).** The dashboard's flashes cover every event that moves a task — taken
-  back, twinned, verified, retracted — not only reassignments (§6.7), and each leaves a pulse the
+- **2026-09-02 (WP4.1).** The dashboard's flashes cover every event that moves a task (taken back, twinned, verified, retracted), not only reassignments (§6.7), and each leaves a pulse the
   page lists in words. Released work has its own colour, distinct from never-assigned work. A
   rotation or a sleep is a banner with the next generation and a countdown to the reconnect rather
   than a line in the notice strip, and the canvas stays on screen while the observer reconnects, as
@@ -875,7 +858,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   bytes live, making the hashes-not-bytes claim visible on the page.
 
 - **2026-09-03 (WP6.8).** Mircea's review of the deployed page. The loop yields to people (§6.7):
-  once a person's launch has ended — done, failed, or killed — the loop launches nothing until
+  once a person's launch has ended (done, failed, or killed) the loop launches nothing until
   Start or ten idle minutes (`meta.loopYielded`, `YIELD_IDLE_MS`, announced by the `loopYielded`
   event as it is set and released); this replaces WP4.4's
   twenty-second hold, which let the loop take the stage back from a person who was still looking.
@@ -895,7 +878,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   controls echo in its notice (rule R2 of the M7 walkthrough).
 
 - **2026-09-03 (WP7.2).** The throughput chart (§8.3) was a strip of unscaled one-second bars
-  rescaled to the minute's peak on every frame — the review's "wonky horizontal blue lines". It is
+  rescaled to the minute's peak on every frame, the review's "wonky horizontal blue lines". It is
   one area line drawn at the device pixel ratio, on a round scale that rises at once and falls only
   after a minute below half, with a caption that names the window, the peak, and the scale. The
   counters take two rows, the redundancy toggle its own line, the flashes one line of text.
@@ -918,7 +901,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
 - **2026-09-04 (WP7.6).** A program's source is a blob in the store and its manifest names the
   hash (`programManifest.source`, §5.1); the seeder stores the shipped programs' sources and the
   image ships them; the editor (§5.6) lists every program on the machine before its examples and
-  opens one from the store — source, fields, and inputs kept by hash for the edited copy — and a
+  opens one from the store (source, fields, and inputs kept by hash for the edited copy) and a
   launch uploads the compiled text with the module. A dropped module has no source and opens as a
   module. The source is never a file of the bundle, so a program cannot read its own text.
 
@@ -943,7 +926,7 @@ Dated deviations discovered while building, recorded before the code landed (pla
   their own rate bucket and a presigned-byte budget (§8.4). Wire: presign sizes and counts are
   bounded. Sandbox: one memory per module. Store and node: size-capped fetches on the control plane,
   retries and a presign timeout on the node, host and store failures reported as releases (§4.2).
-  Fleet and hosting: the scheduled rule leaves a suspended control plane alone (§6.8 — the README's
+  Fleet and hosting: the scheduled rule leaves a suspended control plane alone (§6.8; the README's
   stays-up paragraph was wrong); a successor that never boots is terminated and the client token
   carries the hour; a failed rotation is an error with alarms behind it; the blob and snapshot
   buckets are retained; response headers (a CSP, nosniff, downloads for blobs) on the distribution
@@ -952,6 +935,6 @@ Dated deviations discovered while building, recorded before the code landed (pla
   reload for an outdated page; bounded caches; the demo answers Stop, Start, pause, and resume.
 
 - **2026-09-04 (WP8.2).** The second review loop (`docs/implementation/wp-8.2-review-loop-2.md`, 57 findings). Where this record moved: an open task settles only from an attempt the ledger handed out; a released attempt is charged its deadline window and a task fails as a program fault after six releases (§6.5); presigns cost one solicited token per item against a refilling 64 MiB-per-minute byte budget, and the schema caps a request at 24 items so a `presigned` frame of signed URLs fits one message (§7.1); the S3 presign signs the content length as well as the checksum; cores carry a per-core token from the run payload and a hello links only a matching record (§6.8, §9.3); store fetch errors are retries, not answers (§6.6); `defaultParams` is bounded like launch params and the ledger keeps at most 64 programs; a snapshot's page split is memoised per sequence number; `latest` is written only while active and a handover is adopted once; the control plane refuses the fifteenth client upgrade (§9.7); when a handover lease runs out the control plane asks the pointer and drains and terminates itself if a newer generation is named (§9.4); the control plane validates a module's imports and exports from the binary's sections and compiles nothing (§2); rotate records `retiring` in the pointer so a retire a dead run left behind is finished first, retries a client token that resolved to a terminated VM with a `-r<n>` suffix, waits 120 s for RUNNING, and runs with a ten-minute timeout (§9.2); the base image is pinned by digest and ships `build.json`; a canary checks the page and the session function every five minutes and never touches the endpoint; `deploy` gates on a security-only diff, CI synthesises the app, actions are pinned by commit, and the AWS identity is scoped to the tasks that use it (§11.2); a `rollback` task pins the image version; the page serves the deployed content security policy locally, keeps nothing immutable, redraws the activity list only when it changes, counts held states rather than frames, bounds the demo store, seeds the failure box from a snapshot, and shows a person's stop as a stop; a node facing an off machine asks again every fifteen seconds. Vocabulary settled (§16): a core is any worker, a cloud core the MicroVM kind, a node the ledger's word for a joined core; "about seven tabs each lending a node, or fifteen that only watch" replaces "fifteen tabs" everywhere.
-- **2026-09-04 (WP8.3).** The third review loop (`docs/implementation/wp-8.3-review-loop-3.md`, 57 findings in 46 rows). Where this record moved: the budget, the deadline samples, and a node's speed are charged once per attempt the ledger handed out, after the duplicate checks, and a release is taken only from the running attempt (§6.5); a released task's deadline doubles per release up to ten minutes and node-loss attempts are *lost*, not released (§6.4); heartbeats faster than half the period are dropped and a node's health is announced at most every two seconds; skip and killExecution (of the running execution) join the destructive set; the redundancy flip stays out, because a refused flip-back left the machine in a state the checkbox denied (§6.7); machine-wide presign budgets — items and bytes per minute — and a machine-wide launch budget live in `meta` and survive reconnects (§7.1); a core links only on a token match, unconditionally; the stage-spec canvas is at most 4096 a side and four megapixels (§5); `seq` advances whether or not anyone listens. The control plane stands by until the pointer names it or a handover is adopted into it — no core launches, no `latest` — and a core acked after a handover is terminated (§9.3, §9.4); a lease whose pointer read fails is re-armed; bundle resolutions are memoised and single-flight; the control plane learns its own image version from the platform, launches cores at it, and shows it on `/health`; `/health` shows the tail of a core's id only; the fifteenth client gets a close code the page reads as "machine full". The pointer round-trips `retiring` (it was written and never read back) and carries the operator's `pinnedImageVersion`, cleared by `up`; a rotation writes `pending` before it waits, leaves a pending younger than its own timeout alone, re-reads the pointer before promoting so a racing `down` wins, and on a scheduled run leaves a control plane the ceiling ended to the first visitor; `down` sweeps twice; the session function answers a `probe=1` query without healing and remembers its lookups for five seconds; the canary reads the session function's real shapes and probes. The deploy guard fails closed and refuses a deploy that would drop the budget and the alarm mail; the build stamp's time is the commit's; the placeholder image ships a stamp; the control plane may put and read snapshots but not delete them; the content security policy names the region's hosts and is served locally too. The page keeps queued controls across a socket swap, resets its reconnect backoff on a healthy session, retries a failed configuration fetch, redraws counters in place, hands focus back after a rebuild, matches the editor's launch on the bundle hash, and never replays a stored 404 for a tile. Documentation: "fourteen that only watch" (the cap), the design's Dockerfile copy replaced by a pointer, §2 and §4 use the settled vocabulary, the runbook's rollback and idle-cost paragraphs, the loop notes' counts derived from their tables.
-- **2026-09-04 (WP8.4).** The deploy after the loops. CloudFront refuses a response-headers policy that carries a security header among its custom headers — the blob policy's `Content-Security-Policy: sandbox` of WP8.1 was one, and no synth, test, or reviewer could see it: the first deploy failed and rolled back cleanly. The header lives in the security block now, and `synth.test.ts` refuses the shape (§9.6). The demo passes then found two more things only the deployed page shows: the tightened policy's `connect-src` needed `data:` and `blob:` for the compiler worker, whose wasm ships as a data URL and whose script CloudFront (unlike the local server, until now) binds with the policy; and the dashboard's activity snippet lost the line for a control under the reassignments that followed it, so it keeps the latest control line of the last minute. Generation 129 runs image version 26 with the whole build stamp on `/health`; three unattended demo passes are green against it.
-- **2026-09-05 (M9: WP9.1–9.6).** The repository stands on its own. Everything about the homework as a piece of work — the plan, the time log, the rationale written to the assignment, the milestone verification records, the transcripts and their exporter — left for a repository of its own (WP9.1); this record's §13 is "Deploy and operations", §14 a pointer at the implementation notes. The remaining documents were read as a stranger would and corrected (WP9.2): a documents index, the README reshaped around the reader, a link test; each program has a README (WP9.4). Five structural reviews and five refactors (WP9.5) changed no behaviour and reshaped the code: the page is an entry over a dashboard and view modules; the process is a composition root over explicit modules with tracked promises; the core's `apply` is eleven modules over one `advance`, one `endExecution`, and an execution that records the store answer it awaits, with its per-process state in a session and every constant in `policy.ts`; the rotation is six modules over one pointer writer, the operator scripts run on the fleet's adapters, the CDK app is built from a config with shared grants; the protocol's schema fragments are shared, the sandbox has one binary walker, the SDK's test host runs programs through the sandbox. Comments say why, and CI keeps history tags out of them (WP9.6). Two latent bugs surfaced by the moves are fixed: the control plane learns its image version only once its fleet exists, and a finished retire cannot come back from a stale pointer read. The live deploy of the tree added a `FleetSecretArn` output to the Core stack (the refactored health script had guessed a hashed logical id), and a failed handover's warning now carries the predecessor's platform state — the idle-policy suspend whose resume the platform could not complete, 4 of 41 rotations, nothing lost since the suspend hook snapshots first.
+- **2026-09-04 (WP8.3).** The third review loop (`docs/implementation/wp-8.3-review-loop-3.md`, 57 findings in 46 rows). Where this record moved: the budget, the deadline samples, and a node's speed are charged once per attempt the ledger handed out, after the duplicate checks, and a release is taken only from the running attempt (§6.5); a released task's deadline doubles per release up to ten minutes and node-loss attempts are *lost*, not released (§6.4); heartbeats faster than half the period are dropped and a node's health is announced at most every two seconds; skip and killExecution (of the running execution) join the destructive set; the redundancy flip stays out, because a refused flip-back left the machine in a state the checkbox denied (§6.7); machine-wide presign budgets (items and bytes per minute) and a machine-wide launch budget live in `meta` and survive reconnects (§7.1); a core links only on a token match, unconditionally; the stage-spec canvas is at most 4096 a side and four megapixels (§5); `seq` advances whether or not anyone listens. The control plane stands by until the pointer names it or a handover is adopted into it (no core launches, no `latest`), and a core acked after a handover is terminated (§9.3, §9.4); a lease whose pointer read fails is re-armed; bundle resolutions are memoised and single-flight; the control plane learns its own image version from the platform, launches cores at it, and shows it on `/health`; `/health` shows the tail of a core's id only; the fifteenth client gets a close code the page reads as "machine full". The pointer round-trips `retiring` (it was written and never read back) and carries the operator's `pinnedImageVersion`, cleared by `up`; a rotation writes `pending` before it waits, leaves a pending younger than its own timeout alone, re-reads the pointer before promoting so a racing `down` wins, and on a scheduled run leaves a control plane the ceiling ended to the first visitor; `down` sweeps twice; the session function answers a `probe=1` query without healing and remembers its lookups for five seconds; the canary reads the session function's real shapes and probes. The deploy guard fails closed and refuses a deploy that would drop the budget and the alarm mail; the build stamp's time is the commit's; the placeholder image ships a stamp; the control plane may put and read snapshots but not delete them; the content security policy names the region's hosts and is served locally too. The page keeps queued controls across a socket swap, resets its reconnect backoff on a healthy session, retries a failed configuration fetch, redraws counters in place, hands focus back after a rebuild, matches the editor's launch on the bundle hash, and never replays a stored 404 for a tile. Documentation: "fourteen that only watch" (the cap), the design's Dockerfile copy replaced by a pointer, §2 and §4 use the settled vocabulary, the runbook's rollback and idle-cost paragraphs, the loop notes' counts derived from their tables.
+- **2026-09-04 (WP8.4).** The deploy after the loops. CloudFront refuses a response-headers policy that carries a security header among its custom headers: the blob policy's `Content-Security-Policy: sandbox` of WP8.1 was one, and no synth, test, or reviewer could see it: the first deploy failed and rolled back cleanly. The header lives in the security block now, and `synth.test.ts` refuses the shape (§9.6). The demo passes then found two more things only the deployed page shows: the tightened policy's `connect-src` needed `data:` and `blob:` for the compiler worker, whose wasm ships as a data URL and whose script CloudFront (unlike the local server, until now) binds with the policy; and the dashboard's activity snippet lost the line for a control under the reassignments that followed it, so it keeps the latest control line of the last minute. Generation 129 runs image version 26 with the whole build stamp on `/health`; three unattended demo passes are green against it.
+- **2026-09-05 (M9: WP9.1–9.6).** The repository stands on its own. Everything about the homework as a piece of work (the plan, the time log, the rationale written to the assignment, the milestone verification records, the transcripts and their exporter) left for a repository of its own (WP9.1); this record's §13 is "Deploy and operations", §14 a pointer at the implementation notes. The remaining documents were read as a stranger would and corrected (WP9.2): a documents index, the README reshaped around the reader, a link test; each program has a README (WP9.4). Five structural reviews and five refactors (WP9.5) changed no behaviour and reshaped the code: the page is an entry over a dashboard and view modules; the process is a composition root over explicit modules with tracked promises; the core's `apply` is eleven modules over one `advance`, one `endExecution`, and an execution that records the store answer it awaits, with its per-process state in a session and every constant in `policy.ts`; the rotation is six modules over one pointer writer, the operator scripts run on the fleet's adapters, the CDK app is built from a config with shared grants; the protocol's schema fragments are shared, the sandbox has one binary walker, the SDK's test host runs programs through the sandbox. Comments say why, and CI keeps history tags out of them (WP9.6). Two latent bugs surfaced by the moves are fixed: the control plane learns its image version only once its fleet exists, and a finished retire cannot come back from a stale pointer read. The live deploy of the tree added a `FleetSecretArn` output to the Core stack (the refactored health script had guessed a hashed logical id), and a failed handover's warning now carries the predecessor's platform state: the idle-policy suspend whose resume the platform could not complete, 4 of 41 rotations, nothing lost since the suspend hook snapshots first.

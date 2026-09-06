@@ -8,10 +8,10 @@ toolchain and the test layers are shaped this way; this page says how to use the
 
 Tooling is managed by [mise](https://mise.jdx.dev), every tool at an exact version, so a second
 machine builds the same image. Node.js 22 is the runtime everywhere in production and runs `.ts`
-files directly, so the control plane needs no build step locally. Bun is the developer toolchain —
-workspaces, `bun test`, the browser bundles — and nothing at runtime depends on it. AssemblyScript is
-a workspace dependency rather than a mise tool, so the build-time and in-browser compilers are the
-same pinned version.
+files directly, so the control plane needs no build step locally. Bun is the developer toolchain
+(workspaces, `bun test`, the browser bundles), and nothing at runtime depends on it. AssemblyScript
+is a workspace dependency rather than a mise tool, so the build-time and in-browser compilers are
+the same pinned version.
 
 ```sh
 mise trust && mise install      # tools: node, bun, aws-cli, gh, cdk
@@ -28,14 +28,14 @@ mise run dev                    # → http://127.0.0.1:4080
 mise run dev:rotate             # a second control plane and a real handover, on the laptop
 ```
 
-`mise run dev` starts the control plane under `node --watch` in local mode — an in-memory ledger, a
-local store route with a hash-verifying PUT, self-presign, an emulated session endpoint, the
-lifecycle hooks as routes — plus two local cores as Node processes on the node platform entry, the
-web bundles in Bun watch mode, and the seeding of the shipped programs. The public and private ports
-are 4080 and 4081 locally; the image uses 8080 and 8081. It is the same code as the cloud: the
-control plane serves blobs from memory, the two Node processes stand in for the cloud cores, and the
-page is served from `packages/web/dist`. `mise run dev:rotate` drives the real rotate code with a
-local driver, so a handover is exercised before it touches AWS.
+`mise run dev` starts the control plane under `node --watch` in local mode: an in-memory ledger, a
+local store route with a hash-verifying PUT, self-presign, an emulated session endpoint, and the
+lifecycle hooks as routes. It also starts two local cores as Node processes on the node platform
+entry, the web bundles in Bun watch mode, and the seeding of the shipped programs. The public and
+private ports are 4080 and 4081 locally; the image uses 8080 and 8081. It is the same code as the
+cloud: the control plane serves blobs from memory, the two Node processes stand in for the cloud
+cores, and the page is served from `packages/web/dist`. `mise run dev:rotate` drives the real rotate
+code with a local driver, so a handover is exercised before it touches AWS.
 
 ## Tasks
 
@@ -71,17 +71,17 @@ to know when running them:
 
 Two repository-wide checks run with the unit suite, from `tests/`: every relative Markdown link and
 anchor resolves, and no source comment carries a work-package tag, a date, or narration of what the
-code used to do — comments say why.
+code used to do; comments say why.
 
 ## CI
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push: a fresh checkout, the
-same mise version as the developer machine, then `mise run ci` — build everything, synthesise the
-stacks, lint, the unit suites, the browser suites — and the coverage report as an artifact. It first
-asserts that no AWS credentials, profile, or `.env.local` are present: CI never touches the account,
-and deploys are manual ([`runbook.md`](runbook.md)). A red `main` is the first thing fixed, and no
-work package starts on a red `main`: CI runs on a fresh checkout with nothing built and catches what
-a laptop with built artifacts does not.
+same mise version as the developer machine, then `mise run ci` (build everything, synthesise the
+stacks, lint, the unit suites, the browser suites), and it keeps the coverage report as an artifact.
+It first asserts that no AWS credentials, profile, or `.env.local` are present: CI never touches the
+account, and deploys are manual ([`runbook.md`](runbook.md)). A red `main` is the first thing fixed,
+and no work package starts on a red `main`: CI runs on a fresh checkout with nothing built and
+catches what a laptop with built artifacts does not.
 
 ## Conventions
 
