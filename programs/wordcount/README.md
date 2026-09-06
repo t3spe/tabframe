@@ -38,3 +38,11 @@ program fault and fails the execution.
 bars (`mise run goldens`). `packages/sdk-as/test/wordcount.test.ts` compares stage for stage against
 the goldens and against a plain single-pass count in JavaScript, and checks with a property test
 that the union of the map outputs equals the single-pass count for any text and any split.
+
+## Attribution
+
+The corpus is *Moby-Dick; or, The Whale* by Herman Melville (1851), public domain, obtained from
+Project Gutenberg ebook #2701 with the Project Gutenberg header, footer, and license removed and a
+few typographic characters normalized to ASCII; it is therefore not a Project Gutenberg ebook, and
+the Project Gutenberg License applies to the ebook as distributed at gutenberg.org, not to this copy.
+The attribution ships inside the program's bundle as [`in/ATTRIBUTION.txt`](in/ATTRIBUTION.txt).

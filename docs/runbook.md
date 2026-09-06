@@ -31,6 +31,19 @@ works with any other profile, by design (`mise run whoami` is the guard every ta
 | Verify | `mise run verify:m1` / `verify:m2` / `verify:m3` | The milestone runbooks against the live machine: a frame through a kill-half, the editor and word count, a rotation under load. Each prints one line per check and exits non-zero on a failure. |
 | Simulate | `mise run sim -- --seed N` | The churn simulation, locally; `--long` for the nightly shape. |
 
+## Before the first deploy
+
+- An AWS account with a profile named `tabframe`: the operator identity, used for `cdk` only; every
+  application component runs under a least-privilege role CDK creates. `mise run whoami` asserts the
+  identity is that account, and every AWS task depends on it.
+- A gitignored `.env.local` at the repo root holding `TABFRAME_ACCOUNT_ID` and
+  `TABFRAME_BUDGET_EMAIL`, the address the $100/month notification-only budget alerts.
+- An authenticated `gh` (`gh auth login`, once): the deploy guard asks GitHub whether CI passed on
+  the commit being deployed, so Actions must run on your remote.
+- `AWS_PROFILE=tabframe cdk bootstrap`, once.
+
+Then `mise run deploy`, step by step below.
+
 ## Deploy, step by step
 
 1. `main` is green in CI (`mise exec -- gh run list --branch main --limit 1`). This is a rule, not a
