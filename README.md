@@ -6,19 +6,10 @@ MicroVMs, the *cloud cores*. Open the page and your tab is a core. Close it and 
 computing, correctly. The control plane that schedules the work is itself replaced every hour, with
 the work in flight.
 
-Deployed: **https://d2w9z8juw4oo76.cloudfront.net** — the page lends one core when it opens, and
-shows the machine rendering a Mandelbrot frame with whoever else is there.
-
-**Try it, in five clicks.**
-
-1. **spawn N** — N is one fewer than your machine's CPU threads, so the tab keeps one; the counters follow.
-2. **kill half** — tiles are taken back and finish elsewhere.
-3. **redundancy on** — the verified counter moves: two cores agree byte for byte before a tile counts.
-4. **editor ↗** — change `CYCLE`, compile, launch; your program goes ahead of the loop.
-5. **the ledger tab** — hashes, not bytes.
-
-`?observe` lends no cores,
-`?demo=1` runs a scripted cluster inside the page, and a rotation banner every hour is expected.
+Deployed: **https://d2w9z8juw4oo76.cloudfront.net** — the page lends one core when it opens and
+shows the machine rendering a Mandelbrot frame with whoever else is there. The guided tour — five
+clicks that show the fault tolerance, then every screen and state — is
+[`docs/walkthrough.md`](docs/walkthrough.md).
 
 ## What it is
 
@@ -30,14 +21,16 @@ no clock, no randomness, no network, and no failure type anywhere in its API.
 
 Three programs ship with the machine and go through the same path as anything you write in the
 in-page editor: a distributed **Mandelbrot** render (640 tiles of 64×64 per frame, presets that
-advance while anyone watches); a three-stage **word count** over *Moby-Dick* (map by byte range,
-reduce by partition, merge to a top-25); and **tiny GPT**, an 822 k-parameter character-level
-transformer trained on that same corpus, whose whole forward pass runs in WebAssembly on the cores —
-one continuation per task, four milliseconds a token, the same bytes on every core
-(`docs/feasibility-transformer.md`). You can also compile your own: the editor holds every
-program's source and the AssemblyScript compiler runs in a browser worker.
+advance while anyone watches); a three-stage **word count** over *Moby-Dick* (map, reduce, merge to
+an exact top-25); and **tiny GPT**, an 822 k-parameter character-level transformer whose whole
+forward pass runs in WebAssembly on the cores — four milliseconds a token, the same bytes on every
+core. You can also compile your own: the editor holds every program's source and the AssemblyScript
+compiler runs in a browser worker. The programs and how they are checked:
+[`programs/README.md`](programs/README.md); how to write one, and what a program may and may not do:
+[`packages/sdk-as/README.md`](packages/sdk-as/README.md); the transformer's feasibility note, with
+the measured numbers: [`docs/feasibility-transformer.md`](docs/feasibility-transformer.md).
 
-## Why it looks the way it does
+## The idea
 
 Three constraints carry the whole fault-tolerance story; everything else follows from them.
 
@@ -54,7 +47,8 @@ Three constraints carry the whole fault-tolerance story; everything else follows
 So a dead core is a non-event: its attempts are released and the work goes back to the front of
 the queue. And because the ledger is metadata only, the control plane can be snapshotted every five
 seconds, handed to its successor, and replaced — deploys use the same handover as the hourly
-rotation.
+rotation. Each of these claims was measured against the deployed machine, kill-half and rotation
+included: [`docs/evidence.md`](docs/evidence.md).
 
 ## Architecture
 
@@ -84,22 +78,6 @@ The design record, [`docs/design.md`](docs/design.md), is the source of truth; i
 register (D1–D20) says what was chosen and why, and its drift log at the end says what changed
 while building and why.
 
-## What is measured
-
-Each claim below was checked against the deployed machine; the tables behind the numbers are in the implementation notes.
-
-| Claim | Evidence |
-|---|---|
-| Kill half the cluster mid-frame and the frame still completes, bit for bit | 6 nodes from tabs, 3 killed at tile 128: **640 of 640 tiles match the goldens** produced by a single Node process on another machine ([`wp-1.10-deploy-m1.md`](docs/implementation/wp-1.10-deploy-m1.md)). The browser suite repeats it with ten nodes in one tab. |
-| A program edited and compiled in the page runs on the cluster | compiled in the browser in ~3 s, byte-identical to the build's module; the edited frame's tiles differ from the unedited goldens ([`wp-2.7-deploy-m2.md`](docs/implementation/wp-2.7-deploy-m2.md)) |
-| Word count is exact | the top-25 over *Moby-Dick* equals the JavaScript reference **hash for hash** |
-| A program fault is visible, not fatal | a planner that traps fails its execution with its own abort message and the machine returns to its loop |
-| The control plane rotates with a render in flight | **8.4 s of churn** from the drain to the first tile of the new generation, four rotations, 8.4–8.5 s each; the session function peaked at 3 concurrent executions with no throttles ([`wp-3.5-deploy-m3.md`](docs/implementation/wp-3.5-deploy-m3.md)) |
-| Correct under arbitrary churn | a discrete-event simulation with virtual nodes running the real WebAssembly programs, seeded chaos (joins, leaves, crashes, freezes, hidden tabs, every control, a lying node, the fleet), invariants after every event, goldens at the end — **1000 long seeds pass** ([`wp-1.9-churn-sim.md`](docs/implementation/wp-1.9-churn-sim.md)) |
-
-The unit and integration suites (an 85 % line-coverage threshold on the core packages) and the browser suites
-run in CI on every push, with no AWS credentials.
-
 ## Limits, stated plainly
 
 - **One MicroVM endpoint accepts 16 concurrent connections.** That is an AWS quota, not
@@ -120,62 +98,42 @@ run in CI on every push, with no AWS credentials.
   is the whole point), a RISC-V interpreter, a WebRTC peer mesh, intra-tab `SharedArrayBuffer`
   multicore, server-side C→WASM compilation.
 
-## Running it locally
+## Run it
 
 Tooling is managed by [mise](https://mise.jdx.dev): Node.js 22 is the runtime, Bun is the developer
 toolchain, and every task lives in [`mise.toml`](mise.toml).
 
 ```sh
-mise trust && mise install      # tools: node, bun, aws-cli, gh, cdk
-mise run install                # workspace dependencies and the Playwright browser
-mise run dev                    # the whole machine on a laptop: control plane, local store,
-                                #   two local cores, web bundles in watch mode → http://127.0.0.1:4080
-mise run dev:rotate             # a second control plane and a real handover, on the laptop
-mise run sim -- --seed 7        # the churn simulation (--long for the long scenario, --drill for the fleet)
-mise run test                   # lint, type check, unit and integration tests, browser tests
-bun test                        # the unit and integration suites alone
-bunx playwright test            # the browser suites alone
+mise trust && mise install && mise run install   # tools, workspace dependencies, the Playwright browser
+mise run dev                                     # the whole machine on a laptop → http://127.0.0.1:4080
+mise run test                                    # unit and integration tests, then the browser tests
 ```
 
-The local topology runs the same code as the cloud: a control plane process serving blobs from
-memory, two Node.js processes as stand-ins for the cloud cores, and the page from `packages/web/dist`.
+The local topology runs the same code as the cloud. What it starts, every task, the test layers,
+and what CI runs: [`docs/development.md`](docs/development.md). Deploying needs an AWS account and
+one command, and a deploy is a rotation — the new image version is published and the rotate function
+hands the ledger to the next generation; the prerequisites, the steps, rollback, health, logs, and
+cost are in [`docs/runbook.md`](docs/runbook.md).
 
-## Deploying it
+## Documents
 
-Needs an AWS account with a profile named `tabframe` (the operator identity, used for `cdk` only;
-every application component runs under a least-privilege role CDK creates), a gitignored `.env.local`
-holding `TABFRAME_ACCOUNT_ID` and `TABFRAME_BUDGET_EMAIL` (the address the $100/month
-notification-only budget alerts), and an authenticated `gh` (`gh auth login` once): the deploy guard
-asks GitHub whether CI passed on the commit being deployed, so Actions must run on your remote.
+[`docs/README.md`](docs/README.md) is the index, in reading order:
 
-```sh
-mise run whoami                      # asserts the identity is the Tabframe account; every AWS task depends on it
-AWS_PROFILE=tabframe cdk bootstrap   # once
-mise run deploy                      # guard → build → test → security diff gate → cdk deploy (four stacks) → up
-mise run down                        # off: disable the schedule, terminate every MicroVM, write the off state
-mise run up                          # back on
-```
+- [`docs/design.md`](docs/design.md) — the design record: the decisions register D1–D20, the system,
+  the wire, hosting, security, tooling; its drift log at the end says what changed while building and why.
+- [`docs/walkthrough.md`](docs/walkthrough.md) — the page's contract: the five-click tour, then every
+  screen, state, and control, checked by a browser test.
+- [`docs/development.md`](docs/development.md) — the machine on a laptop, the tasks, the tests, CI.
+- [`packages/sdk-as/README.md`](packages/sdk-as/README.md) and [`programs/README.md`](programs/README.md)
+  — how to write a program, and the three that ship.
+- [`docs/feasibility-transformer.md`](docs/feasibility-transformer.md) — the transformer on the cores,
+  with the measured numbers.
+- [`docs/evidence.md`](docs/evidence.md) — what is measured, and how to re-run each check.
+- [`docs/runbook.md`](docs/runbook.md) — operating the deployed machine.
+- [`docs/implementation/`](docs/implementation/README.md) — how it was built, one note per work package.
 
-A deploy is a rotation: the new image version is published, the rotate function launches the next
-generation, hands the ledger over, flips the pointer, and drains the old one. Rollback is the same
-path onto an earlier image version. Everything else an operator does — verification runs, the
-unattended demo, `/health`, logs, what it costs, what an untouched machine converges to — is in
-[`docs/runbook.md`](docs/runbook.md).
-
-## Reading the repository
-
-[`docs/README.md`](docs/README.md) lists the documents in reading order: the design record, the
-page's contract, how to write a program, the three programs, the transformer feasibility note, the
-runbook, and the implementation notes.
-
-## License and attribution
+## License
 
 Tabframe is licensed under the **GNU Affero General Public License v3.0** — see
-[`LICENSE`](LICENSE).
-
-The word-count corpus is *Moby-Dick; or, The Whale* by Herman Melville (1851), public domain,
-obtained from Project Gutenberg ebook #2701 with the Project Gutenberg header, footer, and license
-removed and a few typographic characters normalized to ASCII; it is therefore not a Project
-Gutenberg ebook, and the Project Gutenberg License applies to the ebook as distributed at
-gutenberg.org, not to this copy. The attribution ships inside the program's bundle as
-[`programs/wordcount/in/ATTRIBUTION.txt`](programs/wordcount/in/ATTRIBUTION.txt).
+[`LICENSE`](LICENSE). The word-count corpus is *Moby-Dick* from Project Gutenberg, with the
+attribution in [`programs/wordcount/README.md`](programs/wordcount/README.md).

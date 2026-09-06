@@ -8,6 +8,20 @@ the page's contract; `e2e/walkthrough.e2e.ts` drives the machine through the sta
 asserts the sentence, the header's slot, and the exact set of enabled controls, with a screenshot
 per state in the test's output. Written 2026-09-04; the test keeps it honest.
 
+## Try it, in five clicks
+
+Open **https://d2w9z8juw4oo76.cloudfront.net**: the page lends one core when it opens and shows the
+machine rendering a Mandelbrot frame with whoever else is there. Then, on the dashboard (Screen A):
+
+1. **spawn N** — N is one fewer than your machine's CPU threads, so the tab keeps one; the counters follow.
+2. **kill half** — tiles are taken back and finish elsewhere.
+3. **redundancy on** — the verified counter moves: two cores agree byte for byte before a tile counts.
+4. **editor ↗** — change `CYCLE`, compile, launch; your program goes ahead of the loop (Screen C).
+5. **the ledger tab** — hashes, not bytes (Screen B).
+
+`?observe` lends no cores, `?demo=1` runs a scripted cluster inside the page, and a rotation banner
+every hour is expected.
+
 ## The rules the inventory is checked against
 
 - **R1 · One sentence of state, always.** The status line says what the machine is doing and why,
