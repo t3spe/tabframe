@@ -6,7 +6,7 @@ describe("maskSecrets", () => {
     expect(maskSecrets("123456789012")).toBe("********9012");
   });
   test("masks account ids inside ARNs and IAM unique ids", () => {
-    expect(maskSecrets("arn:aws:iam::123456789012:user/tab AIDA6CYK2IGRUYFECWJOT")).toBe(
+    expect(maskSecrets("arn:aws:iam::123456789012:user/tab AIDAEXAMPLEUSERID0000")).toBe(
       "arn:aws:iam::********9012:user/tab AIDA****",
     );
   });
